@@ -1,0 +1,92 @@
+start_room: square
+
+rooms:
+  square:
+    name: 村口广场
+    description: 石板铺成的小广场，中间一口老井，四周是低矮的木屋。
+    exits:
+      north: {to: tavern}
+      east: {to: smithy}
+      south: {to: path}
+    items: [bread]
+
+  tavern:
+    name: 野猪酒馆
+    description: 昏暗的酒馆，空气里混着麦酒和烤肉的味道。角落有一扇通往地窖的木门。
+    exits:
+      south: {to: square}
+      down: {to: cellar, locked: true, key: cellar_key}
+    npcs: [innkeeper]
+
+  cellar:
+    name: 酒馆地窖
+    description: 潮湿阴冷，堆满了酒桶，墙角似乎有什么东西在发光。
+    exits:
+      up: {to: tavern}
+    items: [old_amulet]
+
+  smithy:
+    name: 铁匠铺
+    description: 炉火正旺，墙上挂着各式农具和几把粗糙的武器。
+    exits:
+      west: {to: square}
+    items: [rusty_sword]
+    npcs: [smith]
+
+  path:
+    name: 村外小路
+    description: 泥土小路通向南边的森林，路边长着几丛药草。
+    exits:
+      north: {to: square}
+      south: {to: forest_edge}
+    items: [herb]
+
+  forest_edge:
+    name: 森林边缘
+    description: 高大的树木遮住了阳光，灌木丛里传来窸窸窣窣的声音。
+    exits:
+      north: {to: path}
+    npcs: [goblin]
+
+items:
+  bread:
+    name: 面包
+    description: 有点硬的黑麦面包。
+    type: consumable
+    heal: 3
+  herb:
+    name: 药草
+    description: 散发清香的绿色草叶，据说能止血。
+    type: consumable
+    heal: 6
+  rusty_sword:
+    name: 生锈的短剑
+    description: 剑刃布满锈迹，但还算锋利。
+    type: weapon
+    damage: 4
+  cellar_key:
+    name: 地窖钥匙
+    description: 一把沉甸甸的铁钥匙。
+    type: key
+  old_amulet:
+    name: 古旧护符
+    description: 刻着看不懂的符文，微微发着蓝光。
+    type: armor
+    defense: 2
+
+npcs:
+  innkeeper:
+    name: 老汉斯
+    description: 酒馆老板，胖胖的中年人，总在擦同一个杯子。
+    persona: 热情但爱打听八卦，对地窖的事讳莫如深，除非客人帮他解决森林里的哥布林。
+    inventory: [cellar_key]
+  smith:
+    name: 铁匠莉娜
+    description: 手臂粗壮的女铁匠，说话简短。
+    persona: 话少，不耐烦，但对真心想学打铁的人很友善。
+  goblin:
+    name: 哥布林
+    description: 矮小的绿皮生物，手里攥着一根木棒。
+    persona: 狡猾胆小，打不过就会求饶。
+    hostile: true
+    stats: {hp: 8, max_hp: 8, attack: 3, defense: 1}
