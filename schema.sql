@@ -117,6 +117,23 @@ create table events (
 
 create index on events (room_id, created_at desc);
 
+-- AI 调用记录：每次调用的 token 数，用来算成本
+create table ai_calls (
+  id              bigserial primary key,
+  player_id       uuid references players(id) on delete set null,
+  kind            text not null,                 -- intent / narrate
+  model           text not null,
+  input_tokens    int not null,
+  output_tokens   int not null,
+  cache_read      int not null default 0,
+  cache_write     int not null default 0,
+  latency_ms      int not null,
+  ok              boolean not null,              -- 输出是否通过校验
+  created_at      timestamptz not null default now()
+);
+
+create index on ai_calls (created_at desc);
+
 -- ---------- 权限 ----------
 -- 所有写操作只走服务器（service_role 绕过 RLS），客户端只读
 alter table rooms          enable row level security;
@@ -128,6 +145,7 @@ alter table npcs           enable row level security;
 alter table item_instances enable row level security;
 alter table events         enable row level security;
 alter table player_npc_relations enable row level security;
+alter table ai_calls       enable row level security;   -- 不开放给客户端
 
 create policy "read static" on rooms          for select to authenticated using (true);
 create policy "read static" on room_exits     for select to authenticated using (true);

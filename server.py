@@ -1,20 +1,24 @@
 """
 开发用简易 Web 服务。
 - 只绑 127.0.0.1，登录只要名字不要密码，别部署到公网
-- 输入先走 commands.py 的规则解析，意图解析 AI 接上后再换
-- 对话 AI 还没接，talk 时先用占位逻辑：带 requires 门槛且已满足的物品 NPC 直接给
+- 一回合的链路：规则解析（commands.py）→ 有认不出的再交给 AI 解析 → 规则引擎执行
+  → AI 叙事（含 NPC 对话、给东西、好感度提议，规则引擎再校验）→ 写 events
+- 没配 ANTHROPIC_API_KEY 时退回纯规则模式：没有叙事，talk 用占位逻辑给 requires 物品
 
 用法: python server.py  然后打开 http://127.0.0.1:8000
 """
 import os
 from uuid import UUID, uuid4
 
+import anthropic
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
+from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 from pydantic import BaseModel
 
+import ai
 import commands
 import engine
 from schema import ActionResult, RoomView
@@ -91,7 +95,7 @@ def get_state(player_id: UUID):
 
 
 def placeholder_dialogue(conn, view: RoomView, npc_ref: str) -> list[ActionResult]:
-    """对话 AI 接上之前的占位：只给 requires 门槛已满足的物品，ai 类的不给"""
+    """没有 AI 时的占位：只给 requires 门槛已满足的物品，ai 类的不给"""
     npc_id = view.resolve(npc_ref)
     results = []
     with conn.transaction():
@@ -105,6 +109,12 @@ def placeholder_dialogue(conn, view: RoomView, npc_ref: str) -> list[ActionResul
     return results
 
 
+def _load_npc(conn, npc_id: UUID):
+    with conn.transaction():
+        npcs = engine.load_npcs(engine._cursor(conn), "n.id = %s", (npc_id,))
+    return npcs[0] if npcs else None
+
+
 @app.post("/api/command")
 def command(req: CommandReq):
     with pool.connection() as conn:
@@ -112,19 +122,73 @@ def command(req: CommandReq):
             view = engine.load_view(conn, req.player_id)
         except engine.ActionError as e:
             raise HTTPException(404, str(e))
+        pid = view.player.id
+        usage = {"input": 0, "output": 0}
+        notes = []                        # 给前端看的调试信息
+
+        def add(u):
+            usage["input"] += u["input"]
+            usage["output"] += u["output"]
+
+        # 1. 解析：规则全认出来就不调 AI
         actions = commands.parse(view, req.text)
-        results = []
-        for action in actions:
-            r = engine.execute(conn, view, action)
-            results.append(r)
-            if not r.success:
-                break
-            if action.action == "talk":
-                results += placeholder_dialogue(conn, view, action.target)
+        source = "rules"
+        if ai.enabled() and any(a.action == "freeform" for a in actions):
+            try:
+                parsed, u = ai.parse_intent(conn, view, req.text)
+                add(u)
+                if parsed:
+                    actions, source = parsed, "ai"
+                else:
+                    notes.append("AI 解析两次都没通过校验，按规则解析结果执行")
+            except anthropic.APIError as e:
+                notes.append(f"AI 解析出错：{e.__class__.__name__}")
+
+        # 2. 规则引擎执行
+        results = engine.execute_all(conn, view, actions)
+
+        # 3. 叙事 + NPC 对话
+        narrative = None
+        if ai.enabled():
+            talk = next((a for a, r in zip(actions, results) if a.action == "talk" and r.success), None)
+            npc_id = view.resolve(talk.target) if talk else None
+            npc = _load_npc(conn, npc_id) if npc_id else None
+            giveable = engine.giveable_items(conn, pid, npc_id) if npc else []
+            affinity = engine.get_affinity(conn, pid, npc_id) if npc else 0
+            try:
+                out, give_id, u = ai.narrate(conn, view, req.text, results, npc, giveable, affinity)
+                add(u)
+                if out:
+                    narrative = out.narrative
+                    if give_id:
+                        results.append(engine.npc_give(conn, pid, npc_id, give_id))
+                    if npc and out.affinity_delta:
+                        results.append(engine.adjust_affinity(conn, pid, npc_id, out.affinity_delta))
+                else:
+                    notes.append("叙事两次都没通过校验")
+            except anthropic.APIError as e:
+                notes.append(f"AI 叙事出错：{e.__class__.__name__}")
+        else:
+            for a, r in zip(actions, results):
+                if a.action == "talk" and r.success:
+                    results += placeholder_dialogue(conn, view, a.target)
+
+        # 4. 记事件
+        with conn.transaction():
+            conn.execute(
+                "insert into events (room_id, player_id, kind, facts, narrative) values (%s, %s, %s, %s, %s)",
+                (view.room.id, pid, ",".join(a.action for a in actions),
+                 Jsonb([f for r in results for f in r.facts]), narrative),
+            )
+
         return {
             "actions": [a.model_dump() for a in actions],
+            "source": source,
             "results": [r.model_dump() for r in results],
-            "state": state(conn, engine.load_view(conn, req.player_id)),
+            "narrative": narrative,
+            "usage": usage,
+            "notes": notes,
+            "state": state(conn, engine.load_view(conn, pid)),
         }
 
 
