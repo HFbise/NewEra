@@ -97,6 +97,7 @@ class Room(BaseModel):
     id: str
     name: str
     description: str
+    details: str = ""                   # 只给 AI 的环境细节
 
 
 # 出口方向：数据库和动作里用英文 key，显示时翻成中文

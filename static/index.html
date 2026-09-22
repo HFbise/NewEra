@@ -125,7 +125,7 @@ function render(s) {
       点侧栏里的名字会填进输入框
     </div>
     <h2></h2>
-    <a href="#" id="logout" class="sys">换角色</a>`;
+    <a href="#" id="logout" class="sys">换角色</a>　<a href="#" id="delete" class="sys">删除角色</a>`;
 }
 
 // 进入游戏时显示所在位置：只读状态，不发命令，不调 AI
@@ -146,6 +146,18 @@ async function refresh() {
   if (!playerId) return;
   try { render(await api(`/api/state?player_id=${playerId}`)); }
   catch (e) { logout(); }
+}
+
+async function deleteCharacter() {
+  const name = document.querySelector("#side h2")?.textContent || "这个角色";
+  if (!confirm(`确定删除「${name}」？删了就没了，身上的东西会掉在原地。`)) return;
+  try {
+    await api("/api/delete", { player_id: playerId });
+    playerId = null;
+    try { localStorage.removeItem("newera.player"); } catch {}
+    $("#log").innerHTML = "";
+    $("#login").style.display = "flex";
+  } catch (err) { alert(err.message); }
 }
 
 function logout() {
@@ -197,6 +209,7 @@ $("#cmd-form").onsubmit = e => {
 
 $("#side").onclick = e => {
   if (e.target.id === "logout") { e.preventDefault(); logout(); return; }
+  if (e.target.id === "delete") { e.preventDefault(); deleteCharacter(); return; }
   const li = e.target.closest("li[data-name]");
   if (li) { $("#cmd").value += li.dataset.name; $("#cmd").focus(); }
 };

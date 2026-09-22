@@ -21,9 +21,10 @@ def seed(conn, world):
 
         for rid, r in world["rooms"].items():
             cur.execute(
-                """insert into rooms (id, name, description) values (%s, %s, %s)
-                   on conflict (id) do update set name = excluded.name, description = excluded.description""",
-                (rid, r["name"], r["description"]),
+                """insert into rooms (id, name, description, details) values (%s, %s, %s, %s)
+                   on conflict (id) do update set name = excluded.name, description = excluded.description,
+                     details = excluded.details""",
+                (rid, r["name"], r["description"], r.get("details", "")),
             )
 
         for iid, it in world["items"].items():

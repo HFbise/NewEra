@@ -61,7 +61,7 @@ def load_player(cur: Cursor, player_id: UUID, lock: bool = False) -> Player:
 
 
 def load_room(cur: Cursor, room_id: str) -> Room:
-    cur.execute("select id, name, description from rooms where id = %s", (room_id,))
+    cur.execute("select id, name, description, details from rooms where id = %s", (room_id,))
     return Room(**cur.fetchone())
 
 
@@ -96,6 +96,17 @@ def sleep(conn: Connection, player_id: UUID) -> None:
     """主动下线：角色留在原地睡着"""
     with conn.transaction():
         conn.execute("update players set last_active_at = null where id = %s", (player_id,))
+
+
+def delete_player(conn: Connection, player_id: UUID) -> None:
+    """删角色：身上的东西先放到所在房间地上（不然任务物品会永远消失），再删账号，玩家行级联删除"""
+    with conn.transaction():
+        cur = _cursor(conn)
+        player = load_player(cur, player_id, lock=True)
+        for item in load_items(cur, "i.player_id = %s", (player_id,), lock=True):
+            _move_item(cur, item, room_id=player.room_id)
+        # 开发期账号是 server.py 塞进 auth.users 的假用户；正式版走 Supabase Auth 的删除接口
+        cur.execute("delete from auth.users where id = %s", (player_id,))
 
 
 def load_view(conn: Connection, player_id: UUID) -> RoomView:
@@ -233,7 +244,7 @@ def do_look(cur: Cursor, player: Player, view: RoomView, a: Look) -> list[str]:
                 from players where room_id = %s and id <> %s and hp > 0 order by name""",
             (player.room_id, player.id),
         )
-        others = [r["name"] + ("" if r["awake"] else "（睡着了）") for r in cur.fetchall()]
+        others = [r["name"] + ("" if r["awake"] else "（在原地睡着了，不会动也不会回应）") for r in cur.fetchall()]
         if others:
             facts.append("其他玩家：" + "、".join(others))
         return facts
@@ -265,7 +276,7 @@ def do_take(cur: Cursor, player: Player, view: RoomView, a: Take) -> list[str]:
     if not item.template.takeable:
         raise ActionError(f"{item.name}拿不起来")
     _move_item(cur, item, player_id=player.id)
-    return [f"{player.name}拿起了{_label(item)}"]
+    return [f"{player.name}从地上捡起了{_label(item)}"]
 
 
 def do_drop(cur: Cursor, player: Player, view: RoomView, a: Drop) -> list[str]:

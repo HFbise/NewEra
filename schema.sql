@@ -10,7 +10,8 @@
 create table rooms (
   id          text primary key,
   name        text not null,
-  description text not null
+  description text not null,                     -- 玩家看到的简短描述
+  details     text not null default ''           -- 只给 AI 的环境细节，不能拿、不参与规则，freeform 可以用
 );
 
 create table item_templates (

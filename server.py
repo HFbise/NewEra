@@ -103,6 +103,16 @@ def get_state(player_id: UUID):
         return state(conn, view)
 
 
+@app.post("/api/delete")
+def delete(req: LogoutReq):
+    with pool.connection() as conn:
+        try:
+            engine.delete_player(conn, req.player_id)
+        except engine.ActionError as e:
+            raise HTTPException(404, str(e))
+    return {"ok": True}
+
+
 @app.post("/api/logout")
 def logout(req: LogoutReq):
     with pool.connection() as conn:
@@ -174,7 +184,9 @@ def command(req: CommandReq):
             giveable = engine.giveable_items(conn, pid, npc_id) if npc else []
             affinity = engine.get_affinity(conn, pid, npc_id) if npc else 0
             try:
-                out, give_id, u = ai.narrate(conn, view, req.text, results, npc, giveable, affinity)
+                # 叙事用执行后的房间：移动之后要写新地方的环境
+                after = engine.load_view(conn, pid)
+                out, give_id, u = ai.narrate(conn, after, req.text, results, npc, giveable, affinity)
                 add(u)
                 if out:
                     narrative = out.narrative
