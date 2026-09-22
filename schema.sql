@@ -58,6 +58,7 @@ create table players (
   attack      int not null,
   defense     int not null,
   flags       jsonb not null default '{}',       -- 任务标记，如 {"goblin_slain": true}
+  last_active_at timestamptz,                    -- 最近一次操作或页面心跳，太久没动就算睡着
   created_at  timestamptz not null default now(),
   updated_at  timestamptz not null default now()
 );

@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>NewEra 测试台</title>
+<title>NewEra 新世纪</title>
 <style>
   :root {
     --bg: #15171c; --panel: #1d2027; --border: #2c313b; --text: #d8dce4; --dim: #8a92a0;
@@ -107,7 +107,7 @@ function render(s) {
     <ul>${s.exits.map(e => `<li data-name="${e.label}">${e.label}${e.locked ? '<span class="tag">锁着</span>' : ""}</li>`).join("")}</ul>
     ${s.npcs.length ? `<h2>NPC</h2><ul>${s.npcs.map(n => li(n.ref, n.name,
       n.max_hp ? `<span class="tag">${n.hp}/${n.max_hp}</span>` : "")).join("")}</ul>` : ""}
-    ${s.others.length ? `<h2>其他玩家</h2><ul>${s.others.map(o => `<li>${esc(o.name)}<span class="tag">HP ${o.hp}</span></li>`).join("")}</ul>` : ""}
+    ${s.others.length ? `<h2>其他玩家</h2><ul>${s.others.map(o => `<li>${esc(o.name)}<span class="tag">${o.awake ? "HP " + o.hp : "睡着了"}</span></li>`).join("")}</ul>` : ""}
     ${s.items.length ? `<h2>地上</h2><ul>${s.items.map(i => li(i.ref, i.name,
       i.quantity > 1 ? `<span class="tag">x${i.quantity}</span>` : "")).join("")}</ul>` : ""}
     <h2>背包</h2>
@@ -138,7 +138,7 @@ async function enter() {
       list("出口", s.exits.map(e => e.label + (e.locked ? "（锁着）" : ""))) +
       list("这里有", s.npcs.map(n => n.name)) +
       list("地上有", s.items.map(i => i.name)) +
-      list("其他玩家", s.others.map(o => o.name)) + `</div>`);
+      list("其他玩家", s.others.map(o => o.name + (o.awake ? "" : "（睡着了）"))) + `</div>`);
   } catch (e) { logout(); }
 }
 
@@ -149,6 +149,9 @@ async function refresh() {
 }
 
 function logout() {
+  // 角色留在原地睡着，别人能看到
+  if (playerId) fetch("/api/logout", { method: "POST", headers: { "Content-Type": "application/json" },
+                                       body: JSON.stringify({ player_id: playerId }) }).catch(() => {});
   playerId = null;
   try { localStorage.removeItem("newera.player"); } catch {}
   $("#login").style.display = "flex";

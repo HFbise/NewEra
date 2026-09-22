@@ -33,6 +33,10 @@ class LoginReq(BaseModel):
     name: str
 
 
+class LogoutReq(BaseModel):
+    player_id: UUID
+
+
 class CommandReq(BaseModel):
     player_id: UUID
     text: str
@@ -42,8 +46,12 @@ def state(conn, view: RoomView) -> dict:
     """给前端侧栏看的当前状态，带上短编号方便对照"""
     by_id = {uid: ref for ref, uid in view.refs.items()}
     cur = conn.cursor()
-    cur.execute("select name, hp from players where room_id = %s and id <> %s", (view.room.id, view.player.id))
-    others = [{"name": n, "hp": hp} for n, hp in cur.fetchall()]
+    cur.execute(
+        f"""select name, hp, coalesce(last_active_at > now() - interval '{engine.ONLINE_WINDOW}', false)
+            from players where room_id = %s and id <> %s order by name""",
+        (view.room.id, view.player.id),
+    )
+    others = [{"name": n, "hp": hp, "awake": awake} for n, hp, awake in cur.fetchall()]
     conn.commit()
     return {
         "player": view.player.model_dump(mode="json"),
@@ -91,7 +99,15 @@ def get_state(player_id: UUID):
             view = engine.load_view(conn, player_id)
         except engine.ActionError as e:
             raise HTTPException(404, str(e))
+        engine.touch(conn, player_id)      # 页面每 3 秒拉一次，顺便当心跳
         return state(conn, view)
+
+
+@app.post("/api/logout")
+def logout(req: LogoutReq):
+    with pool.connection() as conn:
+        engine.sleep(conn, req.player_id)
+    return {"ok": True}
 
 
 def placeholder_dialogue(conn, view: RoomView, npc_ref: str) -> list[ActionResult]:
@@ -123,6 +139,7 @@ def command(req: CommandReq):
         except engine.ActionError as e:
             raise HTTPException(404, str(e))
         pid = view.player.id
+        engine.touch(conn, pid)
         usage = {"input": 0, "output": 0}
         notes = []                        # 给前端看的调试信息
 

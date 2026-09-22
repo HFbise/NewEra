@@ -21,6 +21,7 @@ from schema import (
 )
 
 
+ONLINE_WINDOW = "15 seconds"            # 超过这么久没有心跳的玩家算睡着
 AFFINITY_STEP = 5                       # 对话 AI 每次最多调整的好感度
 AFFINITY_RANGE = (-100, 100)
 
@@ -83,6 +84,18 @@ def load_npcs(cur: Cursor, where: str, params: tuple, lock: bool = False) -> lis
         params,
     )
     return [Npc(**r) for r in cur.fetchall()]
+
+
+def touch(conn: Connection, player_id: UUID) -> None:
+    """记录玩家活跃（页面心跳或发命令时调用）"""
+    with conn.transaction():
+        conn.execute("update players set last_active_at = now() where id = %s", (player_id,))
+
+
+def sleep(conn: Connection, player_id: UUID) -> None:
+    """主动下线：角色留在原地睡着"""
+    with conn.transaction():
+        conn.execute("update players set last_active_at = null where id = %s", (player_id,))
 
 
 def load_view(conn: Connection, player_id: UUID) -> RoomView:
@@ -215,9 +228,12 @@ def do_look(cur: Cursor, player: Player, view: RoomView, a: Look) -> list[str]:
         npcs = load_npcs(cur, "n.room_id = %s and n.alive", (player.room_id,))
         if npcs:
             facts.append("这里有：" + "、".join(n.name for n in npcs))
-        cur.execute("select name from players where room_id = %s and id <> %s and hp > 0",
-                    (player.room_id, player.id))
-        others = [r["name"] for r in cur.fetchall()]
+        cur.execute(
+            f"""select name, coalesce(last_active_at > now() - interval '{ONLINE_WINDOW}', false) as awake
+                from players where room_id = %s and id <> %s and hp > 0 order by name""",
+            (player.room_id, player.id),
+        )
+        others = [r["name"] + ("" if r["awake"] else "（睡着了）") for r in cur.fetchall()]
         if others:
             facts.append("其他玩家：" + "、".join(others))
         return facts
