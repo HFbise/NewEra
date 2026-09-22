@@ -6,3 +6,4 @@ fastapi
 uvicorn
 psycopg-pool
 anthropic
+google-genai

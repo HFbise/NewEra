@@ -1,9 +1,10 @@
 """
 AI 调用：意图解析 + 叙事（含 NPC 对话）。
-- 模型统一用 Claude Haiku 4.5，服务器付费，保证判定一致
+- 后端可切换：.env 里 AI_PROVIDER=gemini（默认，开发期用免费额度）或 claude；AI_MODEL 可覆盖默认模型
+- 核心判定统一用服务器配置的一个模型，保证公平
 - AI 只输出结构化 JSON，所有状态改动都由规则引擎校验后执行
 - 每次调用都写 ai_calls 表记录 token
-- 没配 ANTHROPIC_API_KEY 时 enabled() 为 False，服务器退回纯规则模式
+- 对应的 key（GEMINI_API_KEY / ANTHROPIC_API_KEY）没配时 enabled() 为 False，服务器退回纯规则模式
 """
 import os
 import time
@@ -11,56 +12,104 @@ from typing import Literal, Optional
 from uuid import UUID
 
 import anthropic
+from google import genai
+from google.genai import errors as genai_errors
+from google.genai import types as genai_types
 from pydantic import BaseModel, TypeAdapter, ValidationError
 
 from schema import ActionResult, ItemInstance, Npc, PlayerAction, RoomView
 
-MODEL = "claude-haiku-4-5"
-_client: Optional[anthropic.Anthropic] = None
+DEFAULT_MODELS = {"gemini": "gemini-2.5-flash-lite", "claude": "claude-haiku-4-5"}
+KEY_VARS = {"gemini": "GEMINI_API_KEY", "claude": "ANTHROPIC_API_KEY"}
+
+# 调用出错时服务器捕获这些，退回规则结果
+API_ERRORS = (anthropic.APIError, genai_errors.APIError)
+
+_clients: dict = {}
 _action = TypeAdapter(PlayerAction).validate_python
 
 
+def provider() -> str:
+    return os.environ.get("AI_PROVIDER", "gemini")
+
+
+def model() -> str:
+    return os.environ.get("AI_MODEL") or DEFAULT_MODELS[provider()]
+
+
 def enabled() -> bool:
-    return bool(os.environ.get("ANTHROPIC_API_KEY"))
+    return bool(os.environ.get(KEY_VARS[provider()]))
 
 
-def client() -> anthropic.Anthropic:
-    global _client
-    if _client is None:
-        _client = anthropic.Anthropic()
-    return _client
+class Usage(BaseModel):
+    input: int = 0
+    output: int = 0                     # Gemini 的思考 token 也算在这里，都按输出计费
+    cache_read: int = 0
+    cache_write: int = 0
 
 
-def _log(conn, player_id: UUID, kind: str, usage, latency_ms: int, ok: bool) -> None:
+def _generate_gemini(system: str, user: str, fmt: type[BaseModel], max_tokens: int):
+    if "gemini" not in _clients:
+        _clients["gemini"] = genai.Client()   # 读 GEMINI_API_KEY
+    resp = _clients["gemini"].models.generate_content(
+        model=model(), contents=user,
+        config=genai_types.GenerateContentConfig(
+            system_instruction=system, max_output_tokens=max_tokens,
+            response_mime_type="application/json", response_json_schema=fmt.model_json_schema(),
+        ),
+    )
+    u = resp.usage_metadata
+    usage = Usage(input=u.prompt_token_count or 0,
+                  output=(u.candidates_token_count or 0) + (u.thoughts_token_count or 0),
+                  cache_read=u.cached_content_token_count or 0)
+    finished = bool(resp.candidates) and resp.candidates[0].finish_reason == genai_types.FinishReason.STOP
+    try:
+        out = fmt.model_validate_json(resp.text) if finished and resp.text else None
+    except ValidationError:
+        out = None
+    return out, usage
+
+
+def _generate_claude(system: str, user: str, fmt: type[BaseModel], max_tokens: int):
+    if "claude" not in _clients:
+        _clients["claude"] = anthropic.Anthropic()   # 读 ANTHROPIC_API_KEY
+    resp = _clients["claude"].messages.parse(
+        model=model(), max_tokens=max_tokens, system=system,
+        messages=[{"role": "user", "content": user}], output_format=fmt,
+    )
+    u = resp.usage
+    usage = Usage(input=u.input_tokens, output=u.output_tokens,
+                  cache_read=u.cache_read_input_tokens or 0, cache_write=u.cache_creation_input_tokens or 0)
+    return (resp.parsed_output if resp.stop_reason == "end_turn" else None), usage
+
+
+def _log(conn, player_id: UUID, kind: str, usage: Usage, latency_ms: int, ok: bool) -> None:
     with conn.transaction():
         conn.execute(
             """insert into ai_calls (player_id, kind, model, input_tokens, output_tokens,
                                      cache_read, cache_write, latency_ms, ok)
                values (%s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-            (player_id, kind, MODEL, usage.input_tokens, usage.output_tokens,
-             usage.cache_read_input_tokens or 0, usage.cache_creation_input_tokens or 0, latency_ms, ok),
+            (player_id, kind, model(), usage.input, usage.output,
+             usage.cache_read, usage.cache_write, latency_ms, ok),
         )
 
 
 def _call(conn, player_id: UUID, kind: str, system: str, user: str, fmt: type[BaseModel],
           max_tokens: int, check=None):
     """调一次结构化输出，校验失败重试一次。返回 (解析结果或 None, 本次 token 统计)"""
+    generate = {"gemini": _generate_gemini, "claude": _generate_claude}[provider()]
     usage_total = {"input": 0, "output": 0}
     for _ in range(2):
         start = time.monotonic()
-        resp = client().messages.parse(
-            model=MODEL, max_tokens=max_tokens, system=system,
-            messages=[{"role": "user", "content": user}], output_format=fmt,
-        )
+        out, usage = generate(system, user, fmt, max_tokens)
         latency = int((time.monotonic() - start) * 1000)
-        usage_total["input"] += resp.usage.input_tokens
-        usage_total["output"] += resp.usage.output_tokens
-        out = resp.parsed_output if resp.stop_reason == "end_turn" else None
+        usage_total["input"] += usage.input
+        usage_total["output"] += usage.output
         try:
             result = check(out) if (out is not None and check) else out
         except (ValidationError, ValueError):
             result = None
-        _log(conn, player_id, kind, resp.usage, latency, result is not None)
+        _log(conn, player_id, kind, usage, latency, result is not None)
         if result is not None:
             return result, usage_total
     return None, usage_total

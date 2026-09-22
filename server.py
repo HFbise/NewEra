@@ -3,14 +3,13 @@
 - 只绑 127.0.0.1，登录只要名字不要密码，别部署到公网
 - 一回合的链路：规则解析（commands.py）→ 有认不出的再交给 AI 解析 → 规则引擎执行
   → AI 叙事（含 NPC 对话、给东西、好感度提议，规则引擎再校验）→ 写 events
-- 没配 ANTHROPIC_API_KEY 时退回纯规则模式：没有叙事，talk 用占位逻辑给 requires 物品
+- AI 后端见 ai.py（默认 Gemini），没配 key 时退回纯规则模式：没有叙事，talk 用占位逻辑给 requires 物品
 
 用法: python server.py  然后打开 http://127.0.0.1:8000
 """
 import os
 from uuid import UUID, uuid4
 
-import anthropic
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.staticfiles import StaticFiles
@@ -141,7 +140,7 @@ def command(req: CommandReq):
                     actions, source = parsed, "ai"
                 else:
                     notes.append("AI 解析两次都没通过校验，按规则解析结果执行")
-            except anthropic.APIError as e:
+            except ai.API_ERRORS as e:
                 notes.append(f"AI 解析出错：{e.__class__.__name__}")
 
         # 2. 规则引擎执行
@@ -166,7 +165,7 @@ def command(req: CommandReq):
                         results.append(engine.adjust_affinity(conn, pid, npc_id, out.affinity_delta))
                 else:
                     notes.append("叙事两次都没通过校验")
-            except anthropic.APIError as e:
+            except ai.API_ERRORS as e:
                 notes.append(f"AI 叙事出错：{e.__class__.__name__}")
         else:
             for a, r in zip(actions, results):
