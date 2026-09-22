@@ -56,8 +56,8 @@
     <input id="login-name" maxlength="20" autofocus autocomplete="username">
     <div>密码（新角色在这里设置，至少 4 位）</div>
     <input id="login-password" type="password" autocomplete="current-password">
-    <div>邀请码</div>
-    <input id="login-code" autocomplete="off">
+    <div class="code-field" hidden>邀请码</div>
+    <input id="login-code" class="code-field" autocomplete="off" hidden>
     <button>进入</button>
   </form>
 </div>
@@ -80,6 +80,10 @@ let playerId = null;
 try { playerId = localStorage.getItem("newera.player"); } catch {}
 // 邀请码记在本机，下次不用再填
 try { document.getElementById("login-code").value = localStorage.getItem("newera.code") || ""; } catch {}
+// 服务器设了邀请码才显示输入框
+fetch("/api/config").then(r => r.json()).then(c => {
+  document.querySelectorAll(".code-field").forEach(el => { el.hidden = !c.access_code; });
+}).catch(() => {});
 
 async function api(path, body) {
   const res = await fetch(path, body ? {

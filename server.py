@@ -89,6 +89,11 @@ def state(conn, view: RoomView) -> dict:
     }
 
 
+@app.get("/api/config")
+def config():
+    return {"access_code": bool(os.environ.get("ACCESS_CODE"))}
+
+
 @app.post("/api/login")
 def login(req: LoginReq):
     # 设了 ACCESS_CODE（部署到公网时）就要邀请码，防止陌生人进来刷 AI 额度

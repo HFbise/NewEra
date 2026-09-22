@@ -13,9 +13,8 @@ services:
         sync: false
       - key: ZAI_API_KEY
         sync: false
-      - key: ACCESS_CODE      # 邀请码，发给测试的人
-        sync: false
       - key: AI_PROVIDER
         value: zhipu
       - key: PARSE_MODE
         value: rules
+      # 需要邀请码时在后台加一个 ACCESS_CODE 环境变量，登录页会自动出现邀请码输入框
