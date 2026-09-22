@@ -1,12 +1,14 @@
 """
 AI 调用：意图解析 + 叙事（含 NPC 对话）。
-- 后端可切换：.env 里 AI_PROVIDER=gemini（默认，开发期用免费额度）或 claude；AI_MODEL 可覆盖默认模型
+- 后端可切换：.env 里 AI_PROVIDER=zhipu（默认，glm-4.7-flash 免费）/ gemini / claude；AI_MODEL 可覆盖默认模型
 - 核心判定统一用服务器配置的一个模型，保证公平
 - AI 只输出结构化 JSON，所有状态改动都由规则引擎校验后执行
 - 每次调用都写 ai_calls 表记录 token
-- 对应的 key（GEMINI_API_KEY / ANTHROPIC_API_KEY）没配时 enabled() 为 False，服务器退回纯规则模式
+- 对应的 key（ZAI_API_KEY / GEMINI_API_KEY / ANTHROPIC_API_KEY）没配时 enabled() 为 False，服务器退回纯规则模式
 """
+import json
 import os
+import re
 import time
 from typing import Literal, Optional
 from uuid import UUID
@@ -16,21 +18,23 @@ from google import genai
 from google.genai import errors as genai_errors
 from google.genai import types as genai_types
 from pydantic import BaseModel, TypeAdapter, ValidationError
+from zai import ZhipuAiClient
+from zai.core import ZaiError
 
 from schema import ActionResult, ItemInstance, Npc, PlayerAction, RoomView
 
-DEFAULT_MODELS = {"gemini": "gemini-2.5-flash-lite", "claude": "claude-haiku-4-5"}
-KEY_VARS = {"gemini": "GEMINI_API_KEY", "claude": "ANTHROPIC_API_KEY"}
+DEFAULT_MODELS = {"zhipu": "glm-4.7-flash", "gemini": "gemini-3.1-flash-lite", "claude": "claude-haiku-4-5"}
+KEY_VARS = {"zhipu": "ZAI_API_KEY", "gemini": "GEMINI_API_KEY", "claude": "ANTHROPIC_API_KEY"}
 
 # 调用出错时服务器捕获这些，退回规则结果
-API_ERRORS = (anthropic.APIError, genai_errors.APIError)
+API_ERRORS = (anthropic.APIError, genai_errors.APIError, ZaiError)
 
 _clients: dict = {}
 _action = TypeAdapter(PlayerAction).validate_python
 
 
 def provider() -> str:
-    return os.environ.get("AI_PROVIDER", "gemini")
+    return os.environ.get("AI_PROVIDER", "zhipu")
 
 
 def model() -> str:
@@ -48,6 +52,31 @@ class Usage(BaseModel):
     cache_write: int = 0
 
 
+def _generate_zhipu(system: str, user: str, fmt: type[BaseModel], max_tokens: int):
+    # 智谱只有 json_object 模式，不强制 schema，所以把 schema 写进 system，回来再用 Pydantic 校验
+    if "zhipu" not in _clients:
+        _clients["zhipu"] = ZhipuAiClient()   # 读 ZAI_API_KEY，默认连国内 bigmodel.cn
+    schema = json.dumps(fmt.model_json_schema(), ensure_ascii=False)
+    resp = _clients["zhipu"].chat.completions.create(
+        model=model(), max_tokens=max_tokens,
+        messages=[{"role": "system",
+                   "content": f"{system}\n\n只输出一个符合下面 JSON Schema 的 JSON 对象，不要任何别的文字：\n{schema}"},
+                  {"role": "user", "content": user}],
+        response_format={"type": "json_object"},
+        thinking={"type": "disabled"},        # 解析和叙事都不需要深度思考，关掉省时间
+    )
+    u = resp.usage
+    cached = getattr(u.prompt_tokens_details, "cached_tokens", 0) if u.prompt_tokens_details else 0
+    usage = Usage(input=u.prompt_tokens, output=u.completion_tokens, cache_read=cached or 0)
+    choice = resp.choices[0]
+    text = re.sub(r"^```(?:json)?\s*|\s*```$", "", (choice.message.content or "").strip())
+    try:
+        out = fmt.model_validate_json(text) if choice.finish_reason == "stop" and text else None
+    except ValidationError:
+        out = None
+    return out, usage
+
+
 def _generate_gemini(system: str, user: str, fmt: type[BaseModel], max_tokens: int):
     if "gemini" not in _clients:
         _clients["gemini"] = genai.Client()   # 读 GEMINI_API_KEY
@@ -56,6 +85,9 @@ def _generate_gemini(system: str, user: str, fmt: type[BaseModel], max_tokens: i
         config=genai_types.GenerateContentConfig(
             system_instruction=system, max_output_tokens=max_tokens,
             response_mime_type="application/json", response_json_schema=fmt.model_json_schema(),
+            # Gemini 3 默认会思考，解析和叙事用不着，调到最低省 token
+            thinking_config=genai_types.ThinkingConfig(thinking_level=genai_types.ThinkingLevel.MINIMAL),
+            automatic_function_calling=genai_types.AutomaticFunctionCallingConfig(disable=True),
         ),
     )
     u = resp.usage_metadata
@@ -97,7 +129,7 @@ def _log(conn, player_id: UUID, kind: str, usage: Usage, latency_ms: int, ok: bo
 def _call(conn, player_id: UUID, kind: str, system: str, user: str, fmt: type[BaseModel],
           max_tokens: int, check=None):
     """调一次结构化输出，校验失败重试一次。返回 (解析结果或 None, 本次 token 统计)"""
-    generate = {"gemini": _generate_gemini, "claude": _generate_claude}[provider()]
+    generate = {"zhipu": _generate_zhipu, "gemini": _generate_gemini, "claude": _generate_claude}[provider()]
     usage_total = {"input": 0, "output": 0}
     for _ in range(2):
         start = time.monotonic()
@@ -209,7 +241,7 @@ def narrate(conn, view: RoomView, text: str, results: list[ActionResult],
     parts = [f"<room>\n{view.room.name}：{view.room.description}\n</room>",
              f"<player>{view.player.name}，HP {view.player.hp}/{view.player.max_hp}</player>"]
     if npc:
-        gives = "、".join(f"{ref} {item.name}" for ref, item in give_refs.items()) or "无"
+        gives = "、".join(f"{ref} {item.name}（{item.template.description}）" for ref, item in give_refs.items()) or "无"
         deeds = "、".join(view.player.flags) or "无"
         parts.append(
             f"<npc>\n名字：{npc.name}\n描述：{npc.template.description}\n人设：{npc.template.persona}\n"

@@ -7,3 +7,4 @@ uvicorn
 psycopg-pool
 anthropic
 google-genai
+zai-sdk
