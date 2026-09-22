@@ -7,11 +7,13 @@
 
 用法: python server.py  然后打开 http://127.0.0.1:8000
 """
+import json
 import os
 from uuid import UUID, uuid4
 
 from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
+from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
@@ -145,11 +147,26 @@ def _load_npc(conn, npc_id: UUID):
 
 @app.post("/api/command")
 def command(req: CommandReq):
+    """流式返回（NDJSON，一行一个事件），让前端能显示进行到哪一步：
+    {"stage": "parse" | "execute" | "narrate"} ... 最后 {"done": {...}} 或 {"error": "..."}"""
+    def events():
+        try:
+            yield from run_turn(req)
+        except Exception as e:           # 流已经开始了，没法再改状态码，报成一个事件
+            yield {"error": f"服务器出错：{e.__class__.__name__}"}
+            raise
+
+    return StreamingResponse((json.dumps(e, ensure_ascii=False, default=str) + "\n" for e in events()),
+                             media_type="application/x-ndjson")
+
+
+def run_turn(req: CommandReq):
     with pool.connection() as conn:
         try:
             view = engine.load_view(conn, req.player_id)
         except engine.ActionError as e:
-            raise HTTPException(404, str(e))
+            yield {"error": str(e)}
+            return
         pid = view.player.id
         engine.touch(conn, pid)
         usage = {"input": 0, "output": 0}
@@ -164,6 +181,7 @@ def command(req: CommandReq):
         source = "rules"
         ai_first = os.environ.get("PARSE_MODE", "rules") == "ai"
         if ai.enabled() and (ai_first or any(a.action == "freeform" for a in actions)):
+            yield {"stage": "parse"}
             try:
                 parsed, u = ai.parse_intent(conn, view, req.text)
                 add(u)
@@ -175,11 +193,13 @@ def command(req: CommandReq):
                 notes.append(f"AI 解析出错：{e.__class__.__name__}")
 
         # 2. 规则引擎执行
+        yield {"stage": "execute"}
         results = engine.execute_all(conn, view, actions)
 
         # 3. 叙事 + NPC 对话
         narrative = None
         if ai.enabled():
+            yield {"stage": "narrate"}
             talk = next((a for a, r in zip(actions, results) if a.action == "talk" and r.success), None)
             npc_id = view.resolve(talk.target) if talk else None
             npc = _load_npc(conn, npc_id) if npc_id else None
@@ -213,7 +233,7 @@ def command(req: CommandReq):
                  Jsonb([f for r in results for f in r.facts]), narrative),
             )
 
-        return {
+        yield {"done": {
             "actions": [a.model_dump() for a in actions],
             "source": source,
             "results": [r.model_dump() for r in results],
@@ -221,7 +241,7 @@ def command(req: CommandReq):
             "usage": usage,
             "notes": notes,
             "state": state(conn, engine.load_view(conn, pid)),
-        }
+        }}
 
 
 app.mount("/", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static"), html=True))

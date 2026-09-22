@@ -21,6 +21,7 @@
   .fact.fail { border-color: var(--bad); color: var(--bad); }
   .sys { color: var(--dim); }
   .narrative { white-space: pre-wrap; margin: 4px 0; }
+  .pending { color: var(--dim); font-size: 13px; }
   details { color: var(--dim); font-size: 13px; }
   summary { cursor: pointer; }
   form { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--border); background: var(--panel); }
@@ -182,12 +183,51 @@ $("#login-form").onsubmit = async e => {
   } catch (err) { alert(err.message); }
 };
 
+const STAGES = { parse: "理解你的意图", execute: "判定结果", narrate: "书写叙事" };
+
+// 流式读取回合：服务器每进入一步推一行 {"stage": ...}，最后一行 {"done": ...}
+async function runTurn(text, onStage) {
+  const res = await fetch("/api/command", {
+    method: "POST", headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ player_id: playerId, text }),
+  });
+  if (!res.ok) throw new Error(res.statusText);
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  for (;;) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buf += decoder.decode(value, { stream: true });
+    let i;
+    while ((i = buf.indexOf("\n")) >= 0) {
+      const ev = JSON.parse(buf.slice(0, i));
+      buf = buf.slice(i + 1);
+      if (ev.stage) onStage(ev.stage);
+      if (ev.error) throw new Error(ev.error);
+      if (ev.done) return ev.done;
+    }
+  }
+  throw new Error("连接中断");
+}
+
 async function send(text) {
   log(`<div class="you">&gt; ${esc(text)}</div>`);
+  // 等待提示：显示当前步骤和已等待秒数，结果出来后移除
+  const pending = document.createElement("div");
+  pending.className = "entry pending";
+  $("#log").append(pending);
+  const start = Date.now();
+  let stage = "execute";
+  const tick = () => { pending.textContent = `⏳ ${STAGES[stage]}… ${Math.floor((Date.now() - start) / 1000)}s`; };
+  tick();
+  const timer = setInterval(tick, 250);
+  $("#log").scrollTop = $("#log").scrollHeight;
   try {
-    const d = await api("/api/command", { player_id: playerId, text });
+    const d = await runTurn(text, s => { stage = s; tick(); });
+    const secs = ((Date.now() - start) / 1000).toFixed(1);
     const parsed = d.actions.map(a => JSON.stringify(a)).join("  ");
-    const cost = d.usage.input || d.usage.output ? ` · token ${d.usage.input} 入 / ${d.usage.output} 出` : "";
+    const cost = (d.usage.input || d.usage.output ? ` · token ${d.usage.input} 入 / ${d.usage.output} 出` : "") + ` · ${secs}s`;
     const facts = d.results.map(r =>
       r.facts.map(f => `<div class="fact${r.success ? "" : " fail"}">${esc(f)}</div>`).join("")).join("");
     log(`<div class="parsed">[${d.source === "ai" ? "AI 解析" : "规则解析"}${cost}] ${esc(parsed)}</div>` +
@@ -196,6 +236,9 @@ async function send(text) {
     render(d.state);
   } catch (err) {
     log(`<div class="fact fail">${esc(err.message)}</div>`);
+  } finally {
+    clearInterval(timer);
+    pending.remove();
   }
 }
 
