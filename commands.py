@@ -1,6 +1,7 @@
 """
 简易命令解析：不调 AI，把常见的中英文命令转成 PlayerAction。
-- 标准动作走这里省 token，解析不了的归 freeform（以后交给意图解析 AI）
+- 只处理有把握的输入，省 token。认不出的句式、或者名字对不上房间里任何东西，
+  一律归 freeform，服务器再交给意图解析 AI（它看得到完整上下文，能理解"那把剑""胖老板"）
 - 名字按当前 RoomView 匹配成短编号，也可以直接写编号（i1、n1）
 - 用 ; 或 ； 分隔可以一次输入多个命令
 """
@@ -23,6 +24,14 @@ DIRS = {
 }
 
 
+# "看周围"这类说法等于看整个房间
+LOOK_ALL = {"周围", "四周", "附近", "环境", "房间", "这里", "一下", "看", "一圈", "around", "room"}
+
+
+class _Unsure(Exception):
+    """名字对不上，这句交给 AI"""
+
+
 def _dir(text: str) -> Optional[str]:
     t = text.strip().lower()
     t = re.sub(r"^(往|向|朝)", "", t)
@@ -33,7 +42,7 @@ def _dir(text: str) -> Optional[str]:
 def _find(view: RoomView, text: str, where: str = "all") -> str:
     """名字 → 短编号。先在 where（room 地上 / inv 背包 / npc）里找，找不到再全范围找，
     因为"拿短剑；装备短剑"解析时短剑还在地上。位置对不对由引擎查库判断。
-    都找不到就原样返回，交给引擎报错"""
+    都找不到就抛 _Unsure，整句交给 AI"""
     text = text.strip()
     if text in view.refs:
         return text
@@ -45,7 +54,7 @@ def _find(view: RoomView, text: str, where: str = "all") -> str:
             for obj in pool:
                 if match(obj.name):
                     return by_id[obj.id]
-    return text
+    raise _Unsure(text)
 
 
 def _target(view: RoomView, text: str) -> str:
@@ -54,12 +63,19 @@ def _target(view: RoomView, text: str) -> str:
 
 
 def parse_one(view: RoomView, text: str) -> dict:
-    t = text.strip()
+    try:
+        return _parse_one(view, text.strip())
+    except _Unsure:
+        return {"action": "freeform", "description": text.strip()}
 
+
+def _parse_one(view: RoomView, t: str) -> dict:
     if t.lower() == "l":
         return {"action": "look", "target": None}
-    if m := re.fullmatch(r"(?:look|查看|观察|看)(?:\s*(.+))?", t, re.I):
-        return {"action": "look", "target": _target(view, m[1]) if m[1] else None}
+    if m := re.fullmatch(r"(?:look|查看|观察|看看|看)(?:\s*(.+))?", t, re.I):
+        target = (m[1] or "").strip()
+        return {"action": "look", "target": None if not target or target.lower() in LOOK_ALL
+                else _target(view, target)}
 
     if d := _dir(t):
         return {"action": "move", "direction": d}
