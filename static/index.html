@@ -128,6 +128,20 @@ function render(s) {
     <a href="#" id="logout" class="sys">换角色</a>`;
 }
 
+// 进入游戏时显示所在位置：只读状态，不发命令，不调 AI
+async function enter() {
+  try {
+    const s = await api(`/api/state?player_id=${playerId}`);
+    render(s);
+    const list = (label, arr) => arr.length ? `<div>${label}：${arr.map(esc).join("、")}</div>` : "";
+    log(`<div class="sys"><b>${esc(s.room.name)}</b>　${esc(s.room.description)}` +
+      list("出口", s.exits.map(e => e.direction + (e.locked ? "（锁着）" : ""))) +
+      list("这里有", s.npcs.map(n => n.name)) +
+      list("地上有", s.items.map(i => i.name)) +
+      list("其他玩家", s.others.map(o => o.name)) + `</div>`);
+  } catch (e) { logout(); }
+}
+
 async function refresh() {
   if (!playerId) return;
   try { render(await api(`/api/state?player_id=${playerId}`)); }
@@ -148,7 +162,7 @@ $("#login-form").onsubmit = async e => {
     try { localStorage.setItem("newera.player", playerId); } catch {}
     $("#login").style.display = "none";
     $("#log").innerHTML = "";
-    await send("看");
+    await enter();
     $("#cmd").focus();
   } catch (err) { alert(err.message); }
 };
@@ -184,7 +198,7 @@ $("#side").onclick = e => {
   if (li) { $("#cmd").value += li.dataset.name; $("#cmd").focus(); }
 };
 
-if (playerId) { $("#login").style.display = "none"; send("看"); }
+if (playerId) { $("#login").style.display = "none"; enter(); }
 setInterval(refresh, 3000);   // 没有 WebSocket，先轮询看其他玩家的变化
 </script>
 </body>
