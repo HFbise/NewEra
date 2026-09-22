@@ -80,6 +80,12 @@ npcs:
     description: 酒馆老板，胖胖的中年人，总在擦同一个杯子。
     persona: 热情但爱打听八卦，对地窖的事讳莫如深，除非客人帮他解决森林里的哥布林。
     inventory: [cellar_key]
+    props:
+      # 给予规则（不写就是不给）：
+      #   ai                                  AI 看人设自己决定
+      #   {requires: 标记, min_affinity: 数值}  两个条件可以只写一个，都写就要同时满足
+      gives:
+        cellar_key: {requires: goblin_slain}
   smith:
     name: 铁匠莉娜
     description: 手臂粗壮的女铁匠，说话简短。
@@ -90,3 +96,5 @@ npcs:
     persona: 狡猾胆小，打不过就会求饶。
     hostile: true
     stats: {hp: 8, max_hp: 8, attack: 3, defense: 1}
+    props:
+      on_death: {set_flag: goblin_slain}   # 被击杀时给击杀者设标记

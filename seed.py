@@ -3,8 +3,7 @@
 - 静态内容（房间、模板）用 upsert，可以反复跑
 - 世界里的 NPC 和物品实例会被重置（玩家身上的东西不动）
 
-用法:
-  export DATABASE_URL="postgresql://postgres.xxx:密码@aws-0-xxx.pooler.supabase.com:5432/postgres"
+用法（DATABASE_URL 写在 .env 里）:
   python seed.py world.yaml
 """
 import os
@@ -12,6 +11,7 @@ import sys
 
 import psycopg
 import yaml
+from dotenv import load_dotenv
 from psycopg.types.json import Jsonb
 
 
@@ -82,6 +82,7 @@ def seed(conn, world):
 
 
 if __name__ == "__main__":
+    load_dotenv()
     path = sys.argv[1] if len(sys.argv) > 1 else "world.yaml"
     with open(path, encoding="utf-8") as f:
         world = yaml.safe_load(f)

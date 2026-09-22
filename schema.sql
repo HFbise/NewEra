@@ -57,6 +57,7 @@ create table players (
   max_hp      int not null,
   attack      int not null,
   defense     int not null,
+  flags       jsonb not null default '{}',       -- 任务标记，如 {"goblin_slain": true}
   created_at  timestamptz not null default now(),
   updated_at  timestamptz not null default now()
 );
@@ -95,6 +96,14 @@ create index on item_instances (player_id) where player_id is not null;
 create index on item_instances (npc_id)    where npc_id    is not null;
 create index on npcs (room_id) where alive;
 
+-- 玩家和 NPC 的关系：按 NPC 模板记，seed 重置 NPC 实例也不会丢
+create table player_npc_relations (
+  player_id    uuid not null references players(id) on delete cascade,
+  npc_template text not null references npc_templates(id) on delete cascade,
+  affinity     int not null default 0 check (affinity between -100 and 100),  -- 好感度
+  primary key (player_id, npc_template)
+);
+
 -- 事件日志：给 AI 提供最近发生的事，也用来给前端推送
 create table events (
   id          bigserial primary key,
@@ -118,6 +127,7 @@ alter table players        enable row level security;
 alter table npcs           enable row level security;
 alter table item_instances enable row level security;
 alter table events         enable row level security;
+alter table player_npc_relations enable row level security;
 
 create policy "read static" on rooms          for select to authenticated using (true);
 create policy "read static" on room_exits     for select to authenticated using (true);
@@ -125,6 +135,7 @@ create policy "read static" on item_templates for select to authenticated using 
 create policy "read static" on npc_templates  for select to authenticated using (true);
 create policy "read own"    on players        for select to authenticated using (id = auth.uid());
 create policy "read own"    on item_instances for select to authenticated using (player_id = auth.uid());
+create policy "read own"    on player_npc_relations for select to authenticated using (player_id = auth.uid());
 -- 只能看到自己当前所在房间的事件
 create policy "read room"   on events         for select to authenticated
   using (room_id = (select room_id from players where id = auth.uid()));

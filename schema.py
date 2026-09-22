@@ -166,6 +166,7 @@ class Player(BaseModel):
     max_hp: int
     attack: int                         # 基础值，不含装备加成
     defense: int
+    flags: dict[str, Any] = {}          # 任务标记
 
 
 # ============ 意图解析的房间上下文 ============
@@ -173,6 +174,7 @@ class Player(BaseModel):
 # refs 保存短编号到真实 id 的映射，只在服务器端用，不发给 AI。
 
 class RoomView(BaseModel):
+    player: Player
     room: Room
     exits: list[RoomExit]
     items: list[ItemInstance]           # 地上的
