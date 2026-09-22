@@ -52,12 +52,14 @@ def state(conn, view: RoomView) -> dict:
         (view.room.id, view.player.id),
     )
     others = [{"name": n, "hp": hp, "awake": awake} for n, hp, awake in cur.fetchall()]
+    cur.execute("select id, name from rooms where id = any(%s)", ([e.to_room for e in view.exits],))
+    room_names = dict(cur.fetchall())
     conn.commit()
     return {
         "player": view.player.model_dump(mode="json"),
         "room": view.room.model_dump(),
-        "exits": [{"direction": e.direction, "label": dir_name(e.direction), "locked": e.locked}
-                  for e in view.exits],
+        "exits": [{"direction": e.direction, "label": dir_name(e.direction), "to": room_names[e.to_room],
+                   "locked": e.locked} for e in view.exits],
         "items": [{"ref": by_id[i.id], "name": i.name, "quantity": i.quantity} for i in view.items],
         "npcs": [{"ref": by_id[n.id], "name": n.name, "hp": n.hp, "max_hp": n.template.max_hp}
                  for n in view.npcs],

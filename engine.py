@@ -232,7 +232,9 @@ def do_look(cur: Cursor, player: Player, view: RoomView, a: Look) -> list[str]:
         facts = [f"{room.name}：{room.description}"]
         exits = load_exits(cur, player.room_id)
         if exits:
-            facts.append("出口：" + "、".join(dir_name(e.direction) + ("（锁着）" if e.locked else "") for e in exits))
+            facts.append("出口：" + "、".join(
+                f"{dir_name(e.direction)}（通往{load_room(cur, e.to_room).name}" + ("，门锁着" if e.locked else "") + "）"
+                for e in exits))
         items = load_items(cur, "i.room_id = %s", (player.room_id,))
         if items:
             facts.append("地上有：" + "、".join(_label(i) for i in items))
