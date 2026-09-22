@@ -52,8 +52,12 @@
 <body>
 <div id="login">
   <form id="login-form">
-    <div>输入角色名（没有就新建）</div>
-    <input id="login-name" maxlength="20" autofocus>
+    <div>角色名（没有就新建）</div>
+    <input id="login-name" maxlength="20" autofocus autocomplete="username">
+    <div>密码（新角色在这里设置，至少 4 位）</div>
+    <input id="login-password" type="password" autocomplete="current-password">
+    <div>邀请码</div>
+    <input id="login-code" autocomplete="off">
     <button>进入</button>
   </form>
 </div>
@@ -74,6 +78,8 @@ const $ = s => document.querySelector(s);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 let playerId = null;
 try { playerId = localStorage.getItem("newera.player"); } catch {}
+// 邀请码记在本机，下次不用再填
+try { document.getElementById("login-code").value = localStorage.getItem("newera.code") || ""; } catch {}
 
 async function api(path, body) {
   const res = await fetch(path, body ? {
@@ -173,7 +179,12 @@ function logout() {
 $("#login-form").onsubmit = async e => {
   e.preventDefault();
   try {
-    const { player_id } = await api("/api/login", { name: $("#login-name").value });
+    const code = $("#login-code").value;
+    const { player_id } = await api("/api/login", {
+      name: $("#login-name").value, password: $("#login-password").value, access_code: code,
+    });
+    try { localStorage.setItem("newera.code", code); } catch {}
+    $("#login-password").value = "";
     playerId = player_id;
     try { localStorage.setItem("newera.player", playerId); } catch {}
     $("#login").style.display = "none";

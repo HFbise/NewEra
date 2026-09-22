@@ -1,10 +1,11 @@
-pydantic>=2
-psycopg[binary]>=3.1
-pyyaml
-python-dotenv
-fastapi
-uvicorn
-psycopg-pool
-anthropic
-google-genai
-zai-sdk
+# 按本地测通的版本锁定，部署时不会被新版本打坏
+pydantic==2.13.5
+psycopg[binary]==3.3.6
+psycopg-pool==3.3.3
+PyYAML==6.0.3
+python-dotenv==1.2.3
+fastapi==0.141.1
+uvicorn==0.53.0
+anthropic==1.8.0
+google-genai==2.25.0
+zai-sdk==0.2.3

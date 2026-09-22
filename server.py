@@ -1,14 +1,18 @@
 """
 开发用简易 Web 服务。
-- 只绑 127.0.0.1，登录只要名字不要密码，别部署到公网
+- 本地跑 python server.py 只绑 127.0.0.1；部署（Render）时用 uvicorn 绑 0.0.0.0，见 render.yaml
+- 登录：角色名 + 角色密码；设了 ACCESS_CODE 环境变量时还要邀请码
 - 一回合的链路：规则解析（commands.py）→ 有认不出的再交给 AI 解析 → 规则引擎执行
   → AI 叙事（含 NPC 对话、给东西、好感度提议，规则引擎再校验）→ 写 events
-- AI 后端见 ai.py（默认 Gemini），没配 key 时退回纯规则模式：没有叙事，talk 用占位逻辑给 requires 物品
+- AI 后端见 ai.py（默认智谱 glm-4.7-flash），没配 key 时退回纯规则模式：没有叙事，talk 用占位逻辑给 requires 物品
 
 用法: python server.py  然后打开 http://127.0.0.1:8000
 """
+import hashlib
+import hmac
 import json
 import os
+import secrets
 from uuid import UUID, uuid4
 
 from dotenv import load_dotenv
@@ -25,7 +29,8 @@ import engine
 from schema import ActionResult, RoomView, dir_name
 
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
-pool = ConnectionPool(os.environ["DATABASE_URL"], min_size=1, max_size=5, open=True)
+# 一个回合会占着连接等 AI（可能十几秒），连接数给多一点，免得几个人同时玩就排队
+pool = ConnectionPool(os.environ["DATABASE_URL"], min_size=1, max_size=10, open=True)
 app = FastAPI()
 
 START_ROOM = "square"
@@ -33,6 +38,19 @@ START_ROOM = "square"
 
 class LoginReq(BaseModel):
     name: str
+    password: str
+    access_code: str = ""
+
+
+def _hash_password(password: str, salt: bytes | None = None) -> str:
+    salt = salt or secrets.token_bytes(16)
+    digest = hashlib.scrypt(password.encode(), salt=salt, n=2**14, r=8, p=1)
+    return f"{salt.hex()}${digest.hex()}"
+
+
+def _check_password(password: str, stored: str) -> bool:
+    salt, _ = stored.split("$")
+    return hmac.compare_digest(_hash_password(password, bytes.fromhex(salt)), stored)
 
 
 class LogoutReq(BaseModel):
@@ -73,13 +91,27 @@ def state(conn, view: RoomView) -> dict:
 
 @app.post("/api/login")
 def login(req: LoginReq):
+    # 设了 ACCESS_CODE（部署到公网时）就要邀请码，防止陌生人进来刷 AI 额度
+    code = os.environ.get("ACCESS_CODE")
+    if code and not hmac.compare_digest(req.access_code.strip().encode(), code.encode()):
+        raise HTTPException(403, "邀请码不对")
     name = req.name.strip()
     if not name or len(name) > 20:
         raise HTTPException(400, "名字 1 到 20 个字")
+    if len(req.password) < 4:
+        raise HTTPException(400, "密码至少 4 位")
     with pool.connection() as conn:
-        row = conn.execute("select id from players where name = %s", (name,)).fetchone()
+        row = conn.execute("select id, password_hash from players where name = %s", (name,)).fetchone()
         if row:
-            return {"player_id": row[0]}
+            pid, stored = row
+            if stored is None:
+                # 加密码之前建的老角色：第一次登录填的密码就成为它的密码
+                with conn.transaction():
+                    conn.execute("update players set password_hash = %s where id = %s",
+                                 (_hash_password(req.password), pid))
+            elif not _check_password(req.password, stored):
+                raise HTTPException(403, "密码不对（这个名字已经有人用了）")
+            return {"player_id": pid}
         # 开发期直接往 auth.users 塞一个假用户，正式版走 Supabase Auth
         pid = uuid4()
         with conn.transaction():
@@ -89,9 +121,9 @@ def login(req: LoginReq):
                 (pid, f"{pid}@dev.local"),
             )
             conn.execute(
-                """insert into players (id, name, room_id, hp, max_hp, attack, defense)
-                   values (%s, %s, %s, 20, 20, 2, 0)""",
-                (pid, name, START_ROOM),
+                """insert into players (id, name, room_id, hp, max_hp, attack, defense, password_hash)
+                   values (%s, %s, %s, 20, 20, 2, 0, %s)""",
+                (pid, name, START_ROOM, _hash_password(req.password)),
             )
         return {"player_id": pid}
 

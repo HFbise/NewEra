@@ -1,0 +1,21 @@
+# Render 部署配置：在 Render 后台 New > Blueprint，选这个 GitHub 仓库就会按这里建服务
+services:
+  - type: web
+    name: newera
+    runtime: python
+    region: oregon          # 和 Supabase（us-west-2）挨得近，数据库往返快
+    plan: free              # 免费档：15 分钟没人访问会休眠，再打开要等半分钟到一分钟
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn server:app --host 0.0.0.0 --port $PORT
+    envVars:
+      # sync: false 的变量在创建时会让你在后台填，不会写进仓库
+      - key: DATABASE_URL
+        sync: false
+      - key: ZAI_API_KEY
+        sync: false
+      - key: ACCESS_CODE      # 邀请码，发给测试的人
+        sync: false
+      - key: AI_PROVIDER
+        value: zhipu
+      - key: PARSE_MODE
+        value: rules
