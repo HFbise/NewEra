@@ -130,10 +130,11 @@ def command(req: CommandReq):
             usage["input"] += u["input"]
             usage["output"] += u["output"]
 
-        # 1. 解析：规则全认出来就不调 AI
+        # 1. 解析：默认规则全认出来就不调 AI；PARSE_MODE=ai 时每句都先过 AI
         actions = commands.parse(view, req.text)
         source = "rules"
-        if ai.enabled() and any(a.action == "freeform" for a in actions):
+        ai_first = os.environ.get("PARSE_MODE", "rules") == "ai"
+        if ai.enabled() and (ai_first or any(a.action == "freeform" for a in actions)):
             try:
                 parsed, u = ai.parse_intent(conn, view, req.text)
                 add(u)

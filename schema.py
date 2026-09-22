@@ -71,8 +71,14 @@ class Freeform(BaseModel):
     description: str
 
 
+class Reject(BaseModel):
+    """意图解析判定这句话不成立：目标不存在、要靠改关键状态才能实现、越权指令等"""
+    action: Literal["reject"]
+    reason: str                         # 客观简述为什么做不到
+
+
 PlayerAction = Annotated[
-    Union[Move, Look, Take, Drop, Use, Equip, Attack, Talk, Give, Freeform],
+    Union[Move, Look, Take, Drop, Use, Equip, Attack, Talk, Give, Freeform, Reject],
     Field(discriminator="action"),
 ]
 

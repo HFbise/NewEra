@@ -17,7 +17,7 @@ from psycopg.rows import dict_row
 
 from schema import (
     ActionResult, Attack, Drop, Equip, Freeform, Give, ItemInstance, Look, Move,
-    Npc, Player, PlayerAction, Room, RoomExit, RoomView, Take, Talk, Use, dir_name,
+    Npc, Player, PlayerAction, Reject, Room, RoomExit, RoomView, Take, Talk, Use, dir_name,
 )
 
 
@@ -353,9 +353,14 @@ def do_freeform(cur: Cursor, player: Player, view: RoomView, a: Freeform) -> lis
     return [f"{player.name}尝试：{a.description}"]
 
 
+def do_reject(cur: Cursor, player: Player, view: RoomView, a: Reject) -> list[str]:
+    raise ActionError(a.reason)
+
+
 HANDLERS: dict[str, Callable[..., list[str]]] = {
     "move": do_move, "look": do_look, "take": do_take, "drop": do_drop, "use": do_use,
     "equip": do_equip, "attack": do_attack, "talk": do_talk, "give": do_give, "freeform": do_freeform,
+    "reject": do_reject,
 }
 
 
