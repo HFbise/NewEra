@@ -7,7 +7,7 @@
 <style>
   :root {
     --bg: #15171c; --panel: #1d2027; --border: #2c313b; --text: #d8dce4; --dim: #8a92a0;
-    --accent: #7fb3ff; --ok: #8fd18f; --bad: #ff8a80; --you: #e6c07b;
+    --accent: #7fb3ff; --ok: #8fd18f; --bad: #ff8a80; --you: #e6c07b; --other: #c3a6ee;
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text); font: 15px/1.6 system-ui, "Microsoft YaHei", sans-serif; }
@@ -22,6 +22,7 @@
   .sys { color: var(--dim); }
   .narrative { white-space: pre-wrap; margin: 4px 0; }
   .pending { color: var(--dim); font-size: 13px; }
+  .other { color: var(--other); }
   details { color: var(--dim); font-size: 13px; }
   summary { cursor: pointer; }
   form { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--border); background: var(--panel); }
@@ -77,6 +78,8 @@
 const $ = s => document.querySelector(s);
 const esc = s => String(s).replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 let playerId = null;
+let lastEventId = null;             // 已经看过的最后一条房间动态
+const shownEvents = new Set();      // 轮询和命令结果可能带回同一条，去重
 try { playerId = localStorage.getItem("newera.player"); } catch {}
 // 邀请码记在本机，下次不用再填
 try { document.getElementById("login-code").value = localStorage.getItem("newera.code") || ""; } catch {}
@@ -118,7 +121,7 @@ function render(s) {
     <ul>${s.exits.map(e => `<li data-name="${e.label}">${e.label}<span class="tag">${esc(e.to)}${e.locked ? "（锁着）" : ""}</span></li>`).join("")}</ul>
     ${s.npcs.length ? `<h2>NPC</h2><ul>${s.npcs.map(n => li(n.ref, n.name,
       n.max_hp ? `<span class="tag">${n.hp}/${n.max_hp}</span>` : "")).join("")}</ul>` : ""}
-    ${s.others.length ? `<h2>其他玩家</h2><ul>${s.others.map(o => `<li>${esc(o.name)}<span class="tag">${o.awake ? "HP " + o.hp : "睡着了"}</span></li>`).join("")}</ul>` : ""}
+    ${s.others.length ? `<h2>其他玩家</h2><ul>${s.others.map(o => `<li data-name="对${esc(o.name)}说 ">${esc(o.name)}<span class="tag">${o.awake ? "HP " + o.hp : "睡着了"}</span></li>`).join("")}</ul>` : ""}
     ${s.items.length ? `<h2>地上</h2><ul>${s.items.map(i => li(i.ref, i.name,
       i.quantity > 1 ? `<span class="tag">x${i.quantity}</span>` : "")).join("")}</ul>` : ""}
     <h2>背包</h2>
@@ -132,6 +135,7 @@ function render(s) {
       拿面包 · 扔面包 · 装备短剑 · 吃药草<br>
       打哥布林 · 开下面的门 · 用钥匙 下<br>
       对老汉斯说 你好 · 把面包给老汉斯<br>
+      说 大家好 · 对寒风说 跟我来（对玩家说话不走 AI）<br>
       用 ; 分隔多个命令，其他输入算 自由行动<br>
       点侧栏里的名字会填进输入框
     </div>
@@ -140,9 +144,20 @@ function render(s) {
 }
 
 // 进入游戏时显示所在位置：只读状态，不发命令，不调 AI
+// 同房间别人的动态（第三人称），轮询和命令结果里都会带
+function showEvents(s) {
+  for (const ev of s.events || []) {
+    if (shownEvents.has(ev.id)) continue;
+    shownEvents.add(ev.id);
+    log(`<div class="other">${esc(ev.text)}</div>`);
+  }
+  if (s.last_event_id != null) lastEventId = Math.max(lastEventId ?? 0, s.last_event_id);
+}
+
 async function enter() {
   try {
     const s = await api(`/api/state?player_id=${playerId}`);
+    lastEventId = s.last_event_id;   // 进来之前的动态不补
     render(s);
     const list = (label, arr) => arr.length ? `<div>${label}：${arr.map(esc).join("、")}</div>` : "";
     log(`<div class="sys"><b>${esc(s.room.name)}</b>　${esc(s.room.description)}` +
@@ -155,8 +170,11 @@ async function enter() {
 
 async function refresh() {
   if (!playerId) return;
-  try { render(await api(`/api/state?player_id=${playerId}`)); }
-  catch (e) { logout(); }
+  try {
+    const s = await api(`/api/state?player_id=${playerId}` + (lastEventId != null ? `&after=${lastEventId}` : ""));
+    showEvents(s);
+    render(s);
+  } catch (e) { logout(); }
 }
 
 async function deleteCharacter() {
@@ -204,7 +222,7 @@ const STAGES = { parse: "理解你的意图", execute: "判定结果", narrate: 
 async function runTurn(text, onStage) {
   const res = await fetch("/api/command", {
     method: "POST", headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ player_id: playerId, text }),
+    body: JSON.stringify({ player_id: playerId, text, after: lastEventId }),
   });
   if (!res.ok) throw new Error(res.statusText);
   const reader = res.body.getReader();
@@ -245,6 +263,7 @@ async function send(text) {
     const cost = (d.usage.input || d.usage.output ? ` · token ${d.usage.input} 入 / ${d.usage.output} 出` : "") + ` · ${secs}s`;
     const facts = d.results.map(r =>
       r.facts.map(f => `<div class="fact${r.success ? "" : " fail"}">${esc(f)}</div>`).join("")).join("");
+    showEvents(d.state);              // 等待期间别人做的事先显示
     log(`<div class="parsed">[${d.source === "ai" ? "AI 解析" : "规则解析"}${cost}] ${esc(parsed)}</div>` +
       (d.narrative ? `<div class="narrative">${esc(d.narrative)}</div><details><summary>facts</summary>${facts}</details>` : facts) +
       d.notes.map(n => `<div class="sys">${esc(n)}</div>`).join(""));

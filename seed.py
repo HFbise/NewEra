@@ -15,6 +15,9 @@ from dotenv import load_dotenv
 from psycopg.types.json import Jsonb
 
 
+DEFAULT_RESPAWN = 300                   # 物品被拿走后默认多少秒重新出现
+
+
 def seed(conn, world):
     with conn.transaction():
         cur = conn.cursor()
@@ -44,15 +47,19 @@ def seed(conn, world):
         for rid, r in world["rooms"].items():
             for direction, ex in r.get("exits", {}).items():
                 cur.execute(
-                    """insert into room_exits (room_id, direction, to_room, locked, key_item)
-                       values (%s, %s, %s, %s, %s)
+                    """insert into room_exits (room_id, direction, to_room, locked, key_item, relock_seconds)
+                       values (%s, %s, %s, %s, %s, %s)
                        on conflict (room_id, direction) do update set
-                         to_room = excluded.to_room, locked = excluded.locked, key_item = excluded.key_item""",
-                    (rid, direction, ex["to"], ex.get("locked", False), ex.get("key")),
+                         to_room = excluded.to_room, locked = excluded.locked, key_item = excluded.key_item,
+                         relock_seconds = excluded.relock_seconds, unlocked_at = null""",
+                    (rid, direction, ex["to"], ex.get("locked", False), ex.get("key"), ex.get("relock")),
                 )
 
         for nid, n in world["npcs"].items():
             s = n.get("stats") or {}
+            props = dict(n.get("props", {}))
+            if "respawn" in n:
+                props["respawn_seconds"] = n["respawn"]
             cur.execute(
                 """insert into npc_templates (id, name, description, persona, hostile, max_hp, attack, defense, props)
                    values (%s, %s, %s, %s, %s, %s, %s, %s, %s)
@@ -61,16 +68,31 @@ def seed(conn, world):
                      hostile = excluded.hostile, max_hp = excluded.max_hp, attack = excluded.attack,
                      defense = excluded.defense, props = excluded.props""",
                 (nid, n["name"], n["description"], n["persona"], n.get("hostile", False),
-                 s.get("max_hp"), s.get("attack", 0), s.get("defense", 0), Jsonb(n.get("props", {}))),
+                 s.get("max_hp"), s.get("attack", 0), s.get("defense", 0), Jsonb(props)),
             )
 
-        # 重置世界里的实例（不碰玩家背包）
+        # 重置世界里的实例（不碰玩家背包）和刷新点
         cur.execute("delete from item_instances where player_id is null")
         cur.execute("delete from npcs")
+        cur.execute("delete from spawns")
+
+        for nid, n in world["npcs"].items():
+            for item in n.get("inventory", []):
+                cur.execute(
+                    "insert into spawns (npc_template, template_id, respawn_seconds) values (%s, %s, %s)",
+                    (nid, item, n.get("restock", DEFAULT_RESPAWN)),
+                )
 
         for rid, r in world["rooms"].items():
-            for item in r.get("items", []):
+            for entry in r.get("items", []):
+                # 写法：bread 或 {item: bread, respawn: 120}
+                item = entry["item"] if isinstance(entry, dict) else entry
+                respawn = entry.get("respawn", DEFAULT_RESPAWN) if isinstance(entry, dict) else DEFAULT_RESPAWN
                 cur.execute("insert into item_instances (template_id, room_id) values (%s, %s)", (item, rid))
+                cur.execute(
+                    "insert into spawns (room_id, template_id, respawn_seconds) values (%s, %s, %s)",
+                    (rid, item, respawn),
+                )
             for npc_tid in r.get("npcs", []):
                 s = world["npcs"][npc_tid].get("stats") or {}
                 cur.execute(

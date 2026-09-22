@@ -1,5 +1,10 @@
 start_room: square
 
+# 刷新规则（测试期时间设得短，以后调长）：
+#   房间 items 写成 {item: 物品, respawn: 秒}，被拿走后多久在原处重新出现；只写物品名就是默认 300 秒
+#   出口 relock: 秒，打开后多久自动锁回去
+#   NPC respawn: 秒，死后多久复活；restock: 秒，身上 inventory 给出去后多久补回来（默认 300）
+
 rooms:
   square:
     name: 村口广场
@@ -15,7 +20,7 @@ rooms:
       north: {to: tavern}
       east: {to: smithy}
       south: {to: path}
-    items: [bread]
+    items: [{item: bread, respawn: 120}]
 
   tavern:
     name: 野猪酒馆
@@ -29,7 +34,7 @@ rooms:
       没有别的客人，只有壁炉噼啪声和老汉斯擦杯子的声音。
     exits:
       south: {to: square}
-      down: {to: cellar, locked: true, key: cellar_key}
+      down: {to: cellar, locked: true, key: cellar_key, relock: 120}
     npcs: [innkeeper]
 
   cellar:
@@ -42,7 +47,7 @@ rooms:
       木楼梯吱呀作响，通回上面的酒馆。
     exits:
       up: {to: tavern}
-    items: [old_amulet]
+    items: [{item: old_amulet, respawn: 180}]
 
   smithy:
     name: 铁匠铺
@@ -54,7 +59,7 @@ rooms:
       地上落着铁屑和煤渣，门口堆着一小堆等着修的破农具。
     exits:
       west: {to: square}
-    items: [rusty_sword]
+    items: [{item: rusty_sword, respawn: 180}]
     npcs: [smith]
 
   path:
@@ -68,7 +73,7 @@ rooms:
     exits:
       north: {to: square}
       south: {to: forest_edge}
-    items: [herb]
+    items: [{item: herb, respawn: 120}]
 
   forest_edge:
     name: 森林边缘
@@ -114,6 +119,7 @@ npcs:
     description: 酒馆老板，胖胖的中年人，总在擦同一个杯子。
     persona: 热情但爱打听八卦，对地窖的事讳莫如深，除非客人帮他解决森林里的哥布林。
     inventory: [cellar_key]
+    restock: 60
     props:
       # 给予规则（不写就是不给）：
       #   ai                                  AI 看人设自己决定
@@ -129,6 +135,7 @@ npcs:
     description: 矮小的绿皮生物，手里攥着一根木棒。
     persona: 狡猾胆小，打不过就会求饶。
     hostile: true
+    respawn: 120
     stats: {hp: 8, max_hp: 8, attack: 3, defense: 1}
     props:
       on_death: {set_flag: goblin_slain}   # 被击杀时给击杀者设标记

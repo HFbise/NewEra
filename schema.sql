@@ -33,6 +33,8 @@ create table room_exits (
   to_room     text not null references rooms(id) on delete cascade,
   locked      boolean not null default false,   -- 当前是否上锁（会被玩家改变）
   key_item    text references item_templates(id),
+  relock_seconds int,                            -- 打开后多久自动锁回去，为空就不自动锁
+  unlocked_at timestamptz,
   primary key (room_id, direction)
 );
 
@@ -72,6 +74,7 @@ create table npcs (
   room_id     text references rooms(id),
   hp          int,
   alive       boolean not null default true,
+  died_at     timestamptz,                       -- 死亡时间，模板 props.respawn_seconds 之后复活
   memory      text not null default ''          -- 长期记忆摘要
 );
 
@@ -104,6 +107,7 @@ create table player_npc_relations (
   player_id    uuid not null references players(id) on delete cascade,
   npc_template text not null references npc_templates(id) on delete cascade,
   affinity     int not null default 0 check (affinity between -100 and 100),  -- 好感度
+  memory       text not null default '',        -- NPC 对这个玩家的记忆摘要，对话时由 AI 更新，限 150 字
   primary key (player_id, npc_template)
 );
 
@@ -114,11 +118,25 @@ create table events (
   player_id   uuid references players(id) on delete set null,
   kind        text not null,                     -- move / attack / talk / freeform ...
   facts       jsonb not null default '[]',       -- 规则引擎输出的客观事实
-  narrative   text,                              -- AI 生成的叙事
+  narrative   text,                              -- AI 生成的叙事（给行动者本人，第二人称）
+  observer    text,                              -- 给同房间其他人看的第三人称描述
   created_at  timestamptz not null default now()
 );
 
 create index on events (room_id, created_at desc);
+create index on events (room_id, id);
+
+-- 刷新点：物品被拿走后过一段时间重新出现。位置二选一：房间地上 / 某种 NPC 身上
+-- 不用后台任务，有人在这个房间时顺手检查（engine._refresh_room）
+create table spawns (
+  id              serial primary key,
+  room_id         text references rooms(id) on delete cascade,
+  npc_template    text references npc_templates(id) on delete cascade,
+  template_id     text not null references item_templates(id) on delete cascade,
+  respawn_seconds int not null,
+  empty_since     timestamptz,                   -- 发现东西不在了的时间
+  check (num_nonnulls(room_id, npc_template) = 1)
+);
 
 -- AI 调用记录：每次调用的 token 数，用来算成本
 create table ai_calls (
@@ -149,6 +167,7 @@ alter table item_instances enable row level security;
 alter table events         enable row level security;
 alter table player_npc_relations enable row level security;
 alter table ai_calls       enable row level security;   -- 不开放给客户端
+alter table spawns         enable row level security;
 
 create policy "read static" on rooms          for select to authenticated using (true);
 create policy "read static" on room_exits     for select to authenticated using (true);

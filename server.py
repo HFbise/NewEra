@@ -13,6 +13,7 @@ import hmac
 import json
 import os
 import secrets
+from typing import Optional
 from uuid import UUID, uuid4
 
 from dotenv import load_dotenv
@@ -60,12 +61,27 @@ class LogoutReq(BaseModel):
 class CommandReq(BaseModel):
     player_id: UUID
     text: str
+    after: Optional[int] = None         # 前端已经看过的最后一条房间动态 id，不给就不带动态
 
 
-def state(conn, view: RoomView) -> dict:
-    """给前端侧栏看的当前状态，带上短编号方便对照"""
+def state(conn, view: RoomView, after: Optional[int] = None) -> dict:
+    """给前端侧栏看的当前状态，带上短编号方便对照。
+    after 给了就顺便带回这个房间 id 比它大的别人的动态；last_event_id 是前端下次要传的 after"""
     by_id = {uid: ref for ref, uid in view.refs.items()}
     cur = conn.cursor()
+    # 先取最大 id 再查动态，查询中途插进来的新动态留到下次，不会漏
+    cur.execute("select coalesce(max(id), 0) from events")
+    last_event_id = cur.fetchone()[0]
+    events = []
+    if after is not None:
+        cur.execute(
+            """select id, observer from events
+               where room_id = %s and id > %s and id <= %s and observer is not null
+                 and player_id is distinct from %s
+               order by id limit 30""",
+            (view.room.id, after, last_event_id, view.player.id),
+        )
+        events = [{"id": i, "text": t} for i, t in cur.fetchall()]
     cur.execute(
         f"""select name, hp, coalesce(last_active_at > now() - interval '{engine.ONLINE_WINDOW}', false)
             from players where room_id = %s and id <> %s order by name""",
@@ -86,6 +102,8 @@ def state(conn, view: RoomView) -> dict:
         "inventory": [{"ref": by_id[i.id], "name": i.name, "quantity": i.quantity,
                        "equipped": i.equipped_slot} for i in view.inventory],
         "others": others,
+        "events": events,
+        "last_event_id": last_event_id,
     }
 
 
@@ -134,14 +152,14 @@ def login(req: LoginReq):
 
 
 @app.get("/api/state")
-def get_state(player_id: UUID):
+def get_state(player_id: UUID, after: Optional[int] = None):
     with pool.connection() as conn:
         try:
             view = engine.load_view(conn, player_id)
         except engine.ActionError as e:
             raise HTTPException(404, str(e))
         engine.touch(conn, player_id)      # 页面每 3 秒拉一次，顺便当心跳
-        return state(conn, view)
+        return state(conn, view, after)
 
 
 @app.post("/api/delete")
@@ -233,42 +251,60 @@ def run_turn(req: CommandReq):
         yield {"stage": "execute"}
         results = engine.execute_all(conn, view, actions)
 
-        # 3. 叙事 + NPC 对话
-        narrative = None
-        if ai.enabled():
+        # 3. 叙事 + NPC 对话。只是和玩家说话的回合不用 AI，facts 本身就是要说的话
+        narrative, observer = None, None
+        now_view = engine.load_view(conn, pid)       # 执行后的房间：移动之后要写新地方
+        if ai.enabled() and not all(a.action == "say" for a in actions):
             yield {"stage": "narrate"}
             talk = next((a for a, r in zip(actions, results) if a.action == "talk" and r.success), None)
             npc_id = view.resolve(talk.target) if talk else None
             npc = _load_npc(conn, npc_id) if npc_id else None
             giveable = engine.giveable_items(conn, pid, npc_id) if npc else []
             affinity = engine.get_affinity(conn, pid, npc_id) if npc else 0
+            memory = engine.get_npc_memory(conn, pid, npc_id) if npc else ""
             try:
-                # 叙事用执行后的房间：移动之后要写新地方的环境
-                after = engine.load_view(conn, pid)
-                out, give_id, u = ai.narrate(conn, after, req.text, results, npc, giveable, affinity)
-                add(u)
-                if out:
-                    narrative = out.narrative
+                # NPC 身上有能给的东西时，先单独决定给不给，执行完变成 fact，叙事再照着写
+                if giveable:
+                    give_id, u = ai.decide_give(conn, view, req.text, npc, giveable, affinity, memory)
+                    add(u)
                     if give_id:
                         results.append(engine.npc_give(conn, pid, npc_id, give_id))
+                out, u = ai.narrate(conn, now_view, req.text, results, npc, affinity,
+                                    memory, _recent_events(conn, now_view.room.id, pid))
+                add(u)
+                if out:
+                    narrative, observer = out.narrative, out.observer or None
                     if npc and out.affinity_delta:
                         results.append(engine.adjust_affinity(conn, pid, npc_id, out.affinity_delta))
+                    if npc and out.npc_memory:
+                        engine.set_npc_memory(conn, pid, npc_id, out.npc_memory)
                 else:
                     notes.append("叙事两次都没通过校验")
             except ai.API_ERRORS as e:
                 notes.append(f"AI 叙事出错：{e.__class__.__name__}")
-        else:
+        elif not ai.enabled():
             for a, r in zip(actions, results):
                 if a.action == "talk" and r.success:
                     results += placeholder_dialogue(conn, view, a.target)
 
-        # 4. 记事件
+        # 4. 记事件：出发的房间记一条给旁人看的描述；换了房间，新房间再记一条"走了进来"
+        name = view.player.name
+        moved = now_view.room.id != view.room.id
+        # 换了房间时 AI 是按新房间写的，原房间的人看到的直接用 facts（"某某往北走，来到了酒馆"）
+        if moved or not observer:
+            observer = _observer_fallback(name, actions, results)
         with conn.transaction():
             conn.execute(
-                "insert into events (room_id, player_id, kind, facts, narrative) values (%s, %s, %s, %s, %s)",
+                """insert into events (room_id, player_id, kind, facts, narrative, observer)
+                   values (%s, %s, %s, %s, %s, %s)""",
                 (view.room.id, pid, ",".join(a.action for a in actions),
-                 Jsonb([f for r in results for f in r.facts]), narrative),
+                 Jsonb([f for r in results for f in r.facts]), narrative, observer),
             )
+            if moved:
+                conn.execute(
+                    "insert into events (room_id, player_id, kind, observer) values (%s, %s, 'arrive', %s)",
+                    (now_view.room.id, pid, f"{name}走了进来。"),
+                )
 
         yield {"done": {
             "actions": [a.model_dump() for a in actions],
@@ -277,8 +313,33 @@ def run_turn(req: CommandReq):
             "narrative": narrative,
             "usage": usage,
             "notes": notes,
-            "state": state(conn, engine.load_view(conn, pid)),
+            "state": state(conn, engine.load_view(conn, pid), req.after),
         }}
+
+
+def _recent_events(conn, room_id: str, player_id: UUID, limit: int = 5) -> list[str]:
+    """这个房间最近 10 分钟里别人的动态，给叙事 AI 接上下文"""
+    rows = conn.execute(
+        """select observer from events
+           where room_id = %s and observer is not null and player_id is distinct from %s
+             and created_at > now() - interval '10 minutes'
+           order by id desc limit %s""",
+        (room_id, player_id, limit),
+    ).fetchall()
+    conn.commit()
+    return [r[0] for r in reversed(rows)]
+
+
+def _observer_fallback(name: str, actions: list, results: list[ActionResult]) -> Optional[str]:
+    """没有 AI 叙事时（只说话的回合、AI 出错）给旁人看的描述：成功动作的 facts 本身就是第三人称。
+    查看不写看到了什么，失败的动作旁人看不出来就不写"""
+    lines = []
+    for a, r in zip(actions, results):
+        if a.action == "look":
+            lines.append(f"{name}四下打量了一番。")
+        elif r.success:
+            lines += r.facts
+    return "；".join(lines) or None
 
 
 app.mount("/", StaticFiles(directory=os.path.join(os.path.dirname(__file__), "static"), html=True))

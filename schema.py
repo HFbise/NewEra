@@ -71,6 +71,13 @@ class Freeform(BaseModel):
     description: str
 
 
+class Say(BaseModel):
+    """对同房间的玩家说话，广播给房间里所有人，不走 AI"""
+    action: Literal["say"]
+    message: str
+    target: Optional[str] = None        # 对某个玩家说时填对方名字，为空就是对大家说
+
+
 class Reject(BaseModel):
     """意图解析判定这句话不成立：目标不存在、要靠改关键状态才能实现、越权指令等"""
     action: Literal["reject"]
@@ -78,7 +85,7 @@ class Reject(BaseModel):
 
 
 PlayerAction = Annotated[
-    Union[Move, Look, Take, Drop, Use, Equip, Attack, Talk, Give, Freeform, Reject],
+    Union[Move, Look, Take, Drop, Use, Equip, Attack, Talk, Give, Say, Freeform, Reject],
     Field(discriminator="action"),
 ]
 
@@ -188,6 +195,11 @@ class Player(BaseModel):
 # uuid 太长，小模型容易抄错，所以给 AI 看短编号（i1、n1），
 # refs 保存短编号到真实 id 的映射，只在服务器端用，不发给 AI。
 
+class OtherPlayer(BaseModel):
+    name: str
+    awake: bool                         # 睡着的玩家留在原地，不会回应
+
+
 class RoomView(BaseModel):
     player: Player
     room: Room
@@ -195,6 +207,7 @@ class RoomView(BaseModel):
     items: list[ItemInstance]           # 地上的
     npcs: list[Npc]                     # 活着的
     inventory: list[ItemInstance]       # 玩家背包（含已装备）
+    others: list[OtherPlayer] = []      # 同房间的其他玩家
     refs: dict[str, UUID] = {}
 
     def assign_refs(self) -> None:

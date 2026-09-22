@@ -57,6 +57,16 @@ def _find(view: RoomView, text: str, where: str = "all") -> str:
     raise _Unsure(text)
 
 
+def _player(view: RoomView, text: str) -> Optional[str]:
+    """同房间其他玩家的名字匹配，先精确后模糊"""
+    text = text.strip()
+    for match in (lambda n: n == text, lambda n: text in n or n in text):
+        for p in view.others:
+            if match(p.name):
+                return p.name
+    return None
+
+
 def _target(view: RoomView, text: str) -> str:
     """use / look 的目标：先当方向，再当名字"""
     return _dir(text) or _find(view, text)
@@ -105,10 +115,16 @@ def _parse_one(view: RoomView, t: str) -> dict:
     if m := re.fullmatch(r"(?:attack|kill|hit|攻击|杀|打)\s*(.+)", t, re.I):
         return {"action": "attack", "target": _find(view, m[1], "npc")}
 
-    if m := re.fullmatch(r"(?:对|跟|和|向)\s*(.+?)\s*(?:说|讲|问)[:：]?\s*(.+)", t):
+    # 对某人说：对方是玩家就是 say（广播，不走 AI），是 NPC 就是 talk（AI 扮演 NPC 回话）
+    if m := (re.fullmatch(r"(?:对|跟|和|向)\s*(.+?)\s*(?:说|讲|问)[:：]?\s*(.+)", t)
+             or re.fullmatch(r"(?:say|talk)\s+(?:to\s+)?(\S+)\s+(.+)", t, re.I)):
+        if name := _player(view, m[1]):
+            return {"action": "say", "target": name, "message": m[2]}
         return {"action": "talk", "target": _find(view, m[1], "npc"), "message": m[2]}
-    if m := re.fullmatch(r"(?:say|talk)\s+(\S+)\s+(.+)", t, re.I):
-        return {"action": "talk", "target": _find(view, m[1], "npc"), "message": m[2]}
+
+    # 对大家说
+    if m := re.fullmatch(r"(?:说|喊|say)[:：]?\s*(.+)", t, re.I):
+        return {"action": "say", "message": m[1]}
 
     if m := re.fullmatch(r"把\s*(.+?)\s*(?:给|交给|递给)\s*(.+)", t):
         return {"action": "give", "item": _find(view, m[1], "inv"), "target": _find(view, m[2], "npc")}

@@ -17,7 +17,7 @@ from psycopg.rows import dict_row
 
 from schema import (
     ActionResult, Attack, Drop, Equip, Freeform, Give, ItemInstance, Look, Move,
-    Npc, Player, PlayerAction, Reject, Room, RoomExit, RoomView, Take, Talk, Use, dir_name,
+    Npc, OtherPlayer, Player, PlayerAction, Reject, Room, RoomExit, RoomView, Say, Take, Talk, Use, dir_name,
 )
 
 
@@ -109,12 +109,67 @@ def delete_player(conn: Connection, player_id: UUID) -> None:
         cur.execute("delete from auth.users where id = %s", (player_id,))
 
 
+def _refresh_room(cur: Cursor, room_id: str) -> None:
+    """刷新：NPC 复活、门自动锁回、物品重新出现。
+    不用后台任务，有人在这个房间（发命令或页面轮询）时顺手检查，没人的房间不用管"""
+    # NPC 死了 respawn_seconds 秒后原地复活
+    cur.execute(
+        """update npcs n set alive = true, hp = t.max_hp, died_at = null
+           from npc_templates t
+           where t.id = n.template_id and n.room_id = %s and not n.alive
+             and t.props ? 'respawn_seconds'
+             and n.died_at < now() - make_interval(secs => (t.props->>'respawn_seconds')::int)""",
+        (room_id,),
+    )
+    # 打开的门 relock_seconds 秒后自动锁回去
+    cur.execute(
+        """update room_exits set locked = true, unlocked_at = null
+           where room_id = %s and not locked and relock_seconds is not null
+             and unlocked_at < now() - make_interval(secs => relock_seconds)""",
+        (room_id,),
+    )
+    # 物品刷新点：发现东西不在了先记时间，到点再补一个。for update 防止两个人同时刷新补出两份
+    cur.execute(
+        """select s.id, s.template_id, s.respawn_seconds, s.empty_since, s.room_id, n.id as npc_id
+           from spawns s left join npcs n on n.template_id = s.npc_template and n.room_id = %s and n.alive
+           where s.room_id = %s or n.id is not null
+           for update of s""",
+        (room_id, room_id),
+    )
+    for sp in cur.fetchall():
+        col, val = ("room_id", sp["room_id"]) if sp["room_id"] else ("npc_id", sp["npc_id"])
+        cur.execute(f"select 1 from item_instances where template_id = %s and {col} = %s",
+                    (sp["template_id"], val))
+        if cur.fetchone():
+            if sp["empty_since"]:
+                cur.execute("update spawns set empty_since = null where id = %s", (sp["id"],))
+        elif sp["empty_since"] is None:
+            cur.execute("update spawns set empty_since = now() where id = %s", (sp["id"],))
+        else:
+            cur.execute(
+                """update spawns set empty_since = null
+                   where id = %s and empty_since < now() - make_interval(secs => respawn_seconds)
+                   returning id""",
+                (sp["id"],),
+            )
+            if cur.fetchone():
+                cur.execute(f"insert into item_instances (template_id, {col}) values (%s, %s)",
+                            (sp["template_id"], val))
+
+
 def load_view(conn: Connection, player_id: UUID) -> RoomView:
-    """构建给意图解析 AI 的房间上下文，并分配短编号"""
+    """构建给意图解析 AI 的房间上下文，并分配短编号。顺便跑一次房间刷新"""
     # 只读也包在事务里：psycopg 默认非 autocommit，事务外查询会留下一个不提交的隐式事务
     with conn.transaction():
         cur = _cursor(conn)
         player = load_player(cur, player_id)
+        _refresh_room(cur, player.room_id)
+        cur.execute(
+            f"""select name, coalesce(last_active_at > now() - interval '{ONLINE_WINDOW}', false) as awake
+                from players where room_id = %s and id <> %s and hp > 0 order by name""",
+            (player.room_id, player.id),
+        )
+        others = [OtherPlayer(**r) for r in cur.fetchall()]
         view = RoomView(
             player=player,
             room=load_room(cur, player.room_id),
@@ -122,6 +177,7 @@ def load_view(conn: Connection, player_id: UUID) -> RoomView:
             items=load_items(cur, "i.room_id = %s", (player.room_id,)),
             npcs=load_npcs(cur, "n.room_id = %s and n.alive", (player.room_id,)),
             inventory=load_items(cur, "i.player_id = %s", (player.id,)),
+            others=others,
         )
     view.assign_refs()
     return view
@@ -299,7 +355,7 @@ def do_use(cur: Cursor, player: Player, view: RoomView, a: Use) -> list[str]:
             raise ActionError(f"往{dir_name(a.target)}的门没有锁")
         if ex["key_item"] != item.template.id:
             raise ActionError(f"{item.name}打不开往{dir_name(a.target)}的门")
-        cur.execute("update room_exits set locked = false where room_id = %s and direction = %s",
+        cur.execute("update room_exits set locked = false, unlocked_at = now() where room_id = %s and direction = %s",
                     (player.room_id, a.target))
         return [f"{player.name}用{item.name}打开了往{dir_name(a.target)}的门"]
 
@@ -345,7 +401,7 @@ def do_attack(cur: Cursor, player: Player, view: RoomView, a: Attack) -> list[st
              f"{npc.name} HP {npc_hp}/{npc.template.max_hp}"]
 
     if npc_hp == 0:
-        cur.execute("update npcs set hp = 0, alive = false where id = %s", (npc.id,))
+        cur.execute("update npcs set hp = 0, alive = false, died_at = now() where id = %s", (npc.id,))
         cur.execute("update item_instances set npc_id = null, room_id = %s where npc_id = %s",
                     (player.room_id, npc.id))
         facts.append(f"{npc.name}被击败了")
@@ -377,6 +433,16 @@ def do_give(cur: Cursor, player: Player, view: RoomView, a: Give) -> list[str]:
     return [f"{player.name}把{_label(item)}交给了{npc.name}"]
 
 
+def do_say(cur: Cursor, player: Player, view: RoomView, a: Say) -> list[str]:
+    if a.target is None:
+        return [f"{player.name}说：“{a.message}”"]
+    cur.execute("select 1 from players where room_id = %s and name = %s and id <> %s",
+                (player.room_id, a.target, player.id))
+    if not cur.fetchone():
+        raise ActionError(f"{a.target}不在这里")
+    return [f"{player.name}对{a.target}说：“{a.message}”"]
+
+
 def do_freeform(cur: Cursor, player: Player, view: RoomView, a: Freeform) -> list[str]:
     # 不改任何状态，叙事 AI 自由发挥
     return [f"{player.name}尝试：{a.description}"]
@@ -389,7 +455,7 @@ def do_reject(cur: Cursor, player: Player, view: RoomView, a: Reject) -> list[st
 HANDLERS: dict[str, Callable[..., list[str]]] = {
     "move": do_move, "look": do_look, "take": do_take, "drop": do_drop, "use": do_use,
     "equip": do_equip, "attack": do_attack, "talk": do_talk, "give": do_give, "freeform": do_freeform,
-    "reject": do_reject,
+    "say": do_say, "reject": do_reject,
 }
 
 
@@ -473,6 +539,34 @@ def get_affinity(conn: Connection, player_id: UUID, npc_id: UUID) -> int:
         cur = _cursor(conn)
         npcs = load_npcs(cur, "n.id = %s", (npc_id,))
         return _affinity(cur, load_player(cur, player_id), npcs[0]) if npcs else 0
+
+
+NPC_MEMORY_LIMIT = 150                  # NPC 对每个玩家的记忆摘要上限（字）
+
+
+def get_npc_memory(conn: Connection, player_id: UUID, npc_id: UUID) -> str:
+    """NPC 对这个玩家记得什么（按 NPC 模板记，NPC 复活、重新 seed 都不丢）"""
+    with conn.transaction():
+        cur = _cursor(conn)
+        cur.execute(
+            """select r.memory from player_npc_relations r join npcs n on n.template_id = r.npc_template
+               where r.player_id = %s and n.id = %s""",
+            (player_id, npc_id),
+        )
+        row = cur.fetchone()
+        return row["memory"] if row else ""
+
+
+def set_npc_memory(conn: Connection, player_id: UUID, npc_id: UUID, memory: str) -> None:
+    """对话后更新 NPC 的记忆摘要。只是 NPC 的印象，不是游戏状态，所以由 AI 写，这里只截断长度"""
+    memory = memory.strip()[:NPC_MEMORY_LIMIT]
+    with conn.transaction():
+        conn.execute(
+            """insert into player_npc_relations (player_id, npc_template, memory)
+               select %s, template_id, %s from npcs where id = %s
+               on conflict (player_id, npc_template) do update set memory = excluded.memory""",
+            (player_id, memory, npc_id),
+        )
 
 
 def adjust_affinity(conn: Connection, player_id: UUID, npc_id: UUID, delta: int) -> ActionResult:
