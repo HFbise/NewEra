@@ -55,6 +55,20 @@ def seed(conn, world):
                     (rid, direction, ex["to"], ex.get("locked", False), ex.get("key"), ex.get("relock")),
                 )
 
+        for rid, r in world["rooms"].items():
+            for key, ft in r.get("features", {}).items():
+                cur.execute(
+                    """insert into room_features (room_id, key, name, max_tier, max_uses, uses_left, respawn_seconds)
+                       values (%(r)s, %(k)s, %(n)s, %(t)s, %(u)s, %(u)s, %(s)s)
+                       on conflict (room_id, key) do update set
+                         name = excluded.name, max_tier = excluded.max_tier, max_uses = excluded.max_uses,
+                         uses_left = excluded.max_uses, respawn_seconds = excluded.respawn_seconds, used_at = null""",
+                    {"r": rid, "k": key, "n": ft["name"], "t": ft["max_tier"], "u": ft.get("uses", 1),
+                     "s": ft.get("respawn", DEFAULT_RESPAWN)},
+                )
+            keys = list(r.get("features", {}))
+            cur.execute("delete from room_features where room_id = %s and key <> all(%s)", (rid, keys))
+
         for nid, n in world["npcs"].items():
             s = n.get("stats") or {}
             props = dict(n.get("props", {}))

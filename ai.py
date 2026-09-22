@@ -21,7 +21,7 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 from zai import ZhipuAiClient
 from zai.core import ZaiError
 
-from schema import ActionResult, ItemInstance, Npc, PlayerAction, RoomView, dir_name
+from schema import DIR_NAMES, ActionResult, ItemInstance, Npc, PlayerAction, RoomView, dir_name
 
 DEFAULT_MODELS = {"zhipu": "glm-4.7-flash", "gemini": "gemini-3.1-flash-lite", "claude": "claude-haiku-4-5"}
 KEY_VARS = {"zhipu": "ZAI_API_KEY", "gemini": "GEMINI_API_KEY", "claude": "ANTHROPIC_API_KEY"}
@@ -115,8 +115,9 @@ def _generate_claude(system: str, user: str, fmt: type[BaseModel], max_tokens: i
     return (resp.parsed_output if resp.stop_reason == "end_turn" else None), usage
 
 
-def _log(conn, player_id: UUID, kind: str, usage: Usage, latency_ms: int, ok: bool) -> None:
-    with conn.transaction():
+def _log(db, player_id: UUID, kind: str, usage: Usage, latency_ms: int, ok: bool) -> None:
+    # db 是连接池：AI 调用要等十几秒，不能一直占着连接，记账时临时借一个
+    with db.connection() as conn:
         conn.execute(
             """insert into ai_calls (player_id, kind, model, input_tokens, output_tokens,
                                      cache_read, cache_write, latency_ms, ok)
@@ -126,7 +127,7 @@ def _log(conn, player_id: UUID, kind: str, usage: Usage, latency_ms: int, ok: bo
         )
 
 
-def _call(conn, player_id: UUID, kind: str, system: str, user: str, fmt: type[BaseModel],
+def _call(db, player_id: UUID, kind: str, system: str, user: str, fmt: type[BaseModel],
           max_tokens: int, check=None):
     """调一次结构化输出，校验失败重试一次。返回 (解析结果或 None, 本次 token 统计)。
     check(out, last) 可以抛 ValueError 要求重来，last=True 表示没有重试机会了，应该尽量兜底"""
@@ -142,7 +143,7 @@ def _call(conn, player_id: UUID, kind: str, system: str, user: str, fmt: type[Ba
             result = check(out, attempt == 1) if (out is not None and check) else out
         except (ValidationError, ValueError):
             result = None
-        _log(conn, player_id, kind, usage, latency, result is not None)
+        _log(db, player_id, kind, usage, latency, result is not None)
         if result is not None:
             return result, usage_total
     return None, usage_total
@@ -153,13 +154,20 @@ def _call(conn, player_id: UUID, kind: str, system: str, user: str, fmt: type[Ba
 class AIAction(BaseModel):
     """给 AI 的扁平格式，比嵌套 union 好填；回来再转成 PlayerAction 校验"""
     action: Literal["move", "look", "take", "drop", "use", "equip", "attack", "talk", "give", "say",
-                    "freeform", "reject"]
+                    "revive", "invite", "join", "leave_party", "stunt", "struggle", "freeform", "reject"]
     direction: Optional[str] = None
     item: Optional[str] = None
     target: Optional[str] = None
     message: Optional[str] = None
     description: Optional[str] = None
     reason: Optional[str] = None
+    # stunt / struggle 的裁判字段，取值见 schema.Stunt
+    feature: Optional[str] = None
+    difficulty: Optional[str] = None
+    tier: Optional[str] = None
+    status: Optional[str] = None
+    status_label: Optional[str] = None
+    escape: Optional[str] = None
 
 
 class AIParsed(BaseModel):
@@ -179,10 +187,22 @@ INTENT_SYSTEM = """你是文字 MUD 游戏的指令解析器。读玩家的输�
 - drop: item（背包物品的 ref）
 - use: item（背包物品的 ref），target 可空。只用于吃喝（target 不填）和用钥匙开门（target 填出口英文名）
 - equip: item（背包物品的 ref）。穿上、戴上、装备、拿在手里当武器都是 equip
-- attack: target（NPC 的 ref）
+- attack: target（NPC 的 ref；打其他玩家时填"其他玩家"里的名字）
 - talk: target（NPC 的 ref），message（玩家说的话，保留原话）
 - give: item（背包物品的 ref），target（NPC 的 ref）
 - say: message（说的话，保留原话），target 可空（对某个玩家说时填"其他玩家"里的名字，对大家说不填）
+- revive: target（"其他玩家"里倒下的人的名字）。对标着"倒下了"的玩家做任何救治都是 revive，不是 freeform：急救、包扎、止血、扶起、喂药、叫醒、做人工呼吸
+- invite: target（"其他玩家"里的名字）。邀请对方组队
+- join: target（"邀请你组队的人"里的名字）。接受邀请、加入对方的队伍
+- leave_party: 不用填字段。离开、退出队伍
+- stunt: 借环境或创意动作去伤害、制住某个 NPC 或玩家（推石头砸、用铁叉捅、绊倒、用绳子捆、泼东西迷眼）。你是裁判，要填：
+  - target（NPC 的 ref 或其他玩家的名字），description（第三人称简述怎么做的）
+  - feature：用到"可利用地形"里的东西就填它的 ref（如 f1）；只用环境描述里随手的东西就不填
+  - difficulty：做成的难度 easy / normal / hard，看动作合不合理、对方有没有防备
+  - tier：做成时的伤害 none（不伤人，比如捆绑）/ light（轻伤）/ heavy（重伤）/ lethal（足以致命），照实判断，规则会按地形限幅
+  - status：做成时对方陷入的负面状态，不会就不填。incapacitated = 失去战斗能力（砸晕、打昏、呛晕）；restrained = 被束缚（捆住、压住、缠住）
+  - status_label：状态的说法，简短，如"被石头砸晕了""被绳子捆住了"；escape：这个状态挣脱或醒来的难度 easy / normal / hard
+- struggle: description（第三人称简述怎么挣脱的），difficulty（这次挣脱或醒来的难度 easy / normal / hard，看方法合不合理、状态有多严重）。玩家自己带着负面状态时想摆脱它就是 struggle；失去战斗能力时说什么做什么都算 struggle（挣扎着醒来）
 - freeform: description（第三人称简述玩家想做的事）
 - reject: reason（第三人称简述为什么做不到）
 
@@ -207,15 +227,32 @@ def room_context(view: RoomView) -> str:
     exits = "、".join(f"{e.direction}（{dir_name(e.direction)}）" + ("锁着" if e.locked else "")
                      for e in view.exits) or "无"
     items = "、".join(f"{by_id[i.id]} {i.name}" for i in view.items) or "无"
-    npcs = "、".join(f"{by_id[n.id]} {n.name}" for n in view.npcs) or "无"
+    npcs = "、".join(f"{by_id[n.id]} {n.name}" + (f"（{n.status.describe()}）" if n.status else "")
+                    for n in view.npcs) or "无"
+    features = "、".join(f"{by_id[f.id]} {f.name}" for f in view.features) or "无"
     inv = "、".join(f"{by_id[i.id]} {i.name}" + ("（已装备）" if i.equipped_slot else "")
                    for i in view.inventory) or "无"
-    players = "、".join(p.name + ("" if p.awake else "（睡着了）") for p in view.others) or "无"
+    players = "、".join(p.name + ("（倒下了）" if p.downed else f"（{p.status.describe()}）" if p.status
+                                 else "" if p.awake else "（睡着了）")
+                       for p in view.others) or "无"
+    st = view.player.status
+    me = (f"{st.describe()}（施加时判的挣脱难度 {st.escape}，已经失败 {st.attempts} 次）" if st
+          else "倒下了" if view.player.hp <= 0 else "正常")
     return (f"房间：{view.room.name}\n描述：{view.room.description}\n环境：{view.room.details}\n"
-            f"出口：{exits}\n地上：{items}\nNPC：{npcs}\n其他玩家：{players}\n背包：{inv}")
+            f"可利用地形：{features}\n"
+            f"出口：{exits}\n地上：{items}\nNPC：{npcs}\n其他玩家：{players}\n背包：{inv}\n"
+            f"队友：{'、'.join(view.party) or '无'}\n邀请你组队的人：{'、'.join(view.invites) or '无'}\n"
+            f"你的状态：{me}")
 
 
-def parse_intent(conn, view: RoomView, text: str) -> tuple[Optional[list], dict]:
+JUDGE_WORDS = {
+    "容易": "easy", "简单": "easy", "普通": "normal", "一般": "normal", "中等": "normal", "困难": "hard", "难": "hard",
+    "无": "none", "无伤": "none", "轻伤": "light", "重伤": "heavy", "致命": "lethal",
+    "失去战斗能力": "incapacitated", "昏迷": "incapacitated", "束缚": "restrained",
+}
+
+
+def parse_intent(db, view: RoomView, text: str) -> tuple[Optional[list], dict]:
     user = f"<room>\n{room_context(view)}\n</room>\n\n<player_input>\n{text}\n</player_input>"
 
     def to_actions(out: AIParsed, last: bool) -> list:
@@ -223,20 +260,32 @@ def parse_intent(conn, view: RoomView, text: str) -> tuple[Optional[list], dict]
             raise ValueError("空动作")
         actions = []
         for a in out.actions:
-            d = a.model_dump(exclude_none=True)
-            if d["action"] == "say":
-                # say 的 target 是玩家名字，只去掉可能抄过来的"（睡着了）"
-                if "target" in d:
-                    d["target"] = re.sub(r"（.*?）", "", d["target"]).strip()
-            else:
-                # 模型偶尔把 "i4 面包"、"up（上）" 整个抄过来，只留开头的 ref / 方向 key
-                for field in ("item", "target", "direction"):
-                    if field in d and (m := re.match(r"\s*([A-Za-z]+\d*)", d[field])):
-                        d[field] = m[1]
+            d = {k: v for k, v in a.model_dump(exclude_none=True).items() if v != ""}
+            # 裁判字段偶尔写成中文，换回 key；认不出的交给 Pydantic 校验失败重来
+            for field in ("difficulty", "escape", "tier", "status"):
+                if field in d:
+                    d[field] = JUDGE_WORDS.get(d[field].strip().lower(), d[field].strip().lower())
+            # 对倒下、被困的玩家包扎、止血这类，模型常归成 freeform，按急救处理
+            if d["action"] == "freeform":
+                helpable = [p.name for p in view.others if p.downed or p.status]
+                who = [n for n in helpable if n in d.get("description", "")]
+                if who and re.search(r"包扎|急救|止血|扶|救|喂|叫醒|唤醒|治疗|人工呼吸|松绑|解开", d["description"]):
+                    d = {"action": "revive", "target": who[0]}
+            for field in ("item", "target", "direction", "feature"):
+                if field not in d:
+                    continue
+                # 玩家名字可能带着抄过来的"（睡着了）""（倒下了）"，方向可能是 "up（上）"
+                v = re.sub(r"（.*?）|\(.*?\)", "", d[field]).strip()
+                # 模型偶尔把 "i4 面包" 整个抄过来，只留开头的 ref / 方向 key；
+                # 开头不是 ref 或方向的是玩家名字（say、PvP、急救、组队），原样留着
+                m = re.match(r"([A-Za-z]+\d*)", v)
+                if d["action"] != "say" and m and (m[1] in view.refs or m[1].lower() in DIR_NAMES):
+                    v = m[1].lower() if field == "direction" else m[1]
+                d[field] = v
             actions.append(_action(d))
         return actions
 
-    return _call(conn, view.player.id, "intent", INTENT_SYSTEM, user, AIParsed, 1024, to_actions)
+    return _call(db, view.player.id, "intent", INTENT_SYSTEM, user, AIParsed, 1024, to_actions)
 
 
 # ============ 叙事 ============
@@ -262,7 +311,10 @@ NARRATE_SYSTEM = """你是文字 MUD 游戏的叙事者，用中文第二人称�
 - 可以加一点氛围点缀让文字有味道：光影、微风、气味、细小的声响、人物的神态和姿势。但不要定死天气、时间、季节（不写晴天雨天、清晨黄昏、酷暑寒冬）
 - 可以从环境细节里挑一两样写进叙事，让场景更具体；freeform 动作就围绕环境细节里的东西来写它的反应（敲空桶是咚咚声，敲满桶声音发闷）
 - 玩家和其他角色的名字只是称呼，不要从名字联想环境
-- 名字后面标"（睡着了）"的玩家正在原地睡觉，不会回应也不会行动
+- 名字后面标"（睡着了）"的玩家正在原地睡觉，不会回应也不会行动；标"倒下了""倒在地上"的玩家 HP 归零躺在地上，等人急救
+- 玩家之间动手（攻击其他玩家）照 facts 写伤害和结果，被打的人这回合不会还手，除非 facts 里写了
+- "尝试：……"后面跟"成功了"就写成功的过程和效果，跟"没有成功"就写失手（石头滚偏、没捆住），伤害和状态只照 facts 写
+- 名字后面带着状态（被砸晕、被捆住）的角色照状态描写；<player> 里写了玩家自己的状态也要照着写
 - 简洁：2 到 5 句，不要列表，不要标题，不要复述数值以外的系统信息。HP 等数字可以自然地带出来
 - <recent> 是这个房间刚刚发生的事（别人的行动），叙事要和它接得上，不要矛盾
 
@@ -300,7 +352,7 @@ GIVE_SYSTEM = """你在扮演文字 MUD 游戏里的一个 NPC，要决定这一
 - give 填要给的物品编号（如 g1），不给就填 null；reason 用一句话说明理由"""
 
 
-def decide_give(conn, view: RoomView, text: str, npc: Npc, giveable: list[ItemInstance],
+def decide_give(db, view: RoomView, text: str, npc: Npc, giveable: list[ItemInstance],
                 affinity: int, memory: str) -> tuple[Optional[UUID], dict]:
     """返回 (要给的物品真实 id 或 None, token 统计)"""
     give_refs = {f"g{n}": item for n, item in enumerate(giveable, 1)}
@@ -317,11 +369,11 @@ def decide_give(conn, view: RoomView, text: str, npc: Npc, giveable: list[ItemIn
             out.give = None                # 不在可给列表里就当不给
         return out
 
-    out, usage = _call(conn, view.player.id, "give", GIVE_SYSTEM, user, GiveDecision, 256, check)
+    out, usage = _call(db, view.player.id, "give", GIVE_SYSTEM, user, GiveDecision, 256, check)
     return (give_refs[out.give].id if out and out.give else None), usage
 
 
-def narrate(conn, view: RoomView, text: str, results: list[ActionResult],
+def narrate(db, view: RoomView, text: str, results: list[ActionResult],
             npc: Optional[Npc], affinity: int, memory: str = "", recent: Optional[list[str]] = None
             ) -> tuple[Optional[Narration], dict]:
     """返回 (叙事, token 统计)。NPC 给东西已经在 decide_give 里定好并执行，结果在 results 里。
@@ -349,7 +401,8 @@ def narrate(conn, view: RoomView, text: str, results: list[ActionResult],
     if not any(name in o for o in others):
         facts = facts.replace(name, "你")
     parts = [f"<room>\n{view.room.name}：{view.room.description}\n环境细节：{view.room.details}\n</room>",
-             f"<player>角色名：{name}（只是称呼，不代表天气、环境或任何设定）；HP {view.player.hp}/{view.player.max_hp}</player>"]
+             f"<player>角色名：{name}（只是称呼，不代表天气、环境或任何设定）；HP {view.player.hp}/{view.player.max_hp}"
+             + (f"；状态：{view.player.status.describe()}" if view.player.status else "") + "</player>"]
     if npc:
         deeds = "、".join(view.player.flags) or "无"
         parts.append(
@@ -388,4 +441,4 @@ def narrate(conn, view: RoomView, text: str, results: list[ActionResult],
                                      for d, dest, locked in missing_exits)
         return out
 
-    return _call(conn, view.player.id, "narrate", NARRATE_SYSTEM, "\n\n".join(parts), Narration, 1024, check)
+    return _call(db, view.player.id, "narrate", NARRATE_SYSTEM, "\n\n".join(parts), Narration, 1024, check)

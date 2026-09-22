@@ -113,6 +113,8 @@ function render(s) {
     <h2>${esc(p.name)}</h2>
     <div>HP ${p.hp}/${p.max_hp} · 攻 ${p.attack} · 防 ${p.defense}</div>
     <div class="hp"><div style="width:${100 * p.hp / p.max_hp}%"></div></div>
+    ${p.hp <= 0 ? `<div class="sys">你倒下了，只能看和说话，等别人来急救</div>` : ""}
+    ${p.status ? `<div class="sys">你${esc(p.status.label)}，${p.status.kind === "incapacitated" ? "说什么都算挣扎着醒来" : "动不了，试试挣脱"}</div>` : ""}
     ${Object.keys(p.flags).length ? `<div class="tag">标记：${Object.keys(p.flags).map(esc).join("、")}</div>` : ""}
     <h2>位置</h2>
     <div class="room">${esc(s.room.name)}</div>
@@ -120,8 +122,13 @@ function render(s) {
     <h2>出口</h2>
     <ul>${s.exits.map(e => `<li data-name="${e.label}">${e.label}<span class="tag">${esc(e.to)}${e.locked ? "（锁着）" : ""}</span></li>`).join("")}</ul>
     ${s.npcs.length ? `<h2>NPC</h2><ul>${s.npcs.map(n => li(n.ref, n.name,
-      n.max_hp ? `<span class="tag">${n.hp}/${n.max_hp}</span>` : "")).join("")}</ul>` : ""}
-    ${s.others.length ? `<h2>其他玩家</h2><ul>${s.others.map(o => `<li data-name="对${esc(o.name)}说 ">${esc(o.name)}<span class="tag">${o.awake ? "HP " + o.hp : "睡着了"}</span></li>`).join("")}</ul>` : ""}
+      (n.max_hp ? `<span class="tag">${n.hp}/${n.max_hp}</span>` : "") +
+      (n.status ? `<span class="tag">${esc(n.status)}</span>` : ""))).join("")}</ul>` : ""}
+    ${s.others.length ? `<h2>其他玩家</h2><ul>${s.others.map(o => o.hp <= 0
+      ? `<li data-name="急救${esc(o.name)}">${esc(o.name)}<span class="tag">倒下了</span></li>`
+      : `<li data-name="对${esc(o.name)}说 ">${esc(o.name)}<span class="tag">${o.status ? esc(o.status) : o.awake ? "HP " + o.hp : "睡着了"}</span></li>`).join("")}</ul>` : ""}
+    ${s.party.length ? `<h2>队伍</h2><ul>${s.party.map(n => `<li>${esc(n)}</li>`).join("")}</ul>` : ""}
+    ${s.invites.length ? `<h2>组队邀请</h2><ul>${s.invites.map(n => `<li data-name="加入${esc(n)}的队伍">${esc(n)}<span class="tag">点一下接受</span></li>`).join("")}</ul>` : ""}
     ${s.items.length ? `<h2>地上</h2><ul>${s.items.map(i => li(i.ref, i.name,
       i.quantity > 1 ? `<span class="tag">x${i.quantity}</span>` : "")).join("")}</ul>` : ""}
     <h2>背包</h2>
@@ -136,6 +143,9 @@ function render(s) {
       打哥布林 · 开下面的门 · 用钥匙 下<br>
       对老汉斯说 你好 · 把面包给老汉斯<br>
       说 大家好 · 对寒风说 跟我来（对玩家说话不走 AI）<br>
+      邀请寒风组队 · 加入寒风的队伍 · 离开队伍<br>
+      急救寒风 · 打寒风（不能打睡着的人和队友）<br>
+      借环境打人：推石头砸哥布林、用绳子捆住寒风（AI 判定）· 挣脱<br>
       用 ; 分隔多个命令，其他输入算 自由行动<br>
       点侧栏里的名字会填进输入框
     </div>
@@ -164,7 +174,7 @@ async function enter() {
       list("出口", s.exits.map(e => `${e.label}（${e.to}${e.locked ? "，锁着" : ""}）`)) +
       list("这里有", s.npcs.map(n => n.name)) +
       list("地上有", s.items.map(i => i.name)) +
-      list("其他玩家", s.others.map(o => o.name + (o.awake ? "" : "（睡着了）"))) + `</div>`);
+      list("其他玩家", s.others.map(o => o.name + (o.hp <= 0 ? "（倒下了）" : o.awake ? "" : "（睡着了）"))) + `</div>`);
   } catch (e) { logout(); }
 }
 

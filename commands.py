@@ -67,6 +67,19 @@ def _player(view: RoomView, text: str) -> Optional[str]:
     return None
 
 
+def _player_or_unsure(view: RoomView, text: str, invites: bool = False) -> str:
+    """必须是玩家名字的地方。invites=True 时也认邀请过自己的人（接受邀请时对方可能不在同一房间）"""
+    if name := _player(view, text):
+        return name
+    if invites:
+        text = text.strip()
+        for match in (lambda n: n == text, lambda n: text in n or n in text):
+            for name in view.invites:
+                if match(name):
+                    return name
+    raise _Unsure(text)
+
+
 def _target(view: RoomView, text: str) -> str:
     """use / look 的目标：先当方向，再当名字"""
     return _dir(text) or _find(view, text)
@@ -80,6 +93,13 @@ def parse_one(view: RoomView, text: str) -> dict:
 
 
 def _parse_one(view: RoomView, t: str) -> dict:
+    # 失去战斗能力时说什么都算挣扎着醒来；有 AI 时服务器会让 AI 按怎么做来判难度
+    st = view.player.status
+    if st and st.kind == "incapacitated":
+        return {"action": "struggle", "description": t}
+    if re.fullmatch(r"挣脱|挣扎|醒来|醒过来|struggle", t, re.I):
+        return {"action": "struggle", "description": t}
+
     if t.lower() == "l":
         return {"action": "look", "target": None}
     if m := re.fullmatch(r"(?:look|查看|观察|看看|看)(?:\s*(.+))?", t, re.I):
@@ -112,8 +132,33 @@ def _parse_one(view: RoomView, t: str) -> dict:
         return {"action": "use", "item": _find(view, m[1], "inv"),
                 "target": _target(view, m[2]) if m[2] else None}
 
+    # 急救、组队只对玩家，名字对不上就交给 AI
+    if m := (re.fullmatch(r"(?:revive|急救|救起|扶起|救醒|叫醒|松绑|救)\s*(.+)", t, re.I)
+             or re.fullmatch(r"(?:给|帮)\s*(.+?)\s*(?:松绑|解开)", t)):
+        return {"action": "revive", "target": _player_or_unsure(view, m[1])}
+    if re.fullmatch(r"(?:离开|退出)队伍|退队|leave party", t, re.I):
+        return {"action": "leave_party"}
+    if m := (re.fullmatch(r"(?:加入|接受)\s*(.+?)\s*的?(?:队伍|邀请|队)", t)
+             or re.fullmatch(r"join\s+(.+)", t, re.I)):
+        return {"action": "join", "target": _player_or_unsure(view, m[1], invites=True)}
+    if m := re.fullmatch(r"(?:和|跟|与)\s*(.+?)\s*组队", t):
+        # 对方邀请过自己就是接受，否则是发邀请
+        name = _player_or_unsure(view, m[1], invites=True)
+        return {"action": "join" if name in view.invites else "invite", "target": name}
+    if m := (re.fullmatch(r"(?:邀请|拉)\s*(.+?)\s*(?:组队|入队|进队|加入队伍)?", t)
+             or re.fullmatch(r"invite\s+(.+)", t, re.I)):
+        return {"action": "invite", "target": _player_or_unsure(view, m[1])}
+
+    # 打的是玩家就是 PvP，target 填名字；否则是 NPC 的 ref。
+    # 先认准确的玩家名，再找 NPC，最后才模糊匹配玩家，免得有人叫"布"时"打哥布林"打到他
     if m := re.fullmatch(r"(?:attack|kill|hit|攻击|杀|打)\s*(.+)", t, re.I):
-        return {"action": "attack", "target": _find(view, m[1], "npc")}
+        name = m[1].strip()
+        if any(p.name == name for p in view.others):
+            return {"action": "attack", "target": name}
+        try:
+            return {"action": "attack", "target": _find(view, name, "npc")}
+        except _Unsure:
+            return {"action": "attack", "target": _player_or_unsure(view, name)}
 
     # 对某人说：对方是玩家就是 say（广播，不走 AI），是 NPC 就是 talk（AI 扮演 NPC 回话）
     if m := (re.fullmatch(r"(?:对|跟|和|向)\s*(.+?)\s*(?:说|讲|问)[:：]?\s*(.+)", t)

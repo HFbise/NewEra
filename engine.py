@@ -9,21 +9,41 @@
   view = load_view(conn, player_id)
   results = execute_all(conn, view, parsed.actions)
 """
+import random
+from datetime import datetime, timezone
 from typing import Any, Callable, Optional
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from psycopg import Connection, Cursor
+from psycopg import errors as pg_errors
 from psycopg.rows import dict_row
+from psycopg.types.json import Jsonb
 
 from schema import (
-    ActionResult, Attack, Drop, Equip, Freeform, Give, ItemInstance, Look, Move,
-    Npc, OtherPlayer, Player, PlayerAction, Reject, Room, RoomExit, RoomView, Say, Take, Talk, Use, dir_name,
+    ActionResult, Attack, Drop, Equip, Feature, Freeform, Give, Invite, ItemInstance, Join, LeaveParty, Look,
+    Move, Npc, OtherPlayer, Player, PlayerAction, Reject, Revive, Room, RoomExit, RoomView, Say, Status, Struggle,
+    Stunt, Take, Talk, Use, dir_name,
 )
 
 
 ONLINE_WINDOW = "15 seconds"            # 超过这么久没有心跳的玩家算睡着
 AFFINITY_STEP = 5                       # 对话 AI 每次最多调整的好感度
 AFFINITY_RANGE = (-100, 100)
+PARTY_MAX = 5                           # 一支队伍最多几个人
+INVITE_WINDOW = "10 minutes"            # 组队邀请多久内有效
+DOWNED_ALLOWED = {"look", "say"}        # 倒下的人只能看和说话（喊人来救）
+
+# 创意攻击（stunt）和负面状态。AI 只选档位和难度，数字都在这里
+TIERS = ["none", "light", "heavy", "lethal"]
+TIER_DAMAGE = {"none": 0, "light": 3, "heavy": 8, "lethal": 15}
+IMPROVISED_MAX_TIER = "light"           # 没在 world.yaml 声明成可利用地形的东西最多轻伤
+DIFFICULTIES = ["easy", "normal", "hard"]
+SUCCESS_CHANCE = {"easy": 0.9, "normal": 0.65, "hard": 0.35}
+ESCAPE_CHANCE = {"easy": 0.7, "normal": 0.45, "hard": 0.2}
+ESCAPE_BONUS = 0.15                     # 每挣脱失败一次，下次成功率加这么多
+STATUS_MAX = "3 minutes"                # 负面状态最长多久自动解除，防止 AI 一直判醒不过来把人卡死
+# 被束缚时做不了的动作；失去战斗能力时只能挣脱（醒来）
+RESTRAINED_BLOCKED = {"move", "attack", "stunt", "take", "drop", "equip", "use", "give", "revive"}
 
 
 class ActionError(Exception):
@@ -39,7 +59,7 @@ from item_instances i join item_templates t on t.id = i.template_id
 """
 
 NPC_SELECT = """
-select n.id, n.room_id, n.hp, n.alive, n.memory, row_to_json(t) as template
+select n.id, n.room_id, n.hp, n.alive, n.memory, n.status, row_to_json(t) as template
 from npcs n join npc_templates t on t.id = n.template_id
 """
 
@@ -50,7 +70,7 @@ def _cursor(conn: Connection) -> Cursor:
 
 def load_player(cur: Cursor, player_id: UUID, lock: bool = False) -> Player:
     cur.execute(
-        "select id, name, room_id, hp, max_hp, attack, defense, flags from players where id = %s"
+        "select id, name, room_id, hp, max_hp, attack, defense, flags, party_id, status from players where id = %s"
         + (" for update" if lock else ""),
         (player_id,),
     )
@@ -103,6 +123,8 @@ def delete_player(conn: Connection, player_id: UUID) -> None:
     with conn.transaction():
         cur = _cursor(conn)
         player = load_player(cur, player_id, lock=True)
+        if player.party_id:
+            _leave_party(cur, player)
         for item in load_items(cur, "i.player_id = %s", (player_id,), lock=True):
             _move_item(cur, item, room_id=player.room_id)
         # 开发期账号是 server.py 塞进 auth.users 的假用户；正式版走 Supabase Auth 的删除接口
@@ -119,6 +141,19 @@ def _refresh_room(cur: Cursor, room_id: str) -> None:
            where t.id = n.template_id and n.room_id = %s and not n.alive
              and t.props ? 'respawn_seconds'
              and n.died_at < now() - make_interval(secs => (t.props->>'respawn_seconds')::int)""",
+        (room_id,),
+    )
+    # 负面状态到点自动解除
+    for table in ("players", "npcs"):
+        cur.execute(
+            f"""update {table} set status = null where room_id = %s and status is not null
+                and (status->>'since')::timestamptz < now() - interval '{STATUS_MAX}'""",
+            (room_id,),
+        )
+    # 用掉的可利用地形到点恢复
+    cur.execute(
+        """update room_features set uses_left = max_uses, used_at = null
+           where room_id = %s and used_at < now() - make_interval(secs => respawn_seconds)""",
         (room_id,),
     )
     # 打开的门 relock_seconds 秒后自动锁回去
@@ -162,14 +197,30 @@ def load_view(conn: Connection, player_id: UUID) -> RoomView:
     # 只读也包在事务里：psycopg 默认非 autocommit，事务外查询会留下一个不提交的隐式事务
     with conn.transaction():
         cur = _cursor(conn)
-        player = load_player(cur, player_id)
-        _refresh_room(cur, player.room_id)
+        _refresh_room(cur, load_player(cur, player_id).room_id)
+        player = load_player(cur, player_id)          # 刷新可能解除了自己的状态，重新读
         cur.execute(
-            f"""select name, coalesce(last_active_at > now() - interval '{ONLINE_WINDOW}', false) as awake
-                from players where room_id = %s and id <> %s and hp > 0 order by name""",
+            f"""select name, coalesce(last_active_at > now() - interval '{ONLINE_WINDOW}', false) as awake,
+                       hp <= 0 as downed, status
+                from players where room_id = %s and id <> %s order by name""",
             (player.room_id, player.id),
         )
         others = [OtherPlayer(**r) for r in cur.fetchall()]
+        party = []
+        if player.party_id:
+            cur.execute("select name from players where party_id = %s and id <> %s order by name",
+                        (player.party_id, player.id))
+            party = [r["name"] for r in cur.fetchall()]
+        cur.execute(
+            f"""select p.name from party_invites i join players p on p.id = i.inviter
+                where i.invitee = %s and i.created_at > now() - interval '{INVITE_WINDOW}'
+                order by i.created_at""",
+            (player.id,),
+        )
+        invites = [r["name"] for r in cur.fetchall()]
+        cur.execute("select id, key, name, max_tier, uses_left from room_features where room_id = %s and uses_left > 0 order by key",
+                    (player.room_id,))
+        features = [Feature(**r) for r in cur.fetchall()]
         view = RoomView(
             player=player,
             room=load_room(cur, player.room_id),
@@ -178,6 +229,9 @@ def load_view(conn: Connection, player_id: UUID) -> RoomView:
             npcs=load_npcs(cur, "n.room_id = %s and n.alive", (player.room_id,)),
             inventory=load_items(cur, "i.player_id = %s", (player.id,)),
             others=others,
+            party=party,
+            invites=invites,
+            features=features,
         )
     view.assign_refs()
     return view
@@ -262,11 +316,6 @@ def _affinity(cur: Cursor, player: Player, npc: Npc) -> int:
     return row["affinity"] if row else 0
 
 
-def _set_flag(cur: Cursor, player: Player, flag: str) -> None:
-    cur.execute("update players set flags = flags || jsonb_build_object(%s::text, true) where id = %s",
-                (flag, player.id))
-
-
 # ============ 动作处理 ============
 # 签名统一: (cur, player, view, action) -> facts
 
@@ -296,13 +345,17 @@ def do_look(cur: Cursor, player: Player, view: RoomView, a: Look) -> list[str]:
             facts.append("地上有：" + "、".join(_label(i) for i in items))
         npcs = load_npcs(cur, "n.room_id = %s and n.alive", (player.room_id,))
         if npcs:
-            facts.append("这里有：" + "、".join(n.name for n in npcs))
+            facts.append("这里有：" + "、".join(n.name + (f"（{n.status.describe()}）" if n.status else "")
+                                            for n in npcs))
         cur.execute(
-            f"""select name, coalesce(last_active_at > now() - interval '{ONLINE_WINDOW}', false) as awake
-                from players where room_id = %s and id <> %s and hp > 0 order by name""",
+            f"""select name, hp, status, coalesce(last_active_at > now() - interval '{ONLINE_WINDOW}', false) as awake
+                from players where room_id = %s and id <> %s order by name""",
             (player.room_id, player.id),
         )
-        others = [r["name"] + ("" if r["awake"] else "（在原地睡着了，不会动也不会回应）") for r in cur.fetchall()]
+        others = [r["name"] + ("（倒在地上，等人急救）" if r["hp"] <= 0
+                               else f"（{Status(**r['status']).describe()}）" if r["status"]
+                               else "" if r["awake"] else "（在原地睡着了，不会动也不会回应）")
+                  for r in cur.fetchall()]
         if others:
             facts.append("其他玩家：" + "、".join(others))
         return facts
@@ -323,6 +376,8 @@ def do_look(cur: Cursor, player: Player, view: RoomView, a: Look) -> list[str]:
         facts = [f"{n.name}：{n.template.description}"]
         if n.combatable:
             facts.append(f"{n.name} HP {n.hp}/{n.template.max_hp}")
+        if n.status:
+            facts.append(f"{n.name}{n.status.describe()}")
         return facts
     raise ActionError("这里看不到那个东西")
 
@@ -387,37 +442,272 @@ def do_equip(cur: Cursor, player: Player, view: RoomView, a: Equip) -> list[str]
     return facts + [f"{player.name}装备了{item.name}"]
 
 
-def do_attack(cur: Cursor, player: Player, view: RoomView, a: Attack) -> list[str]:
-    # 战斗公式是占位的，待定问题里还没定
-    npc = _room_npc(cur, view, player, a.target)
-    if not npc.combatable:
-        raise ActionError(f"{npc.name}不是能打的对象")
-    weapon = _equipped(cur, player, "weapon")
+# ============ 战斗 ============
+# 战斗公式是占位的，待定问题里还没定。
+# 借环境的创意攻击（stunt）由 AI 当裁判给难度、档位、状态，这里掷骰、限幅、执行，AI 给不出具体数字
+
+def _roll(chance: float) -> bool:
+    """掷骰，测试时可以换掉"""
+    return random.random() < chance
+
+
+def _cap(value: str, cap: str, scale: list[str]) -> str:
+    return scale[min(scale.index(value), scale.index(cap))]
+
+
+def _lower(value: str, scale: list[str]) -> str:
+    return scale[max(0, scale.index(value) - 1)]
+
+
+def _set_status(cur: Cursor, table: str, obj_id: UUID, status: Optional[Status]) -> None:
+    cur.execute(f"update {table} set status = %s where id = %s",
+                (Jsonb(status.model_dump()) if status else None, obj_id))
+
+
+def _room_player(cur: Cursor, player: Player, name: str, lock: bool = False) -> tuple[Player, bool]:
+    """同房间的其他玩家（按名字），返回 (玩家, 是否醒着)"""
+    if name == player.name:
+        raise ActionError(f"{player.name}没法对自己这么做")
+    cur.execute(
+        f"""select id, coalesce(last_active_at > now() - interval '{ONLINE_WINDOW}', false) as awake
+            from players where room_id = %s and name = %s""",
+        (player.room_id, name),
+    )
+    row = cur.fetchone()
+    if row is None:
+        raise ActionError(f"{name}不在这里")
+    return load_player(cur, row["id"], lock=lock), row["awake"]
+
+
+def _pvp_target(cur: Cursor, player: Player, name: str) -> Player:
+    """PvP 能打的玩家：不能打倒下的、睡着的、队友"""
+    target, awake = _room_player(cur, player, name, lock=True)
+    if target.hp <= 0:
+        raise ActionError(f"{target.name}已经倒下了")
+    if not awake:
+        raise ActionError(f"{target.name}睡着了，不能趁人睡着下手")
+    if player.party_id and player.party_id == target.party_id:
+        raise ActionError(f"{target.name}是{player.name}的队友，不能攻击队友")
+    return target
+
+
+def _hurt_npc(cur: Cursor, player: Player, npc: Npc, dmg: int) -> tuple[list[str], bool]:
+    """扣 NPC 血，返回 (facts, 是否死了)。死了掉东西，击杀标记算整支队伍的"""
+    hp = max(0, npc.hp - dmg)
+    facts = [f"{npc.name} HP {hp}/{npc.template.max_hp}"]
+    if hp > 0:
+        cur.execute("update npcs set hp = %s where id = %s", (hp, npc.id))
+        return facts, False
+    cur.execute("update npcs set hp = 0, alive = false, died_at = now(), status = null where id = %s", (npc.id,))
+    cur.execute("update item_instances set npc_id = null, room_id = %s where npc_id = %s",
+                (player.room_id, npc.id))
+    facts.append(f"{npc.name}被击败了")
+    flag = npc.template.props.get("on_death", {}).get("set_flag")
+    if flag:
+        # 同一房间的队友一起记上标记
+        cur.execute(
+            """update players set flags = flags || jsonb_build_object(%s::text, true)
+               where id = %s or (party_id = %s and room_id = %s) returning name""",
+            (flag, player.id, player.party_id, player.room_id),
+        )
+        mates = [r["name"] for r in cur.fetchall() if r["name"] != player.name]
+        if mates:
+            facts.append(f"这次击杀算整支队伍的，{'、'.join(mates)}也记了功")
+    return facts, True
+
+
+def _hurt_player(cur: Cursor, target: Player, dmg: int) -> tuple[list[str], bool]:
+    """扣玩家血，返回 (facts, 是否倒下)。被打的人不自动反击，要还手得自己出手"""
+    hp = max(0, target.hp - dmg)
+    cur.execute("update players set hp = %s, updated_at = now() where id = %s", (hp, target.id))
+    facts = [f"{target.name} HP {hp}/{target.max_hp}"]
+    if hp == 0:
+        facts.append(f"{target.name}倒下了")
+    return facts, hp == 0
+
+
+def _npc_counter(cur: Cursor, player: Player, npc: Npc) -> list[str]:
+    """NPC 挨打后反击。身上有负面状态就不还手，按施加时的挣脱难度看这回合能不能恢复"""
+    if npc.status:
+        st = npc.status
+        if _roll(ESCAPE_CHANCE[st.escape] + ESCAPE_BONUS * st.attempts):
+            _set_status(cur, "npcs", npc.id, None)
+            return [f"{npc.name}摆脱了“{st.label}”的状态，但这回合来不及还手"]
+        st.attempts += 1
+        _set_status(cur, "npcs", npc.id, st)
+        return [f"{npc.name}还{st.label}，没法还手"]
     armor = _equipped(cur, player, "armor")
-
-    dmg = max(1, player.attack + (weapon.template.damage if weapon else 0) - npc.template.defense)
-    npc_hp = max(0, npc.hp - dmg)
-    facts = [f"{player.name}用{weapon.name if weapon else '拳头'}攻击{npc.name}，造成 {dmg} 点伤害",
-             f"{npc.name} HP {npc_hp}/{npc.template.max_hp}"]
-
-    if npc_hp == 0:
-        cur.execute("update npcs set hp = 0, alive = false, died_at = now() where id = %s", (npc.id,))
-        cur.execute("update item_instances set npc_id = null, room_id = %s where npc_id = %s",
-                    (player.room_id, npc.id))
-        facts.append(f"{npc.name}被击败了")
-        flag = npc.template.props.get("on_death", {}).get("set_flag")
-        if flag:
-            _set_flag(cur, player, flag)
-        return facts
-
-    cur.execute("update npcs set hp = %s where id = %s", (npc_hp, npc.id))
     back = max(1, npc.template.attack - player.defense - (armor.template.defense if armor else 0))
     hp = max(0, player.hp - back)
     cur.execute("update players set hp = %s, updated_at = now() where id = %s", (hp, player.id))
-    facts += [f"{npc.name}反击，对{player.name}造成 {back} 点伤害", f"{player.name} HP {hp}/{player.max_hp}"]
+    facts = [f"{npc.name}反击，对{player.name}造成 {back} 点伤害", f"{player.name} HP {hp}/{player.max_hp}"]
     if hp == 0:
         facts.append(f"{player.name}倒下了")
     return facts
+
+
+def do_attack(cur: Cursor, player: Player, view: RoomView, a: Attack) -> list[str]:
+    # target 是 ref 就是打 NPC，不是 ref 就当玩家名字（PvP）
+    weapon = _equipped(cur, player, "weapon")
+    how = weapon.name if weapon else "拳头"
+    if a.target not in view.refs:
+        target = _pvp_target(cur, player, a.target)
+        armor = _equipped(cur, target, "armor")
+        dmg = max(1, player.attack + (weapon.template.damage if weapon else 0)
+                  - target.defense - (armor.template.defense if armor else 0))
+        facts, _ = _hurt_player(cur, target, dmg)
+        return [f"{player.name}用{how}攻击{target.name}，造成 {dmg} 点伤害"] + facts
+
+    npc = _room_npc(cur, view, player, a.target)
+    if not npc.combatable:
+        raise ActionError(f"{npc.name}不是能打的对象")
+    dmg = max(1, player.attack + (weapon.template.damage if weapon else 0) - npc.template.defense)
+    facts, dead = _hurt_npc(cur, player, npc, dmg)
+    facts = [f"{player.name}用{how}攻击{npc.name}，造成 {dmg} 点伤害"] + facts
+    return facts if dead else facts + _npc_counter(cur, player, npc)
+
+
+def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]:
+    """借环境、创意动作打人。AI 给的档位先按地形上限裁剪（没声明的地形最多轻伤），打玩家再降一档"""
+    cap, feature = IMPROVISED_MAX_TIER, None
+    if a.feature:
+        uid = view.resolve(a.feature)
+        if uid:
+            cur.execute("select id, name, max_tier, uses_left from room_features where id = %s and room_id = %s for update",
+                        (uid, player.room_id))
+            feature = cur.fetchone()
+        if feature is None:
+            raise ActionError("这里没有能这么用的东西")
+        if feature["uses_left"] <= 0:
+            raise ActionError(f"{feature['name']}已经被用过了，暂时没法再用")
+        cap = feature["max_tier"]
+    tier = _cap(a.tier, cap, TIERS)
+    escape = a.escape if feature else "easy"      # 随手的东西弄出来的状态都好挣脱
+
+    if a.target in view.refs:
+        target = _room_npc(cur, view, player, a.target)
+        if not target.combatable:
+            raise ActionError(f"{target.name}不是能打的对象")
+    else:
+        target = _pvp_target(cur, player, a.target)
+        tier, escape = _lower(tier, TIERS), _lower(escape, DIFFICULTIES)
+    is_npc = isinstance(target, Npc)
+
+    if feature:
+        cur.execute("update room_features set uses_left = uses_left - 1, used_at = coalesce(used_at, now()) where id = %s",
+                    (feature["id"],))
+    facts = [f"{player.name}尝试：{a.description}"]
+    if not _roll(SUCCESS_CHANCE[a.difficulty]):
+        facts.append("没有成功")
+        return facts + (_npc_counter(cur, player, target) if is_npc else [])
+
+    facts.append("成功了")
+    down = False
+    if dmg := TIER_DAMAGE[tier]:
+        hurt, down = _hurt_npc(cur, player, target, dmg) if is_npc else _hurt_player(cur, target, dmg)
+        facts += [f"{target.name}受到 {dmg} 点伤害"] + hurt
+    if a.status and not down:
+        st = Status(kind=a.status, escape=escape, since=datetime.now(timezone.utc).isoformat(),
+                    label=(a.status_label or "").strip()[:20]
+                    or ("被打得失去了战斗能力" if a.status == "incapacitated" else "被困住了"))
+        _set_status(cur, "npcs" if is_npc else "players", target.id, st)
+        facts.append(f"{target.name}{st.describe()}")
+        return facts                                  # 刚被放倒、捆住的 NPC 这回合不还手
+    if is_npc and not down:
+        facts += _npc_counter(cur, player, target)
+    return facts
+
+
+def do_struggle(cur: Cursor, player: Player, view: RoomView, a: Struggle) -> list[str]:
+    """挣脱、醒来。AI 看玩家怎么做判这次的难度，但不能比施加时判的容易超过一档；每失败一次下次更容易"""
+    st = player.status
+    if st is None:
+        raise ActionError(f"{player.name}没有被困住，用不着挣脱")
+    diff = DIFFICULTIES[max(DIFFICULTIES.index(a.difficulty), DIFFICULTIES.index(st.escape) - 1)]
+    facts = [f"{player.name}尝试：{a.description or '挣脱'}"]
+    if _roll(ESCAPE_CHANCE[diff] + ESCAPE_BONUS * st.attempts):
+        _set_status(cur, "players", player.id, None)
+        return facts + [f"{player.name}摆脱了“{st.label}”的状态"]
+    st.attempts += 1
+    _set_status(cur, "players", player.id, st)
+    return facts + [f"{player.name}还{st.label}，没能摆脱"]
+
+
+def do_revive(cur: Cursor, player: Player, view: RoomView, a: Revive) -> list[str]:
+    """急救倒下的人（救起来 1 HP），也能帮人松绑、叫醒"""
+    target, _ = _room_player(cur, player, a.target, lock=True)
+    if target.hp > 0 and target.status is None:
+        raise ActionError(f"{target.name}没有倒下也没被困住，用不着急救")
+    facts = []
+    if target.hp <= 0:
+        cur.execute("update players set hp = 1, updated_at = now() where id = %s", (target.id,))
+        facts += [f"{player.name}给{target.name}做了急救，{target.name}醒了过来", f"{target.name} HP 1/{target.max_hp}"]
+    if target.status:
+        _set_status(cur, "players", target.id, None)
+        facts.append(f"{player.name}帮{target.name}摆脱了“{target.status.label}”的状态")
+    return facts
+
+
+# ============ 组队 ============
+
+def _party_names(cur: Cursor, party_id: UUID) -> list[str]:
+    cur.execute("select name from players where party_id = %s order by name", (party_id,))
+    return [r["name"] for r in cur.fetchall()]
+
+
+def _leave_party(cur: Cursor, player: Player) -> None:
+    """退队；队伍只剩一个人就解散"""
+    cur.execute("update players set party_id = null where id = %s", (player.id,))
+    cur.execute(
+        """update players set party_id = null
+           where party_id = %(p)s and (select count(*) from players where party_id = %(p)s) = 1""",
+        {"p": player.party_id},
+    )
+
+
+def do_invite(cur: Cursor, player: Player, view: RoomView, a: Invite) -> list[str]:
+    target, _ = _room_player(cur, player, a.target)
+    if player.party_id and player.party_id == target.party_id:
+        raise ActionError(f"{target.name}已经是{player.name}的队友了")
+    if player.party_id and len(_party_names(cur, player.party_id)) >= PARTY_MAX:
+        raise ActionError(f"队伍已经满了（最多 {PARTY_MAX} 人）")
+    cur.execute(
+        """insert into party_invites (inviter, invitee) values (%s, %s)
+           on conflict (inviter, invitee) do update set created_at = now()""",
+        (player.id, target.id),
+    )
+    return [f"{player.name}邀请{target.name}加入队伍"]
+
+
+def do_join(cur: Cursor, player: Player, view: RoomView, a: Join) -> list[str]:
+    cur.execute(
+        f"""select i.inviter from party_invites i join players p on p.id = i.inviter
+            where i.invitee = %s and p.name = %s and i.created_at > now() - interval '{INVITE_WINDOW}'""",
+        (player.id, a.target),
+    )
+    row = cur.fetchone()
+    if row is None:
+        raise ActionError(f"{a.target}没有邀请{player.name}组队，或者邀请已经过期")
+    inviter = load_player(cur, row["inviter"], lock=True)
+    if player.party_id and player.party_id == inviter.party_id:
+        raise ActionError(f"{player.name}已经在{inviter.name}的队伍里了")
+    party_id = inviter.party_id or uuid4()
+    if inviter.party_id is None:
+        cur.execute("update players set party_id = %s where id = %s", (party_id, inviter.id))
+    elif len(_party_names(cur, party_id)) >= PARTY_MAX:
+        raise ActionError(f"{inviter.name}的队伍已经满了（最多 {PARTY_MAX} 人）")
+    if player.party_id:
+        _leave_party(cur, player)
+    cur.execute("update players set party_id = %s where id = %s", (party_id, player.id))
+    cur.execute("delete from party_invites where inviter = %s and invitee = %s", (inviter.id, player.id))
+    return [f"{player.name}加入了{inviter.name}的队伍", "队伍成员：" + "、".join(_party_names(cur, party_id))]
+
+
+def do_leave_party(cur: Cursor, player: Player, view: RoomView, a: LeaveParty) -> list[str]:
+    if not player.party_id:
+        raise ActionError(f"{player.name}没有在队伍里")
+    _leave_party(cur, player)
+    return [f"{player.name}离开了队伍"]
 
 
 def do_talk(cur: Cursor, player: Player, view: RoomView, a: Talk) -> list[str]:
@@ -455,23 +745,33 @@ def do_reject(cur: Cursor, player: Player, view: RoomView, a: Reject) -> list[st
 HANDLERS: dict[str, Callable[..., list[str]]] = {
     "move": do_move, "look": do_look, "take": do_take, "drop": do_drop, "use": do_use,
     "equip": do_equip, "attack": do_attack, "talk": do_talk, "give": do_give, "freeform": do_freeform,
-    "say": do_say, "reject": do_reject,
+    "say": do_say, "revive": do_revive, "stunt": do_stunt, "struggle": do_struggle, "invite": do_invite, "join": do_join, "leave_party": do_leave_party,
+    "reject": do_reject,
 }
 
 
 # ============ 入口 ============
 
 def execute(conn: Connection, view: RoomView, action: PlayerAction) -> ActionResult:
-    try:
-        with conn.transaction():
-            cur = _cursor(conn)
-            player = load_player(cur, view.player.id, lock=True)
-            if player.hp <= 0 and action.action != "look":
-                raise ActionError(f"{player.name}已经倒下了，动弹不得")
-            facts = HANDLERS[action.action](cur, player, view, action)
-        return ActionResult(action=action.action, success=True, facts=facts)
-    except ActionError as e:
-        return ActionResult(action=action.action, success=False, facts=[str(e)])
+    # 两个玩家同时互相动手（互殴、互相急救）会各自先锁自己再锁对方，Postgres 判死锁回滚其中一个，重来一次就行
+    for attempt in range(2):
+        try:
+            with conn.transaction():
+                cur = _cursor(conn)
+                player = load_player(cur, view.player.id, lock=True)
+                if player.hp <= 0 and action.action not in DOWNED_ALLOWED:
+                    raise ActionError(f"{player.name}已经倒下了，动弹不得，只能等人急救")
+                st = player.status
+                if st and (action.action in RESTRAINED_BLOCKED
+                           or st.kind == "incapacitated" and action.action != "struggle"):
+                    raise ActionError(f"{player.name}{st.label}，做不到")
+                facts = HANDLERS[action.action](cur, player, view, action)
+            return ActionResult(action=action.action, success=True, facts=facts)
+        except ActionError as e:
+            return ActionResult(action=action.action, success=False, facts=[str(e)])
+        except pg_errors.DeadlockDetected:
+            if attempt:
+                raise
 
 
 def execute_all(conn: Connection, view: RoomView, actions: list[PlayerAction]) -> list[ActionResult]:

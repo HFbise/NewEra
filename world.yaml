@@ -36,6 +36,8 @@ rooms:
       south: {to: square}
       down: {to: cellar, locked: true, key: cellar_key, relock: 120}
     npcs: [innkeeper]
+    features:
+      spit: {name: 壁炉上的铁叉, max_tier: heavy, uses: 1, respawn: 120}
 
   cellar:
     name: 酒馆地窖
@@ -82,10 +84,15 @@ rooms:
       粗大的橡树和松树，树皮上长着苔藓和灰白色的地衣，树根盘在地面上，容易绊脚。
       地上铺着厚厚的落叶和松针，踩上去软软的，底下是湿的。
       灌木丛很密，枝条上挂着几缕被扯下的灰毛。一棵倒下的枯树横在路边，树干中间已经空了。
+      路边的土坡上半埋着一块磨盘大的石头，底下的土被雨水掏空了，看着推一把就会滚下来。
       远处偶尔传来鸟叫，空气里是腐叶和松脂的味道。再往南没有路了，树林密得走不进去。
     exits:
       north: {to: path}
     npcs: [goblin]
+    # 可利用地形：玩家拿它做文章（推、砸、绊）时最多打出 max_tier 档伤害（light/heavy/lethal），
+    # 用 uses 次后 respawn 秒恢复。details 里写到但没列在这的东西也能用，最多轻伤
+    features:
+      boulder: {name: 松动的大石头, max_tier: lethal, uses: 1, respawn: 300}
 
 items:
   bread:

@@ -63,6 +63,8 @@ create table players (
   flags       jsonb not null default '{}',       -- 任务标记，如 {"goblin_slain": true}
   last_active_at timestamptz,                    -- 最近一次操作或页面心跳，太久没动就算睡着
   password_hash  text,                           -- 开发期的角色密码（scrypt），正式版换 Supabase Auth
+  party_id    uuid,                              -- 所在队伍，同一队的人这个值相同；没组队为空
+  status      jsonb,                             -- 负面状态 {kind, label, escape, attempts, since}，见 schema.Status
   created_at  timestamptz not null default now(),
   updated_at  timestamptz not null default now()
 );
@@ -75,7 +77,23 @@ create table npcs (
   hp          int,
   alive       boolean not null default true,
   died_at     timestamptz,                       -- 死亡时间，模板 props.respawn_seconds 之后复活
-  memory      text not null default ''          -- 长期记忆摘要
+  memory      text not null default '',         -- 长期记忆摘要
+  status      jsonb                              -- 负面状态，同 players.status
+);
+
+-- 可利用地形：能拿来砸人、绊人的环境物件。用掉 uses 次后 respawn_seconds 秒恢复
+-- details 里没列在这的东西也能用，但最多轻伤（engine.IMPROVISED_MAX_TIER）
+create table room_features (
+  id              uuid primary key default gen_random_uuid(),
+  room_id         text not null references rooms(id) on delete cascade,
+  key             text not null,                 -- world.yaml 里的名字
+  name            text not null,
+  max_tier        text not null check (max_tier in ('light','heavy','lethal')),
+  max_uses        int not null default 1,
+  uses_left       int not null,
+  respawn_seconds int not null default 300,
+  used_at         timestamptz,                   -- 第一次被用掉的时间，到点补满
+  unique (room_id, key)
 );
 
 -- 物品实例：每一件实际存在的东西，位置三选一（房间 / 玩家 / NPC）
@@ -109,6 +127,16 @@ create table player_npc_relations (
   affinity     int not null default 0 check (affinity between -100 and 100),  -- 好感度
   memory       text not null default '',        -- NPC 对这个玩家的记忆摘要，对话时由 AI 更新，限 150 字
   primary key (player_id, npc_template)
+);
+
+create index on players (party_id) where party_id is not null;
+
+-- 组队邀请：被邀请的人回"加入某某的队伍"才入队，engine.INVITE_WINDOW 内有效
+create table party_invites (
+  inviter     uuid not null references players(id) on delete cascade,
+  invitee     uuid not null references players(id) on delete cascade,
+  created_at  timestamptz not null default now(),
+  primary key (inviter, invitee)
 );
 
 -- 事件日志：给 AI 提供最近发生的事，也用来给前端推送
@@ -168,6 +196,8 @@ alter table events         enable row level security;
 alter table player_npc_relations enable row level security;
 alter table ai_calls       enable row level security;   -- 不开放给客户端
 alter table spawns         enable row level security;
+alter table party_invites  enable row level security;
+alter table room_features  enable row level security;
 
 create policy "read static" on rooms          for select to authenticated using (true);
 create policy "read static" on room_exits     for select to authenticated using (true);

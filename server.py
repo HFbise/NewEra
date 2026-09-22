@@ -83,11 +83,12 @@ def state(conn, view: RoomView, after: Optional[int] = None) -> dict:
         )
         events = [{"id": i, "text": t} for i, t in cur.fetchall()]
     cur.execute(
-        f"""select name, hp, coalesce(last_active_at > now() - interval '{engine.ONLINE_WINDOW}', false)
+        f"""select name, hp, coalesce(last_active_at > now() - interval '{engine.ONLINE_WINDOW}', false), status
             from players where room_id = %s and id <> %s order by name""",
         (view.room.id, view.player.id),
     )
-    others = [{"name": n, "hp": hp, "awake": awake} for n, hp, awake in cur.fetchall()]
+    others = [{"name": n, "hp": hp, "awake": awake, "status": st and st["label"]}
+              for n, hp, awake, st in cur.fetchall()]
     cur.execute("select id, name from rooms where id = any(%s)", ([e.to_room for e in view.exits],))
     room_names = dict(cur.fetchall())
     conn.commit()
@@ -97,11 +98,13 @@ def state(conn, view: RoomView, after: Optional[int] = None) -> dict:
         "exits": [{"direction": e.direction, "label": dir_name(e.direction), "to": room_names[e.to_room],
                    "locked": e.locked} for e in view.exits],
         "items": [{"ref": by_id[i.id], "name": i.name, "quantity": i.quantity} for i in view.items],
-        "npcs": [{"ref": by_id[n.id], "name": n.name, "hp": n.hp, "max_hp": n.template.max_hp}
-                 for n in view.npcs],
+        "npcs": [{"ref": by_id[n.id], "name": n.name, "hp": n.hp, "max_hp": n.template.max_hp,
+                  "status": n.status and n.status.label} for n in view.npcs],
         "inventory": [{"ref": by_id[i.id], "name": i.name, "quantity": i.quantity,
                        "equipped": i.equipped_slot} for i in view.inventory],
         "others": others,
+        "party": view.party,
+        "invites": view.invites,
         "events": events,
         "last_event_id": last_event_id,
     }
@@ -216,83 +219,94 @@ def command(req: CommandReq):
 
 
 def run_turn(req: CommandReq):
+    # 数据库连接只在读写的那一小段借用，等 AI 的十几秒里还回池子，
+    # 否则几个人同时说话就会把池子占满，别人的轮询和心跳跟着卡住
     with pool.connection() as conn:
         try:
             view = engine.load_view(conn, req.player_id)
         except engine.ActionError as e:
             yield {"error": str(e)}
             return
-        pid = view.player.id
-        engine.touch(conn, pid)
-        usage = {"input": 0, "output": 0}
-        notes = []                        # 给前端看的调试信息
+        engine.touch(conn, view.player.id)
+    pid = view.player.id
+    usage = {"input": 0, "output": 0}
+    notes = []                            # 给前端看的调试信息
 
-        def add(u):
-            usage["input"] += u["input"]
-            usage["output"] += u["output"]
+    def add(u):
+        usage["input"] += u["input"]
+        usage["output"] += u["output"]
 
-        # 1. 解析：默认规则全认出来就不调 AI；PARSE_MODE=ai 时每句都先过 AI
-        actions = commands.parse(view, req.text)
-        source = "rules"
-        ai_first = os.environ.get("PARSE_MODE", "rules") == "ai"
-        if ai.enabled() and (ai_first or any(a.action == "freeform" for a in actions)):
-            yield {"stage": "parse"}
-            try:
-                parsed, u = ai.parse_intent(conn, view, req.text)
-                add(u)
-                if parsed:
-                    actions, source = parsed, "ai"
-                else:
-                    notes.append("AI 解析两次都没通过校验，按规则解析结果执行")
-            except ai.API_ERRORS as e:
-                notes.append(f"AI 解析出错：{e.__class__.__name__}")
+    # 1. 解析：默认规则全认出来就不调 AI；PARSE_MODE=ai 时每句都先过 AI
+    actions = commands.parse(view, req.text)
+    source = "rules"
+    ai_first = os.environ.get("PARSE_MODE", "rules") == "ai"
+    # 身上有负面状态时也交给 AI：挣脱、醒来的难度要它看玩家怎么做来判
+    if ai.enabled() and (ai_first or view.player.status or any(a.action == "freeform" for a in actions)):
+        yield {"stage": "parse"}
+        try:
+            parsed, u = ai.parse_intent(pool, view, req.text)
+            add(u)
+            if parsed:
+                actions, source = parsed, "ai"
+            else:
+                notes.append("AI 解析两次都没通过校验，按规则解析结果执行")
+        except ai.API_ERRORS as e:
+            notes.append(f"AI 解析出错：{e.__class__.__name__}")
 
-        # 2. 规则引擎执行
-        yield {"stage": "execute"}
+    # 2. 规则引擎执行。解析期间别人可能动了东西，引擎按 ref 重新查库加锁校验，不会用旧状态
+    yield {"stage": "execute"}
+    use_ai = ai.enabled() and not all(a.action == "say" for a in actions)
+    npc_id = npc = None
+    giveable, affinity, memory, recent = [], 0, "", []
+    with pool.connection() as conn:
         results = engine.execute_all(conn, view, actions)
-
-        # 3. 叙事 + NPC 对话。只是和玩家说话的回合不用 AI，facts 本身就是要说的话
-        narrative, observer = None, None
         now_view = engine.load_view(conn, pid)       # 执行后的房间：移动之后要写新地方
-        if ai.enabled() and not all(a.action == "say" for a in actions):
-            yield {"stage": "narrate"}
-            talk = next((a for a, r in zip(actions, results) if a.action == "talk" and r.success), None)
+        talk = next((a for a, r in zip(actions, results) if a.action == "talk" and r.success), None)
+        if use_ai:
+            # 叙事要用的东西一次查好，后面调 AI 时不占连接
             npc_id = view.resolve(talk.target) if talk else None
             npc = _load_npc(conn, npc_id) if npc_id else None
-            giveable = engine.giveable_items(conn, pid, npc_id) if npc else []
-            affinity = engine.get_affinity(conn, pid, npc_id) if npc else 0
-            memory = engine.get_npc_memory(conn, pid, npc_id) if npc else ""
-            try:
-                # NPC 身上有能给的东西时，先单独决定给不给，执行完变成 fact，叙事再照着写
-                if giveable:
-                    give_id, u = ai.decide_give(conn, view, req.text, npc, giveable, affinity, memory)
-                    add(u)
-                    if give_id:
-                        results.append(engine.npc_give(conn, pid, npc_id, give_id))
-                out, u = ai.narrate(conn, now_view, req.text, results, npc, affinity,
-                                    memory, _recent_events(conn, now_view.room.id, pid))
-                add(u)
-                if out:
-                    narrative, observer = out.narrative, out.observer or None
-                    if npc and out.affinity_delta:
-                        results.append(engine.adjust_affinity(conn, pid, npc_id, out.affinity_delta))
-                    if npc and out.npc_memory:
-                        engine.set_npc_memory(conn, pid, npc_id, out.npc_memory)
-                else:
-                    notes.append("叙事两次都没通过校验")
-            except ai.API_ERRORS as e:
-                notes.append(f"AI 叙事出错：{e.__class__.__name__}")
-        elif not ai.enabled():
-            for a, r in zip(actions, results):
-                if a.action == "talk" and r.success:
-                    results += placeholder_dialogue(conn, view, a.target)
+            if npc:
+                giveable = engine.giveable_items(conn, pid, npc_id)
+                affinity = engine.get_affinity(conn, pid, npc_id)
+                memory = engine.get_npc_memory(conn, pid, npc_id)
+            recent = _recent_events(conn, now_view.room.id, pid)
+        elif not ai.enabled() and talk:
+            results += placeholder_dialogue(conn, view, talk.target)
 
-        # 4. 记事件：出发的房间记一条给旁人看的描述；换了房间，新房间再记一条"走了进来"
-        name = view.player.name
-        moved = now_view.room.id != view.room.id
-        # 换了房间时 AI 是按新房间写的，原房间的人看到的直接用 facts（"某某往北走，来到了酒馆"）
-        if moved or not observer:
-            observer = _observer_fallback(name, actions, results)
+    # 3. 叙事 + NPC 对话。只是和玩家说话的回合不用 AI，facts 本身就是要说的话
+    narrative, observer, out = None, None, None
+    if use_ai:
+        yield {"stage": "narrate"}
+        try:
+            # NPC 身上有能给的东西时，先单独决定给不给，执行完变成 fact，叙事再照着写
+            if giveable:
+                give_id, u = ai.decide_give(pool, view, req.text, npc, giveable, affinity, memory)
+                add(u)
+                if give_id:
+                    with pool.connection() as conn:
+                        results.append(engine.npc_give(conn, pid, npc_id, give_id))
+            out, u = ai.narrate(pool, now_view, req.text, results, npc, affinity, memory, recent)
+            add(u)
+            if out:
+                narrative, observer = out.narrative, out.observer or None
+            else:
+                notes.append("叙事两次都没通过校验")
+        except ai.API_ERRORS as e:
+            notes.append(f"AI 叙事出错：{e.__class__.__name__}")
+
+    # 4. 好感度、NPC 记忆、记事件：出发的房间记一条给旁人看的描述；换了房间，新房间再记一条"走了进来"
+    name = view.player.name
+    moved = now_view.room.id != view.room.id
+    # 换了房间时 AI 是按新房间写的，原房间的人看到的直接用 facts（"某某往北走，来到了酒馆"）
+    if moved or not observer:
+        observer = _observer_fallback(name, actions, results)
+    with pool.connection() as conn:
+        if npc and out:
+            if out.affinity_delta:
+                results.append(engine.adjust_affinity(conn, pid, npc_id, out.affinity_delta))
+            if out.npc_memory:
+                engine.set_npc_memory(conn, pid, npc_id, out.npc_memory)
         with conn.transaction():
             conn.execute(
                 """insert into events (room_id, player_id, kind, facts, narrative, observer)
@@ -305,16 +319,17 @@ def run_turn(req: CommandReq):
                     "insert into events (room_id, player_id, kind, observer) values (%s, %s, 'arrive', %s)",
                     (now_view.room.id, pid, f"{name}走了进来。"),
                 )
+        final_state = state(conn, engine.load_view(conn, pid), req.after)
 
-        yield {"done": {
-            "actions": [a.model_dump() for a in actions],
-            "source": source,
-            "results": [r.model_dump() for r in results],
-            "narrative": narrative,
-            "usage": usage,
-            "notes": notes,
-            "state": state(conn, engine.load_view(conn, pid), req.after),
-        }}
+    yield {"done": {
+        "actions": [a.model_dump() for a in actions],
+        "source": source,
+        "results": [r.model_dump() for r in results],
+        "narrative": narrative,
+        "usage": usage,
+        "notes": notes,
+        "state": final_state,
+    }}
 
 
 def _recent_events(conn, room_id: str, player_id: UUID, limit: int = 5) -> list[str]:
