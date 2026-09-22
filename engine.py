@@ -17,7 +17,7 @@ from psycopg.rows import dict_row
 
 from schema import (
     ActionResult, Attack, Drop, Equip, Freeform, Give, ItemInstance, Look, Move,
-    Npc, Player, PlayerAction, Room, RoomExit, RoomView, Take, Talk, Use,
+    Npc, Player, PlayerAction, Room, RoomExit, RoomView, Take, Talk, Use, dir_name,
 )
 
 
@@ -193,13 +193,13 @@ def _set_flag(cur: Cursor, player: Player, flag: str) -> None:
 def do_move(cur: Cursor, player: Player, view: RoomView, a: Move) -> list[str]:
     ex = _find_exit(cur, player.room_id, a.direction)
     if ex is None:
-        raise ActionError(f"这里没有通往 {a.direction} 的路")
+        raise ActionError(f"这里没有往{dir_name(a.direction)}的路")
     if ex["locked"]:
-        raise ActionError(f"通往 {a.direction} 的门锁着")
+        raise ActionError(f"往{dir_name(a.direction)}的门锁着")
     cur.execute("update players set room_id = %s, updated_at = now() where id = %s",
                 (ex["to_room"], player.id))
     room = load_room(cur, ex["to_room"])
-    return [f"{player.name}向 {a.direction} 走去，来到了{room.name}"]
+    return [f"{player.name}往{dir_name(a.direction)}走，来到了{room.name}"]
 
 
 def do_look(cur: Cursor, player: Player, view: RoomView, a: Look) -> list[str]:
@@ -208,7 +208,7 @@ def do_look(cur: Cursor, player: Player, view: RoomView, a: Look) -> list[str]:
         facts = [f"{room.name}：{room.description}"]
         exits = load_exits(cur, player.room_id)
         if exits:
-            facts.append("出口：" + "、".join(e.direction + ("（锁着）" if e.locked else "") for e in exits))
+            facts.append("出口：" + "、".join(dir_name(e.direction) + ("（锁着）" if e.locked else "") for e in exits))
         items = load_items(cur, "i.room_id = %s", (player.room_id,))
         if items:
             facts.append("地上有：" + "、".join(_label(i) for i in items))
@@ -225,7 +225,7 @@ def do_look(cur: Cursor, player: Player, view: RoomView, a: Look) -> list[str]:
     ex = _find_exit(cur, player.room_id, a.target)
     if ex is not None:
         room = load_room(cur, ex["to_room"])
-        return [f"{a.target} 通往{room.name}" + ("，门锁着" if ex["locked"] else "")]
+        return [f"往{dir_name(a.target)}通往{room.name}" + ("，门锁着" if ex["locked"] else "")]
 
     uid = _resolve(view, a.target)
     items = load_items(cur, "i.id = %s and (i.room_id = %s or i.player_id = %s)",
@@ -267,12 +267,12 @@ def do_use(cur: Cursor, player: Player, view: RoomView, a: Use) -> list[str]:
         if ex is None:
             raise ActionError(f"不知道怎么对那个东西使用{item.name}")
         if not ex["locked"]:
-            raise ActionError(f"通往 {a.target} 的门没有锁")
+            raise ActionError(f"往{dir_name(a.target)}的门没有锁")
         if ex["key_item"] != item.template.id:
-            raise ActionError(f"{item.name}打不开通往 {a.target} 的门")
+            raise ActionError(f"{item.name}打不开往{dir_name(a.target)}的门")
         cur.execute("update room_exits set locked = false where room_id = %s and direction = %s",
                     (player.room_id, a.target))
-        return [f"{player.name}用{item.name}打开了通往 {a.target} 的门"]
+        return [f"{player.name}用{item.name}打开了往{dir_name(a.target)}的门"]
 
     if item.template.type != "consumable":
         raise ActionError(f"{item.name}不能直接使用")

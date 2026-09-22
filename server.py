@@ -20,7 +20,7 @@ from pydantic import BaseModel
 import ai
 import commands
 import engine
-from schema import ActionResult, RoomView
+from schema import ActionResult, RoomView, dir_name
 
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
 pool = ConnectionPool(os.environ["DATABASE_URL"], min_size=1, max_size=5, open=True)
@@ -48,7 +48,8 @@ def state(conn, view: RoomView) -> dict:
     return {
         "player": view.player.model_dump(mode="json"),
         "room": view.room.model_dump(),
-        "exits": [{"direction": e.direction, "locked": e.locked} for e in view.exits],
+        "exits": [{"direction": e.direction, "label": dir_name(e.direction), "locked": e.locked}
+                  for e in view.exits],
         "items": [{"ref": by_id[i.id], "name": i.name, "quantity": i.quantity} for i in view.items],
         "npcs": [{"ref": by_id[n.id], "name": n.name, "hp": n.hp, "max_hp": n.template.max_hp}
                  for n in view.npcs],

@@ -21,7 +21,7 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 from zai import ZhipuAiClient
 from zai.core import ZaiError
 
-from schema import ActionResult, ItemInstance, Npc, PlayerAction, RoomView
+from schema import ActionResult, ItemInstance, Npc, PlayerAction, RoomView, dir_name
 
 DEFAULT_MODELS = {"zhipu": "glm-4.7-flash", "gemini": "gemini-3.1-flash-lite", "claude": "claude-haiku-4-5"}
 KEY_VARS = {"zhipu": "ZAI_API_KEY", "gemini": "GEMINI_API_KEY", "claude": "ANTHROPIC_API_KEY"}
@@ -188,7 +188,8 @@ INTENT_SYSTEM = """你是文字 MUD 游戏的指令解析器。把玩家的自�
 
 def room_context(view: RoomView) -> str:
     by_id = {uid: ref for ref, uid in view.refs.items()}
-    exits = "、".join(e.direction + ("（锁着）" if e.locked else "") for e in view.exits) or "无"
+    exits = "、".join(f"{e.direction}（{dir_name(e.direction)}）" + ("锁着" if e.locked else "")
+                     for e in view.exits) or "无"
     items = "、".join(f"{by_id[i.id]} {i.name}" for i in view.items) or "无"
     npcs = "、".join(f"{by_id[n.id]} {n.name}" for n in view.npcs) or "无"
     inv = "、".join(f"{by_id[i.id]} {i.name}" + ("（已装备）" if i.equipped_slot else "")

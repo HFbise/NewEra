@@ -104,7 +104,7 @@ function render(s) {
     <div class="room">${esc(s.room.name)}</div>
     <div class="sys">${esc(s.room.description)}</div>
     <h2>出口</h2>
-    <ul>${s.exits.map(e => `<li data-name="${e.direction}">${e.direction}${e.locked ? '<span class="tag">锁着</span>' : ""}</li>`).join("")}</ul>
+    <ul>${s.exits.map(e => `<li data-name="${e.label}">${e.label}${e.locked ? '<span class="tag">锁着</span>' : ""}</li>`).join("")}</ul>
     ${s.npcs.length ? `<h2>NPC</h2><ul>${s.npcs.map(n => li(n.ref, n.name,
       n.max_hp ? `<span class="tag">${n.hp}/${n.max_hp}</span>` : "")).join("")}</ul>` : ""}
     ${s.others.length ? `<h2>其他玩家</h2><ul>${s.others.map(o => `<li>${esc(o.name)}<span class="tag">HP ${o.hp}</span></li>`).join("")}</ul>` : ""}
@@ -119,7 +119,7 @@ function render(s) {
       看 / 看 哥布林 / 看 北<br>
       北 南 东 西 上 下（或 n s e w u d）<br>
       拿面包 · 扔面包 · 装备短剑 · 吃药草<br>
-      打哥布林 · 开下面的门 · 用钥匙 down<br>
+      打哥布林 · 开下面的门 · 用钥匙 下<br>
       对老汉斯说 你好 · 把面包给老汉斯<br>
       用 ; 分隔多个命令，其他输入算 freeform<br>
       点侧栏里的名字会填进输入框
@@ -135,7 +135,7 @@ async function enter() {
     render(s);
     const list = (label, arr) => arr.length ? `<div>${label}：${arr.map(esc).join("、")}</div>` : "";
     log(`<div class="sys"><b>${esc(s.room.name)}</b>　${esc(s.room.description)}` +
-      list("出口", s.exits.map(e => e.direction + (e.locked ? "（锁着）" : ""))) +
+      list("出口", s.exits.map(e => e.label + (e.locked ? "（锁着）" : ""))) +
       list("这里有", s.npcs.map(n => n.name)) +
       list("地上有", s.items.map(i => i.name)) +
       list("其他玩家", s.others.map(o => o.name)) + `</div>`);

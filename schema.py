@@ -93,6 +93,14 @@ class Room(BaseModel):
     description: str
 
 
+# 出口方向：数据库和动作里用英文 key，显示时翻成中文
+DIR_NAMES = {"north": "北", "south": "南", "east": "东", "west": "西", "up": "上", "down": "下"}
+
+
+def dir_name(direction: str) -> str:
+    return DIR_NAMES.get(direction, direction)
+
+
 class RoomExit(BaseModel):
     room_id: str
     direction: str
