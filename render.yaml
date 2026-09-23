@@ -17,10 +17,10 @@ services:
         value: zhipu
       # 2026-09-23 换回 glm-4.7-flash 试角色扮演效果（之前排队 30 到 100 秒，最近平均 5 秒左右，偶尔失败）
       - key: AI_MODEL
-        value: glm-4.7-flash
+        value: glm-4.5-flash
       # 主模型限流、超时时按顺序换这些再试（4.5 秒回但扮演弱些，4-flash 叙事差些但基本不排队）
       - key: AI_FALLBACK_MODEL
-        value: glm-4.5-flash
+        value: glm-4.7-flash,glm-4-flash-250414
       - key: PARSE_MODE
         value: rules
       # 需要邀请码时在后台加一个 ACCESS_CODE 环境变量，登录页会自动出现邀请码输入框
