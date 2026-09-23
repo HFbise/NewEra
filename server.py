@@ -440,12 +440,19 @@ def run_turn(req: CommandReq):
                         elif trade.sell_id.startswith("made:"):
                             results.append(engine.npc_buy_made(conn, pid, npc, trade.sell_id))
                         else:
-                            results.append(engine.npc_sell(conn, pid, npc, trade.sell_id))
+                            results.append(engine.npc_sell(conn, pid, npc, trade.sell_id, trade.price))
                         now_view = engine.load_view(conn, pid)   # 叙事要看到新拿到的东西和剩下的钱
                         offers = engine.get_offers(conn, pid, npc)
             out, u = ai.narrate(pool, now_view, req.text, results, npc, affinity, memory, recent,
                                 quests, eject_to, sells, offers, made_before)
             add(u)
+            if out and npc and out.npc_handed and out.npc_handed.key:
+                # 叙事里 NPC 把货递给了他：真的给、按规矩收钱；钱不够就补一句收了回去
+                with pool.connection() as conn:
+                    handed = engine.npc_hand(conn, pid, npc, out.npc_handed.key, out.npc_handed.price, affinity)
+                results.append(handed)
+                if not handed.success:
+                    out.narrative += f"（{handed.facts[0]}，{npc.name}又把{out.npc_handed.item}收了回去）"
             if out:
                 narrative, observer = out.narrative, out.observer or None
             else:

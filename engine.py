@@ -2028,16 +2028,51 @@ def set_offer(conn: Connection, player_id: UUID, npc: Npc, key: str, price: int)
         _put_offer(cur, player_id, npc, key, clamp_price(stats, price))
 
 
-def npc_sell(conn: Connection, player_id: UUID, npc: Npc, template_id: str) -> ActionResult:
-    """NPC 卖一件货给玩家（货不限量，每卖一件新造一件）。必须先报过价，只按报的价收钱，AI 当场改不了价"""
+def npc_hand(conn: Connection, player_id: UUID, npc: Npc, key: str, price: int, affinity: int) -> ActionResult:
+    """叙事里 NPC 把货递给了玩家（交易那步没给）：照做。key 是卖货的物品 id 或 "made:名字"（做过的货）。
+    叙事写了收钱就按那个价（限在建议价一半到两倍）；没写收钱的，交情够就白送，不够按建议价收；钱不够就没给成"""
+    try:
+        with conn.transaction():
+            cur = _cursor(conn)
+            player = load_player(cur, player_id, lock=True)
+            if key.startswith("made:"):
+                cur.execute("select spec from npc_goods where npc_template = %s and name = %s", (npc.template.id, key[5:]))
+                row = cur.fetchone()
+                if row is None:
+                    raise ActionError(f"{npc.name}没做过{key[5:]}")
+                stats, name = row["spec"], f"{row['spec']['name']}（{effect_text(row['spec'])}）"
+            else:
+                if key not in npc.template.props.get("sells", []):
+                    raise ActionError(f"{npc.name}不卖这个")
+                cur.execute("select name, damage, defense, heal, props->'price' as price from item_templates where id = %s",
+                            (key,))
+                stats = cur.fetchone()
+                name = stats["name"]
+            price = 0 if price <= 0 and can_gift(affinity) else clamp_price(stats, price if price > 0 else base_price(stats))
+            patron = _pay(cur, player, price, npc)
+            if key.startswith("made:"):
+                _make(cur, player_id, stats)
+            else:
+                cur.execute("insert into item_instances (template_id, player_id) values (%s, %s)", (key, player_id))
+        return ActionResult(action="npc_sell", success=True, facts=[_deal(npc, player, name, price)] + patron)
+    except ActionError as e:
+        return ActionResult(action="npc_sell", success=False, facts=[str(e)])
+
+
+def npc_sell(conn: Connection, player_id: UUID, npc: Npc, template_id: str, price: Optional[int] = None) -> ActionResult:
+    """NPC 卖一件货给玩家（货不限量，每卖一件新造一件）。报过价就按报的价收；玩家直接下单（没报过价）就按 AI 这回合
+    给的价，限在建议价的一半到两倍（没给就按建议价）"""
     try:
         if template_id not in npc.template.props.get("sells", []):
             raise ActionError(f"{npc.name}不卖这个")
         offer = get_offers(conn, player_id, npc).get(template_id)
-        if offer is None:
-            raise ActionError(f"{npc.name}还没给这件东西报价")
         with conn.transaction():
             cur = _cursor(conn)
+            if offer is None:
+                cur.execute("select damage, defense, heal, props->'price' as price from item_templates where id = %s",
+                            (template_id,))
+                stats = cur.fetchone()
+                offer = {"price": clamp_price(stats, price or base_price(stats))}
             player = load_player(cur, player_id, lock=True)
             patron = _pay(cur, player, offer["price"], npc)
             # 成交了这个报价就作废，再买要重新谈
