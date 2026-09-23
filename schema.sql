@@ -65,6 +65,7 @@ create table players (
   password_hash  text,                           -- 开发期的角色密码（scrypt），正式版换 Supabase Auth
   party_id    uuid,                              -- 所在队伍，同一队的人这个值相同；没组队为空
   status      jsonb,                             -- 负面状态 {kind, label, escape, attempts, since}，见 schema.Status
+  following   uuid references players(id) on delete set null,  -- 正在跟着的玩家，对方移动时一起走
   created_at  timestamptz not null default now(),
   updated_at  timestamptz not null default now()
 );
@@ -154,6 +155,20 @@ create table events (
 create index on events (room_id, created_at desc);
 create index on events (room_id, id);
 
+-- 每个玩家的聊天框记录：刷新页面、重新登录后拉回来显示
+-- turn = 自己的一回合（输入、解析、facts、叙事），event = 看到的别人的动态（同一条 event 只记一次）
+create table player_log (
+  id          bigserial primary key,
+  player_id   uuid not null references players(id) on delete cascade,
+  kind        text not null check (kind in ('turn', 'event')),
+  event_id    bigint,
+  data        jsonb not null,
+  created_at  timestamptz not null default now()
+);
+
+create index on player_log (player_id, id);
+create unique index on player_log (player_id, event_id) where event_id is not null;
+
 -- 刷新点：物品被拿走后过一段时间重新出现。位置二选一：房间地上 / 某种 NPC 身上
 -- 不用后台任务，有人在这个房间时顺手检查（engine._refresh_room）
 create table spawns (
@@ -198,6 +213,7 @@ alter table ai_calls       enable row level security;   -- 不开放给客户端
 alter table spawns         enable row level security;
 alter table party_invites  enable row level security;
 alter table room_features  enable row level security;
+alter table player_log     enable row level security;
 
 create policy "read static" on rooms          for select to authenticated using (true);
 create policy "read static" on room_exits     for select to authenticated using (true);

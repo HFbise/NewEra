@@ -20,9 +20,9 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 from schema import (
-    ActionResult, Attack, Drop, Equip, Feature, Freeform, Give, Invite, ItemInstance, Join, LeaveParty, Look,
+    ActionResult, Attack, Drop, Equip, Feature, Follow, Freeform, Give, Invite, ItemInstance, Join, LeaveParty, Look,
     Move, Npc, OtherPlayer, Player, PlayerAction, Reject, Revive, Room, RoomExit, RoomView, Say, Status, Struggle,
-    Stunt, Take, Talk, Use, dir_name,
+    Stunt, Take, Talk, Unfollow, Use, dir_name,
 )
 
 
@@ -70,7 +70,7 @@ def _cursor(conn: Connection) -> Cursor:
 
 def load_player(cur: Cursor, player_id: UUID, lock: bool = False) -> Player:
     cur.execute(
-        "select id, name, room_id, hp, max_hp, attack, defense, flags, party_id, status from players where id = %s"
+        "select id, name, room_id, hp, max_hp, attack, defense, flags, party_id, status, following from players where id = %s"
         + (" for update" if lock else ""),
         (player_id,),
     )
@@ -221,6 +221,10 @@ def load_view(conn: Connection, player_id: UUID) -> RoomView:
         cur.execute("select id, key, name, max_tier, uses_left from room_features where room_id = %s and uses_left > 0 order by key",
                     (player.room_id,))
         features = [Feature(**r) for r in cur.fetchall()]
+        following = None
+        if player.following:
+            cur.execute("select name from players where id = %s", (player.following,))
+            following = cur.fetchone()["name"]
         view = RoomView(
             player=player,
             room=load_room(cur, player.room_id),
@@ -232,6 +236,7 @@ def load_view(conn: Connection, player_id: UUID) -> RoomView:
             party=party,
             invites=invites,
             features=features,
+            following=following,
         )
     view.assign_refs()
     return view
@@ -325,10 +330,39 @@ def do_move(cur: Cursor, player: Player, view: RoomView, a: Move) -> list[str]:
         raise ActionError(f"这里没有往{dir_name(a.direction)}的路")
     if ex["locked"]:
         raise ActionError(f"往{dir_name(a.direction)}的门锁着")
-    cur.execute("update players set room_id = %s, updated_at = now() where id = %s",
+    # 自己走就不再跟着别人
+    cur.execute("update players set room_id = %s, following = null, updated_at = now() where id = %s",
                 (ex["to_room"], player.id))
     room = load_room(cur, ex["to_room"])
-    return [f"{player.name}往{dir_name(a.direction)}走，来到了{room.name}"]
+    facts = [f"{player.name}往{dir_name(a.direction)}走，来到了{room.name}"]
+    # 同房间跟着他的人一起走：睡着、倒下、带着负面状态的跟不上
+    cur.execute(
+        f"""update players set room_id = %s, updated_at = now()
+            where following = %s and room_id = %s and hp > 0 and status is null
+              and last_active_at > now() - interval '{ONLINE_WINDOW}'
+            returning name""",
+        (ex["to_room"], player.id, player.room_id),
+    )
+    names = [r["name"] for r in cur.fetchall()]
+    if names:
+        facts.append(f"{'、'.join(names)}跟着{player.name}一起来到了{room.name}")
+    return facts
+
+
+def do_follow(cur: Cursor, player: Player, view: RoomView, a: Follow) -> list[str]:
+    target, _ = _room_player(cur, player, a.target)
+    if target.following == player.id:
+        raise ActionError(f"{target.name}正跟着{player.name}，不能互相跟着")
+    cur.execute("update players set following = %s where id = %s", (target.id, player.id))
+    return [f"{player.name}决定跟着{target.name}，以后{target.name}走到哪就跟到哪（这一回合两人都没有移动）"]
+
+
+def do_unfollow(cur: Cursor, player: Player, view: RoomView, a: Unfollow) -> list[str]:
+    if player.following is None:
+        raise ActionError(f"{player.name}没有在跟着谁")
+    cur.execute("update players set following = null where id = %s returning (select name from players where id = %s)",
+                (player.id, player.following))
+    return [f"{player.name}不再跟着{cur.fetchone()['name']}了"]
 
 
 def do_look(cur: Cursor, player: Player, view: RoomView, a: Look) -> list[str]:
@@ -745,7 +779,8 @@ def do_reject(cur: Cursor, player: Player, view: RoomView, a: Reject) -> list[st
 HANDLERS: dict[str, Callable[..., list[str]]] = {
     "move": do_move, "look": do_look, "take": do_take, "drop": do_drop, "use": do_use,
     "equip": do_equip, "attack": do_attack, "talk": do_talk, "give": do_give, "freeform": do_freeform,
-    "say": do_say, "revive": do_revive, "stunt": do_stunt, "struggle": do_struggle, "invite": do_invite, "join": do_join, "leave_party": do_leave_party,
+    "say": do_say, "revive": do_revive, "stunt": do_stunt, "struggle": do_struggle,
+    "follow": do_follow, "unfollow": do_unfollow, "invite": do_invite, "join": do_join, "leave_party": do_leave_party,
     "reject": do_reject,
 }
 

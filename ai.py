@@ -154,7 +154,8 @@ def _call(db, player_id: UUID, kind: str, system: str, user: str, fmt: type[Base
 class AIAction(BaseModel):
     """给 AI 的扁平格式，比嵌套 union 好填；回来再转成 PlayerAction 校验"""
     action: Literal["move", "look", "take", "drop", "use", "equip", "attack", "talk", "give", "say",
-                    "revive", "invite", "join", "leave_party", "stunt", "struggle", "freeform", "reject"]
+                    "revive", "invite", "join", "leave_party", "follow", "unfollow", "stunt", "struggle",
+                    "freeform", "reject"]
     direction: Optional[str] = None
     item: Optional[str] = None
     target: Optional[str] = None
@@ -181,7 +182,7 @@ INTENT_SYSTEM = """你是文字 MUD 游戏的指令解析器。读玩家的输�
 3. 都不是，这句话不成立？输出 reject，reason 里用第三人称客观写明为什么做不到
 
 标准动作和字段：
-- move: direction（出口的英文名，必须在出口列表里）
+- move: direction（出口的英文名，必须在出口列表里）。只有玩家明确说了方向或目的地（往北、去酒馆、下地窖）才是 move，不要根据别人去了哪、叙事里写了什么来猜方向
 - look: target 可空（空=看整个房间；也可以是 ref 或出口英文名）
 - take: item（地上物品的 ref）
 - drop: item（背包物品的 ref）
@@ -195,6 +196,8 @@ INTENT_SYSTEM = """你是文字 MUD 游戏的指令解析器。读玩家的输�
 - invite: target（"其他玩家"里的名字）。邀请对方组队
 - join: target（"邀请你组队的人"里的名字）。接受邀请、加入对方的队伍
 - leave_party: 不用填字段。离开、退出队伍
+- follow: target（"其他玩家"里的名字）。跟着、跟随、跟上某人：之后对方走到哪就自动跟到哪，这一回合本身不移动
+- unfollow: 不用填字段。不再跟着别人
 - stunt: 借环境或创意动作去伤害、制住某个 NPC 或玩家（推石头砸、用铁叉捅、绊倒、用绳子捆、泼东西迷眼）。你是裁判，要填：
   - target（NPC 的 ref 或其他玩家的名字），description（第三人称简述怎么做的）
   - feature：用到"可利用地形"里的东西就填它的 ref（如 f1）；只用环境描述里随手的东西就不填
@@ -242,7 +245,7 @@ def room_context(view: RoomView) -> str:
             f"可利用地形：{features}\n"
             f"出口：{exits}\n地上：{items}\nNPC：{npcs}\n其他玩家：{players}\n背包：{inv}\n"
             f"队友：{'、'.join(view.party) or '无'}\n邀请你组队的人：{'、'.join(view.invites) or '无'}\n"
-            f"你的状态：{me}")
+            f"你的状态：{me}\n正在跟着：{view.following or '没有'}")
 
 
 JUDGE_WORDS = {
@@ -310,7 +313,8 @@ NARRATE_SYSTEM = """你是文字 MUD 游戏的叙事者，用中文第二人称�
 - 场景里的东西只能来自 <room> 的描述和环境细节、以及 facts。不要添加没写到的家具、物件、人物、动物
 - 可以加一点氛围点缀让文字有味道：光影、微风、气味、细小的声响、人物的神态和姿势。但不要定死天气、时间、季节（不写晴天雨天、清晨黄昏、酷暑寒冬）
 - 可以从环境细节里挑一两样写进叙事，让场景更具体；freeform 动作就围绕环境细节里的东西来写它的反应（敲空桶是咚咚声，敲满桶声音发闷）
-- 玩家和其他角色的名字只是称呼，不要从名字联想环境
+- 玩家和其他角色的名字只是称呼，不要从名字联想环境。<names> 里列的都是人名，就算像"寒风""烈日"也绝不能当成风、阳光、天气来写
+- 其他玩家是真人在操作，只能写 facts 和 <recent> 里他们确实做过的事；不要替他们编动作、神态、手势、台词（"某某朝你点头示意跟上"这种都不行），最多写他们站在哪里
 - 名字后面标"（睡着了）"的玩家正在原地睡觉，不会回应也不会行动；标"倒下了""倒在地上"的玩家 HP 归零躺在地上，等人急救
 - 玩家之间动手（攻击其他玩家）照 facts 写伤害和结果，被打的人这回合不会还手，除非 facts 里写了
 - "尝试：……"后面跟"成功了"就写成功的过程和效果，跟"没有成功"就写失手（石头滚偏、没捆住），伤害和状态只照 facts 写
@@ -321,7 +325,7 @@ NARRATE_SYSTEM = """你是文字 MUD 游戏的叙事者，用中文第二人称�
 observer（给同房间其他人看）：
 - 主角是 <player> 里的角色名（这回合行动的人），用第三人称、用这个名字写旁人看到听到的，1 到 2 句。只写外在可见的：动作、说出口的话、NPC 的回应、结果
 - 和 NPC 对话时，要写出主角说了什么（可以概括）和 NPC 怎么回的
-- 只写这一回合 facts 里发生的事，不要复述 <recent> 里之前的动态
+- 只写这一回合 facts 里发生的事，不要复述 <recent> 里之前的动态，也不要替其他玩家编他们在做什么
 - 不写角色的内心，不写只有本人才知道的信息（背包内容、HP 数字、查看时看到的细节）
 - 只是查看周围、看某样东西时，写一句"某某四下打量了一番"这种就够了
 
@@ -410,6 +414,15 @@ def narrate(db, view: RoomView, text: str, results: list[ActionResult],
             f"对玩家的好感：{affinity}（-100 到 100）\n对这个玩家的记忆：{memory or '第一次见面'}\n"
             f"玩家做过的事：{deeds}\n</npc>"
         )
+    # 其他玩家的名字，告诉模型这些是人名，别当成天气环境；在场的带上状态，免得模型替睡着的人编动作
+    here = [p.name + ("（倒在地上）" if p.downed else f"（{p.status.describe()}）" if p.status
+                      else "（醒着，但这回合没做任何事）" if p.awake else "（睡着了，一动不动）")
+            for p in view.others]
+    away = sorted((set(view.party) | ({view.following} if view.following else set())) - {p.name for p in view.others})
+    if here or away:
+        parts.append("<names>\n以下都是人名，不是天气或环境。\n"
+                     + (f"在这里的其他玩家：{'、'.join(here)}\n" if here else "")
+                     + (f"不在这里的：{'、'.join(away)}\n" if away else "") + "</names>")
     if recent:
         parts.append("<recent>\n" + "\n".join(recent) + "\n</recent>")
     parts += [f"<player_input>\n{text}\n</player_input>", f"<facts>\n{facts}\n</facts>"]

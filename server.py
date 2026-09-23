@@ -23,18 +23,22 @@ from fastapi.staticfiles import StaticFiles
 from psycopg.types.json import Jsonb
 from psycopg_pool import ConnectionPool
 from pydantic import BaseModel
+import yaml
 
 import ai
 import commands
 import engine
+import seed as seeding
 from schema import ActionResult, RoomView, dir_name
 
 load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
-# 一个回合会占着连接等 AI（可能十几秒），连接数给多一点，免得几个人同时玩就排队
+# 回合只在读写库时借连接，等 AI 时不占（见 run_turn）
 pool = ConnectionPool(os.environ["DATABASE_URL"], min_size=1, max_size=10, open=True)
 app = FastAPI()
 
 START_ROOM = "square"
+# 这些动作的回合不调叙事 AI：facts 已经说清楚了，AI 反而容易替别的玩家编动作
+NO_NARRATION = {"say", "follow", "unfollow", "invite", "join", "leave_party"}
 
 
 class LoginReq(BaseModel):
@@ -82,6 +86,12 @@ def state(conn, view: RoomView, after: Optional[int] = None) -> dict:
             (view.room.id, after, last_event_id, view.player.id),
         )
         events = [{"id": i, "text": t} for i, t in cur.fetchall()]
+        # 看到的动态记进聊天框记录，轮询和命令可能带回同一条，靠唯一索引只记一次
+        cur.executemany(
+            """insert into player_log (player_id, kind, event_id, data) values (%s, 'event', %s, %s)
+               on conflict (player_id, event_id) where event_id is not null do nothing""",
+            [(view.player.id, e["id"], Jsonb({"text": e["text"]})) for e in events],
+        )
     cur.execute(
         f"""select name, hp, coalesce(last_active_at > now() - interval '{engine.ONLINE_WINDOW}', false), status
             from players where room_id = %s and id <> %s order by name""",
@@ -105,6 +115,7 @@ def state(conn, view: RoomView, after: Optional[int] = None) -> dict:
         "others": others,
         "party": view.party,
         "invites": view.invites,
+        "following": view.following,
         "events": events,
         "last_event_id": last_event_id,
     }
@@ -209,13 +220,76 @@ def command(req: CommandReq):
     {"stage": "parse" | "execute" | "narrate"} ... 最后 {"done": {...}} 或 {"error": "..."}"""
     def events():
         try:
-            yield from run_turn(req)
+            for ev in run_turn(req):
+                if "done" in ev:
+                    _log_turn(req, ev["done"])
+                yield ev
         except Exception as e:           # 流已经开始了，没法再改状态码，报成一个事件
             yield {"error": f"服务器出错：{e.__class__.__name__}"}
             raise
 
     return StreamingResponse((json.dumps(e, ensure_ascii=False, default=str) + "\n" for e in events()),
                              media_type="application/x-ndjson")
+
+
+LOG_KEEP = 500                          # 每个玩家的聊天框记录最多留多少条
+
+
+def _log_turn(req: CommandReq, done: dict) -> None:
+    """把这一回合记进聊天框记录（不含侧栏状态），顺手删掉太旧的"""
+    data = {"input": req.text, **{k: v for k, v in done.items() if k != "state"}}
+    with pool.connection() as conn:
+        conn.execute("insert into player_log (player_id, kind, data) values (%s, 'turn', %s)",
+                     (req.player_id, Jsonb(data)))
+        conn.execute(
+            """delete from player_log where player_id = %(p)s and id < (
+                 select id from player_log where player_id = %(p)s order by id desc offset %(n)s limit 1)""",
+            {"p": req.player_id, "n": LOG_KEEP},
+        )
+
+
+@app.get("/api/history")
+def history(player_id: UUID, limit: int = 200):
+    """聊天框记录，旧的在前"""
+    with pool.connection() as conn:
+        rows = conn.execute(
+            """select kind, event_id, data from (
+                 select id, kind, event_id, data from player_log where player_id = %s order by id desc limit %s
+               ) t order by id""",
+            (player_id, min(limit, LOG_KEEP)),
+        ).fetchall()
+    return [{"kind": k, "event_id": e, **d} for k, e, d in rows]
+
+
+# ============ 斜杠命令 ============
+
+WORLD_FILE = os.path.join(os.path.dirname(__file__), "world.yaml")
+
+
+def _admins() -> set[str]:
+    """能用管理命令（/reset）的角色名，环境变量 ADMIN_PLAYERS 逗号分隔"""
+    return {n.strip() for n in os.environ.get("ADMIN_PLAYERS", "").split(",") if n.strip()}
+
+
+def slash_command(view: RoomView, text: str) -> list[ActionResult]:
+    cmd = text.split()[0].lower()
+    if cmd != "/reset":
+        return [ActionResult(action="command", success=False, facts=[f"不认识的命令 {cmd}，可用：/reset"])]
+    if view.player.name not in _admins():
+        return [ActionResult(action="reset", success=False, facts=["只有管理员能重置世界（ADMIN_PLAYERS）"])]
+    # 按 world.yaml 重新布置 NPC、地上物品、门锁、地形；玩家的位置、背包、标记、NPC 记忆和好感度都不动
+    with open(WORLD_FILE, encoding="utf-8") as f:
+        world = yaml.safe_load(f)
+    with pool.connection() as conn:
+        seeding.seed(conn, world)
+        with conn.transaction():
+            conn.cursor().executemany(
+                "insert into events (room_id, player_id, kind, observer) values (%s, %s, 'reset', %s)",
+                [(rid, view.player.id, f"【系统】{view.player.name}重置了世界：NPC、物品、门锁和地形都恢复了初始状态。")
+                 for rid in world["rooms"]],
+            )
+    return [ActionResult(action="reset", success=True,
+                         facts=["世界已重置：NPC、物品、门锁和地形都恢复了初始状态，玩家的位置和背包没动"])]
 
 
 def run_turn(req: CommandReq):
@@ -229,6 +303,17 @@ def run_turn(req: CommandReq):
             return
         engine.touch(conn, view.player.id)
     pid = view.player.id
+
+    # 斜杠命令不走解析和叙事
+    if req.text.strip().startswith("/"):
+        yield {"stage": "execute"}
+        results = slash_command(view, req.text.strip())
+        with pool.connection() as conn:
+            final_state = state(conn, engine.load_view(conn, pid), req.after)
+        yield {"done": {"actions": [], "source": "command", "results": [r.model_dump() for r in results],
+                        "narrative": None, "usage": {"input": 0, "output": 0}, "notes": [], "state": final_state}}
+        return
+
     usage = {"input": 0, "output": 0}
     notes = []                            # 给前端看的调试信息
 
@@ -255,7 +340,7 @@ def run_turn(req: CommandReq):
 
     # 2. 规则引擎执行。解析期间别人可能动了东西，引擎按 ref 重新查库加锁校验，不会用旧状态
     yield {"stage": "execute"}
-    use_ai = ai.enabled() and not all(a.action == "say" for a in actions)
+    use_ai = ai.enabled() and not all(a.action in NO_NARRATION for a in actions)
     npc_id = npc = None
     giveable, affinity, memory, recent = [], 0, "", []
     with pool.connection() as conn:
@@ -274,7 +359,7 @@ def run_turn(req: CommandReq):
         elif not ai.enabled() and talk:
             results += placeholder_dialogue(conn, view, talk.target)
 
-    # 3. 叙事 + NPC 对话。只是和玩家说话的回合不用 AI，facts 本身就是要说的话
+    # 3. 叙事 + NPC 对话。只是说话、组队、跟随的回合不用 AI，facts 本身就够了
     narrative, observer, out = None, None, None
     if use_ai:
         yield {"stage": "narrate"}
@@ -315,9 +400,13 @@ def run_turn(req: CommandReq):
                  Jsonb([f for r in results for f in r.facts]), narrative, observer),
             )
             if moved:
+                # 跟着他一起过来的人也写上（engine.do_move 里一起移动的）
+                followers = [r[0] for r in conn.execute(
+                    "select name from players where following = %s and room_id = %s order by name",
+                    (pid, now_view.room.id)).fetchall()]
                 conn.execute(
                     "insert into events (room_id, player_id, kind, observer) values (%s, %s, 'arrive', %s)",
-                    (now_view.room.id, pid, f"{name}走了进来。"),
+                    (now_view.room.id, pid, "、".join([name] + followers) + "走了进来。"),
                 )
         final_state = state(conn, engine.load_view(conn, pid), req.after)
 

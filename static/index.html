@@ -92,8 +92,9 @@ async function api(path, body) {
   const res = await fetch(path, body ? {
     method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
   } : undefined);
-  const data = await res.json();
-  if (!res.ok) throw new Error(data.detail || res.statusText);
+  // 部署重启时 Render 会回一页 HTML，解析不了也当连接问题处理
+  const data = await res.json().catch(() => ({}));
+  if (!res.ok) throw Object.assign(new Error(data.detail || res.statusText), { status: res.status });
   return data;
 }
 
@@ -127,6 +128,7 @@ function render(s) {
     ${s.others.length ? `<h2>其他玩家</h2><ul>${s.others.map(o => o.hp <= 0
       ? `<li data-name="急救${esc(o.name)}">${esc(o.name)}<span class="tag">倒下了</span></li>`
       : `<li data-name="对${esc(o.name)}说 ">${esc(o.name)}<span class="tag">${o.status ? esc(o.status) : o.awake ? "HP " + o.hp : "睡着了"}</span></li>`).join("")}</ul>` : ""}
+    ${s.following ? `<div class="sys">正跟着${esc(s.following)}（输入"停止跟随"不跟了）</div>` : ""}
     ${s.party.length ? `<h2>队伍</h2><ul>${s.party.map(n => `<li>${esc(n)}</li>`).join("")}</ul>` : ""}
     ${s.invites.length ? `<h2>组队邀请</h2><ul>${s.invites.map(n => `<li data-name="加入${esc(n)}的队伍">${esc(n)}<span class="tag">点一下接受</span></li>`).join("")}</ul>` : ""}
     ${s.items.length ? `<h2>地上</h2><ul>${s.items.map(i => li(i.ref, i.name,
@@ -145,8 +147,10 @@ function render(s) {
       说 大家好 · 对寒风说 跟我来（对玩家说话不走 AI）<br>
       邀请寒风组队 · 加入寒风的队伍 · 离开队伍<br>
       急救寒风 · 打寒风（不能打睡着的人和队友）<br>
+      跟着寒风（他走你也走）· 停止跟随<br>
       借环境打人：推石头砸哥布林、用绳子捆住寒风（AI 判定）· 挣脱<br>
       用 ; 分隔多个命令，其他输入算 自由行动<br>
+      /reset 重置世界（管理员）<br>
       点侧栏里的名字会填进输入框
     </div>
     <h2></h2>
@@ -164,10 +168,27 @@ function showEvents(s) {
   if (s.last_event_id != null) lastEventId = Math.max(lastEventId ?? 0, s.last_event_id);
 }
 
+// 之前的聊天框记录（服务器存的，换设备也在）
+async function showHistory() {
+  const rows = await api(`/api/history?player_id=${playerId}`).catch(() => []);
+  for (const r of rows) {
+    if (r.kind === "turn") {
+      log(`<div class="you">&gt; ${esc(r.input)}</div>`);
+      logTurn(r);
+    } else {
+      shownEvents.add(r.event_id);
+      log(`<div class="other">${esc(r.text)}</div>`);
+    }
+  }
+  if (rows.length) log(`<div class="sys">（以上是之前的记录）</div>`);
+}
+
 async function enter() {
+  if (!playerId) return;            // 重试期间已经退出了
   try {
     const s = await api(`/api/state?player_id=${playerId}`);
-    lastEventId = s.last_event_id;   // 进来之前的动态不补
+    lastEventId = s.last_event_id;   // 进来之前的动态不补，历史记录里有看过的
+    await showHistory();
     render(s);
     const list = (label, arr) => arr.length ? `<div>${label}：${arr.map(esc).join("、")}</div>` : "";
     log(`<div class="sys"><b>${esc(s.room.name)}</b>　${esc(s.room.description)}` +
@@ -175,16 +196,27 @@ async function enter() {
       list("这里有", s.npcs.map(n => n.name)) +
       list("地上有", s.items.map(i => i.name)) +
       list("其他玩家", s.others.map(o => o.name + (o.hp <= 0 ? "（倒下了）" : o.awake ? "" : "（睡着了）"))) + `</div>`);
-  } catch (e) { logout(); }
+    entered = true;
+  } catch (e) {
+    // 只有角色真的不存在才回登录页；连不上就过几秒再试，别把人踢出去
+    if (e.status === 404) logout();
+    else setTimeout(enter, 3000);
+  }
 }
 
+let entered = false;                // enter 成功之前 refresh 不跑，免得重复显示
+let offline = false;                // 连接中断时只提示一次
 async function refresh() {
-  if (!playerId) return;
+  if (!playerId || !entered) return;
   try {
     const s = await api(`/api/state?player_id=${playerId}` + (lastEventId != null ? `&after=${lastEventId}` : ""));
+    if (offline) { offline = false; log(`<div class="sys">已经重新连上了</div>`); }
     showEvents(s);
     render(s);
-  } catch (e) { logout(); }
+  } catch (e) {
+    if (e.status === 404) { logout(); return; }
+    if (!offline) { offline = true; log(`<div class="sys">连接中断，正在自动重连…</div>`); }
+  }
 }
 
 async function deleteCharacter() {
@@ -204,6 +236,7 @@ function logout() {
   if (playerId) fetch("/api/logout", { method: "POST", headers: { "Content-Type": "application/json" },
                                        body: JSON.stringify({ player_id: playerId }) }).catch(() => {});
   playerId = null;
+  entered = offline = false;
   try { localStorage.removeItem("newera.player"); } catch {}
   $("#login").style.display = "flex";
 }
@@ -254,6 +287,19 @@ async function runTurn(text, onStage) {
   throw new Error("连接中断");
 }
 
+// 一回合的结果：解析、facts、叙事。历史记录里的回合没有耗时
+const SOURCES = { ai: "AI 解析", rules: "规则解析", command: "命令" };
+function logTurn(d, secs) {
+  const parsed = d.actions.map(a => JSON.stringify(a)).join("  ");
+  const cost = (d.usage.input || d.usage.output ? ` · token ${d.usage.input} 入 / ${d.usage.output} 出` : "") +
+    (secs ? ` · ${secs}s` : "");
+  const facts = d.results.map(r =>
+    r.facts.map(f => `<div class="fact${r.success ? "" : " fail"}">${esc(f)}</div>`).join("")).join("");
+  log(`<div class="parsed">[${SOURCES[d.source] || d.source}${cost}] ${esc(parsed)}</div>` +
+    (d.narrative ? `<div class="narrative">${esc(d.narrative)}</div><details><summary>facts</summary>${facts}</details>` : facts) +
+    d.notes.map(n => `<div class="sys">${esc(n)}</div>`).join(""));
+}
+
 async function send(text) {
   log(`<div class="you">&gt; ${esc(text)}</div>`);
   // 等待提示：显示当前步骤和已等待秒数，结果出来后移除
@@ -268,15 +314,8 @@ async function send(text) {
   $("#log").scrollTop = $("#log").scrollHeight;
   try {
     const d = await runTurn(text, s => { stage = s; tick(); });
-    const secs = ((Date.now() - start) / 1000).toFixed(1);
-    const parsed = d.actions.map(a => JSON.stringify(a)).join("  ");
-    const cost = (d.usage.input || d.usage.output ? ` · token ${d.usage.input} 入 / ${d.usage.output} 出` : "") + ` · ${secs}s`;
-    const facts = d.results.map(r =>
-      r.facts.map(f => `<div class="fact${r.success ? "" : " fail"}">${esc(f)}</div>`).join("")).join("");
     showEvents(d.state);              // 等待期间别人做的事先显示
-    log(`<div class="parsed">[${d.source === "ai" ? "AI 解析" : "规则解析"}${cost}] ${esc(parsed)}</div>` +
-      (d.narrative ? `<div class="narrative">${esc(d.narrative)}</div><details><summary>facts</summary>${facts}</details>` : facts) +
-      d.notes.map(n => `<div class="sys">${esc(n)}</div>`).join(""));
+    logTurn(d, ((Date.now() - start) / 1000).toFixed(1));
     render(d.state);
   } catch (err) {
     log(`<div class="fact fail">${esc(err.message)}</div>`);

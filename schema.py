@@ -87,6 +87,16 @@ class LeaveParty(BaseModel):
     action: Literal["leave_party"]
 
 
+class Follow(BaseModel):
+    """跟着同房间的某个玩家，对方移动时自动一起走"""
+    action: Literal["follow"]
+    target: str                         # 玩家名字
+
+
+class Unfollow(BaseModel):
+    action: Literal["unfollow"]
+
+
 # 借环境、创意动作打人：AI 当裁判给出难度、伤害档位、负面状态，规则引擎掷骰、限幅后执行。
 # AI 只能选档位，具体数字在 engine.TIER_DAMAGE，说得再夸张也超不过上限
 Difficulty = Literal["easy", "normal", "hard"]
@@ -134,7 +144,7 @@ class Reject(BaseModel):
 
 PlayerAction = Annotated[
     Union[Move, Look, Take, Drop, Use, Equip, Attack, Talk, Give, Say, Revive, Invite, Join, LeaveParty,
-          Stunt, Struggle, Freeform, Reject],
+          Follow, Unfollow, Stunt, Struggle, Freeform, Reject],
     Field(discriminator="action"),
 ]
 
@@ -262,6 +272,7 @@ class Player(BaseModel):
     flags: dict[str, Any] = {}          # 任务标记
     party_id: Optional[UUID] = None     # 所在队伍，没组队为空
     status: Optional[Status] = None     # 负面状态
+    following: Optional[UUID] = None    # 正在跟着谁
 
 
 # ============ 意图解析的房间上下文 ============
@@ -286,6 +297,7 @@ class RoomView(BaseModel):
     party: list[str] = []               # 队友名字（不含自己，不论在不在同一房间）
     invites: list[str] = []             # 还有效的、邀请自己组队的玩家名字
     features: list[Feature] = []        # 这里还能用的可利用地形
+    following: Optional[str] = None     # 正在跟着的玩家名字
     refs: dict[str, UUID] = {}
 
     def assign_refs(self) -> None:

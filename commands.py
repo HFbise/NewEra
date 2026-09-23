@@ -136,6 +136,10 @@ def _parse_one(view: RoomView, t: str) -> dict:
     if m := (re.fullmatch(r"(?:revive|急救|救起|扶起|救醒|叫醒|松绑|救)\s*(.+)", t, re.I)
              or re.fullmatch(r"(?:给|帮)\s*(.+?)\s*(?:松绑|解开)", t)):
         return {"action": "revive", "target": _player_or_unsure(view, m[1])}
+    if re.fullmatch(r"停止跟随|不跟了|别跟了|不再跟着.*|unfollow", t, re.I):
+        return {"action": "unfollow"}
+    if m := re.fullmatch(r"(?:跟着|跟随|跟上|尾随|follow)\s*(.+?)(?:走)?", t, re.I):
+        return {"action": "follow", "target": _player_or_unsure(view, m[1])}
     if re.fullmatch(r"(?:离开|退出)队伍|退队|leave party", t, re.I):
         return {"action": "leave_party"}
     if m := (re.fullmatch(r"(?:加入|接受)\s*(.+?)\s*的?(?:队伍|邀请|队)", t)
