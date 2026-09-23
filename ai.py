@@ -201,6 +201,7 @@ class AIAction(BaseModel):
     slot: Optional[str] = None
     knockback: Optional[int] = None
     steps: Optional[int] = None
+    consume: Optional[bool] = None
 
 
 class AIParsed(BaseModel):
@@ -234,14 +235,15 @@ INTENT_SYSTEM = """你是文字 MUD 游戏的指令解析器。读玩家的输�
 - stunt: 借环境或创意动作去伤害、制住某个 NPC 或玩家（推石头砸、用铁叉捅、绊倒、用绳子捆、泼东西迷眼）。拿吃的喝的去砸、扔、泼人也是 stunt（item 填那样东西）；喂进嘴里、灌下去是 use 不是 stunt。你是裁判，要填：
   - target（NPC 的 ref 或其他玩家的名字），description（第三人称简述怎么做的）
   - feature：用到"可利用地形"里的东西就填它的 ref（如 f1）；只用环境描述里随手的东西就不填
-  - item：用到背包里的东西（绳子、武器等）就填它的 ref，只能填"背包"列表里的；地上的东西要先 take；没用就不填
+  - item：用到背包里的东西（绳子、腰带、武器等）就填它的 ref，只能填"背包"列表里的；地上的东西要先 take；没用就不填。玩家点名用哪样就填哪样；没点名就挑一样合理又最不值钱的，钥匙、任务要交的东西、护符这类贵重的别挑
+  - consume：item 这一下会被用掉就填 true（泼出去的油和酒、点着的布条、撒出去的石灰、扔出去砸碎的瓶子）；拿刀比划、用铲子撬、挥武器这种用完还在手上的填 false。捆人用的东西引擎会自动用掉，不用管
   - knockback：把 NPC 踹开、撞退、推远时填推出去几格（1 或 2），不推开不填
   - push：把对方推、踹、扔、拖进某个出口时填那个出口的英文名，做成了对方就到了那边（只能对其他玩家，队友、倒下的人也行）。门锁着的话同一句里要先 use 钥匙开门，比如"开门把他踹进去"是 use 加 stunt（push 填 down）
   - difficulty：做成的难度（引擎按 easy 70% / normal 40% / hard 10% 掷骰），看动作合不合理、对方有没有防备：有地形或道具帮忙、对方没防备、动作简单可行是 easy；普通的临场发挥是 normal；花哨离谱、要一连串巧合、对方正盯着你的是 hard。重伤以上引擎一律按 hard 算
   - tier：做成时的伤害 none（不伤人，比如捆绑）/ light（轻伤）/ heavy（重伤）/ lethal（足以致命），照实判断，规则会按地形限幅
   - status：做成时对方陷入的负面状态，不会就不填。incapacitated = 失去战斗能力（砸晕、打昏、呛晕）；restrained = 被束缚（捆住、压住、缠住）
-  - 捆人、缠住（restrained）必须用"可利用地形"或背包里真有的东西，填上 feature 或 item。比如玩家说"用绳子捆人"，可利用地形里有"井上的麻绳"就填它的 feature ref。环境描述里的东西拿不走，地形和背包里都没有能捆人的东西，就不能捆：输出 reject，reason 写没有能用来捆人的东西
-  - status_label：状态的说法，简短，如"被石头砸晕了""被绳子捆住了"；escape：这个状态挣脱或醒来的难度 easy / normal / hard
+  - 捆人、缠住（restrained）必须用"可利用地形"或背包里真有、而且合理能拿来捆人的东西，填上 feature 或 item。你来判断合不合理：绳子、腰带、布条、锁链、藤蔓、皮带、布衣能捆；面包、硬币、钥匙、酒杯这种捆不了。玩家点名了用什么（"用绳子捆"），就得是背包或地形里的那样东西（"井上的麻绳"也算绳子），没有就 reject，不要拿别的东西顶替；只说"把他捆起来"没点名，就从背包、地形里挑一样合理的。环境描述里的东西拿不走，地形和背包里都没有能捆人的东西，就不能捆：输出 reject，reason 写没有能用来捆人的东西
+  - status_label：状态的说法，简短，如"被石头砸晕了""被绳子捆住了"。泼酒、撒沙、撒石灰迷眼是短暂的 incapacitated，写"被迷了眼"这类，不要写成晕了，escape 填 easy；escape：这个状态挣脱或醒来的难度 easy / normal / hard
 - struggle: description（第三人称简述怎么挣脱的），difficulty（这次挣脱或醒来的难度 easy / normal / hard，看方法合不合理、状态有多严重）。玩家自己带着负面状态时想摆脱它就是 struggle；失去战斗能力时说什么做什么都算 struggle（挣扎着醒来）
 - maneuver: target（NPC 的 ref），steps（整数格数，靠近填正数、退开填负数，每次最多 2 格：后退一步、挪开一点是 -1，拔腿往后跑、拉开距离是 -2，凑近一步是 1，冲上去是 2），description。同一个区域里走近、退开某个 NPC 都是 maneuver，不是 move；"冲上去砍它"是 maneuver 加 attack，"悄悄摸到它背后扭断脖子""绕过去把它打晕"是 maneuver（steps 填把距离缩到 0 的格数，最多 2）加 stunt。看"敌人"那行的距离，扭脖子、打晕、掐、割喉这类贴身动作，玩家说了摸过去、凑近、绕到背后，就先 maneuver
 - dodge: description。闪避、闪躲、侧身躲开、护住要害准备挨打：这一下敌人更难打中
@@ -390,6 +392,9 @@ def parse_intent(db, view: RoomView, text: str) -> tuple[Optional[list], dict]:
             if d["action"] == "use" and d.get("target") and d["target"] not in DIR_NAMES and not feeding:
                 d = {"action": "stunt", "target": d["target"], "item": d["item"], "description": text,
                      "difficulty": "normal", "tier": "light"}
+            # 吃的喝的泼出去、砸出去就没了
+            if d["action"] == "stunt" and d.get("item") in food and THROW_WORDS.search(text):
+                d["consume"] = True
             # 打的得是 NPC 或玩家；砍锁、砍门、砍树这种冲着东西去的当自由行动（模型会把地形 f1 填成目标）
             npc_refs = {by_id[n.id] for n in view.npcs}
             if (d["action"] in ("attack", "stunt") and d.get("target") not in npc_refs
@@ -474,7 +479,7 @@ observer（给同房间其他人看）：
 
 NPC 对话（只有 facts 里有对话时才用）：
 - NPC 按 <npc> 里的人设说话，要回应玩家说的内容，把 NPC 的台词写进叙事
-- 物品交付只以 facts 为准：facts 里有"把某物交给了"才能写 NPC 给出东西；没有就绝对不能写 NPC 给了、递了、塞了任何物品，也不要暗示马上会给
+- 物品交付只以 facts 为准：facts 里有"把某物交给了"才能写 NPC 给出东西；没有就绝对不能写 NPC 给了、递了、塞了任何物品，也不要暗示马上会给。玩家要的东西 facts 里既没交付也没开价，NPC 就按人设说没有、不卖或者做不了（货架上、"你卖的货"里有的除外，那些可以报价），不能写拿出来、取出来
 - 玩家要的东西如果 <player> 里"身上带着"已经有了，NPC 就提醒他已经有了（"钥匙不是已经在你手上了吗"）。但 facts 里这回合刚交给他的东西也会出现在"身上带着"里，那是刚给的，不是他原来就有的
 - affinity_delta：根据玩家这回合的言行，NPC 好感变化，-5 到 5 的整数。一般聊天 0 到 1，礼貌帮忙加分，无礼威胁减分
 - NPC 要记得 <npc> 里"对这个玩家的记忆"，说话时自然体现（认出老熟人、提起上次的事）
@@ -510,6 +515,7 @@ class MadeItem(BaseModel):
 
 
 class GiveDecision(BaseModel):
+    wants: Optional[str] = None          # 玩家这回合点名要的东西（"绳子""一杯黑啤"），只是同意成交、没点名就 null
     give: Optional[str] = None           # 可给列表里的编号（g1、g2），不给就 null
     create: Optional[MadeItem] = None    # 现做一件，不做就 null
     sell: Optional[str] = None           # 卖货清单里已报价的编号（s1、m1），不卖就 null；三样最多填一个
@@ -519,7 +525,7 @@ class GiveDecision(BaseModel):
 
 QUEST_STAGES = {"new": "这回合主动提起", "active": "已经托付，他还没办完", "done": "他刚办完，这回合交付奖励"}
 
-KIND_NAMES = {"food": "食物（吃的）", "drink": "酒水（喝的）", "misc": "杂物（字条、信物这类小东西，没效果）",
+KIND_NAMES = {"food": "食物（吃的）", "drink": "酒水（喝的）", "misc": "杂物（绳子、布条、麻袋、字条、信物这类，没有数值效果）",
               "weapon": "武器"}
 
 
@@ -540,6 +546,8 @@ GIVE_SYSTEM = """你在扮演文字 MUD 游戏里的一个 NPC，要决定这一
 - sell：卖"卖货清单"里标着"已报价"的东西（墙上的货、你开过价的现做东西），按报的价收钱
 
 怎么判断：
+- wants：先写玩家这回合点名要的是什么东西，照他的说法写（"绳子""一杯黑啤"）；说"跟他一样的""老规矩"就写你理解的具体东西；只是说成交、同意价钱、没点名要东西就填 null
+- 给的、卖的、做的必须就是 wants 那样东西，不能拿别的顶替（要绳子不能卖黑啤）。可给物品和卖货清单里没有，就看能不能现做（绳子、布条、麻袋这种没数值的东西算 misc 杂物）；做不了、不想做就全填 null，NPC 会自己说没有。wants 是 null 不等于不交易：玩家说"成交""就它了""给你钱"，指的就是开过价的那件（有好几件就是最后报的那件），照常 sell；"再来一杯""一样的"指已报价的同一样东西也照常 sell
 - give：只有玩家在要这样东西、问起它、或者在交代完成了你关心的事时才给。闲聊、问候、点菜、打听别的事都不 give
 - create：玩家点了吃的喝的、要你打东西、要了你能给的小东西，或者按人设你本来就会主动塞给他点什么，才 create。普通闲聊不 create
 - 白送还是收钱看人设、好感度、对他的记忆，但白送（price 0）只给好感 50 以上的老交情，不到 50 一律收钱（引擎也会拦）；讨厌他可以干脆不做（全填 null）。赊账、先拿后付、说别人会付钱都不行，钱不够就不卖
@@ -598,6 +606,18 @@ def decide_give(db, view: RoomView, text: str, npc: Npc, giveable: list[ItemInst
         if out.give or out.create or out.sell not in sell_refs or sell_refs[out.sell]["id"] not in offers:
             out.sell = None                # 没报过价的不能成交
         out.price = max(0, out.price)
+        # 交出去的得是玩家要的那样：模型会拿别的顶替（要绳子，卖了之前报过价的黑啤）。
+        # 按字比对名字和描述，一个字都对不上就是挑错了，这回合不交易
+        # 玩家常说统称（"来杯酒""吃的"），所以种类的说法也算进去
+        want = set(re.sub(r"[一二两三几个杯碗瓶份捆条把块些点的来要买再样同]", "", out.wants or ""))
+        kind = (out.create.kind if out.create else
+                (made_offers.get(sell_refs[out.sell]["id"]) or {}).get("spec", {}).get("kind") if out.sell else None)
+        chosen = (f"{give_refs[out.give].name}{give_refs[out.give].description}" if out.give
+                  else f"{out.create.name}{out.create.description}" if out.create
+                  else f"{sell_refs[out.sell]['name']}{sell_refs[out.sell]['description']}" if out.sell else None)
+        chosen = chosen and chosen + {"drink": "酒喝饮", "food": "吃食饭菜", "weapon": "武器刀剑"}.get(kind, "")
+        if want and chosen and not want & set(chosen):
+            out.give = out.create = out.sell = None
         return out
 
     out, usage = _call(db, view.player.id, "give", GIVE_SYSTEM, user, GiveDecision, 448, check)

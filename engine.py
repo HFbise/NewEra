@@ -681,6 +681,17 @@ def _consume(cur: Cursor, item: ItemInstance) -> None:
         cur.execute("delete from item_instances where id = %s", (item.id,))
 
 
+def _precious(cur: Cursor, item: ItemInstance) -> bool:
+    """钥匙、任务要交的东西、只能拿一次的东西（护符）：不能被当成材料用掉"""
+    if item.template.type == "key":
+        return True
+    cur.execute("""select exists (select 1 from quests where needs_item = %(t)s)
+                       or exists (select 1 from rooms, jsonb_each(coalesce(props->'dispensers', '{}')) d
+                                  where d.value->>'item' = %(t)s and coalesce((d.value->>'once')::boolean, false)) as p""",
+                {"t": item.template.id})
+    return cur.fetchone()["p"]
+
+
 def _knock_out(cur: Cursor, table: str, target_id: UUID, label: str) -> None:
     """药倒：失去战斗能力，挣脱（醒来）难度普通"""
     _set_status(cur, table, target_id, Status(kind="incapacitated", label=label[:20], escape="normal",
@@ -1027,11 +1038,15 @@ def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]
         if feature["uses_left"] <= 0:
             raise ActionError(f"{feature['name']}已经被用过了，暂时没法再用")
         cap = feature["max_tier"]
-    # 背包里的东西（绳子、武器）也算真东西：能拿来捆人，挣脱难度照 AI 判的，伤害仍按随手的算
+    # 背包里的东西也算真东西：拿什么捆人合不合理由 AI 判（绳子、腰带、布条），挣脱难度照 AI 判的，伤害仍按随手的算
     item = _inv_item(cur, view, player, a.item) if a.item else None
     # 捆人得有真东西：环境描述里的东西拿不走，只用它们捆不了人
     if a.status == "restrained" and not feature and not item:
         raise ActionError(f"{player.name}手边没有能用来捆人的东西")
+    # 捆上去的东西留在对方身上，泼出去、烧掉的也没了；钥匙、任务物品这类不能拿来当材料
+    material = item if item and (a.consume or a.status == "restrained" and not feature) else None
+    if material and _precious(cur, material):
+        raise ActionError(f"{material.name}太要紧了，不能拿来这么用")
     tier = _cap(a.tier, cap, TIERS)
     escape = a.escape if feature or item else "easy"   # 随手的东西弄出来的状态都好挣脱
 
@@ -1068,11 +1083,16 @@ def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]
     if poison:
         _consume(cur, poison)
     facts = [f"{player.name}尝试：{a.description}"]
+    # 泼出去、扔出去、点着的东西不管成没成都没了；捆人的东西成了才留在对方身上
+    if material and material is not poison and a.status != "restrained":
+        _consume(cur, material)
+        facts.append(f"{material.name}用掉了")
     chance = STUNT_CHANCE[a.difficulty]
     helpless = (target.status is not None) if is_npc else (target.status is not None or target.hp <= 0)
     # 一击毙命、直接打晕（扭断脖子、一拳打晕）：不借地形、不用药，对方又有防备，这种事不可能成。
     # 对方已经倒下、被放倒、被捆住就照常补刀；敌人还没发现你是偷袭，给一成把握，得手就照判的档位来
-    if not feature and not poison and (a.tier == "lethal" or a.status == "incapacitated"):
+    # 泼出去、撒出去的东西（酒迷眼、石灰）跟下毒一样是实打实的手段，不算徒手一招制敌
+    if not feature and not poison and not material and (a.tier == "lethal" or a.status == "incapacitated"):
         # 扭脖子、打晕都是贴身的事，敌人离着几格就得先摸过去
         if is_npc and target.template.hostile and (d := _distance(_stealth(player), target)) > 0:
             raise ActionError(f"离{target.name}还有 {distance_word(d)}，够不着，得先靠近")
@@ -1109,7 +1129,10 @@ def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]
                     or ("被打得失去了战斗能力" if a.status == "incapacitated" else "被困住了"))
         _set_status(cur, "npcs" if is_npc else "players", target.id, st)
         facts.append(f"{target.name}{st.describe()}")
-        stunned = True                                # 刚被放倒、捆住的 NPC 这回合不还手
+        if material and a.status == "restrained":
+            _consume(cur, material)
+            facts.append(f"{material.name}用来捆住了{target.name}，留在{'它' if is_npc else '他'}身上")
+        stunned = True                               # 刚被放倒、捆住的 NPC 这回合不还手
     if is_npc and not down and a.knockback > 0 and target.template.hostile:
         pst = _stealth(player)
         d = _set_distance(pst, target, _distance(pst, target) + min(MAX_STEP, a.knockback))

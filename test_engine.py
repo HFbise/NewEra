@@ -73,6 +73,9 @@ def check(desc: str, cond: bool):
 
 def main():
     load_dotenv(".env")
+    # 会重置整个世界（NPC、地上的东西），.env 连的是正式库时跑了就会影响在线玩家，得明确同意才跑
+    if os.environ.get("ALLOW_RESEED") != "1":
+        raise SystemExit("这个测试会重置世界，只能对测试库跑：确认后设 ALLOW_RESEED=1 再运行")
     with psycopg.connect(os.environ["DATABASE_URL"]) as conn:
         reset(conn)
         v = lambda: engine.load_view(conn, TEST_ID)

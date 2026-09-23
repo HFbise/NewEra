@@ -116,7 +116,8 @@ class Stunt(BaseModel):
     target: str                         # NPC 的 ref，或者同房间玩家的名字
     description: str                    # 第三人称简述怎么做的
     feature: Optional[str] = None       # 用到的可利用地形 ref（f1）；只用环境里随手的东西就空，最多轻伤
-    item: Optional[str] = None          # 用到的背包物品 ref（绳子、武器）；捆人（restrained）必须有 feature 或 item
+    item: Optional[str] = None          # 用到的背包物品 ref（绳子、腰带、武器）；捆人（restrained）必须有 feature 或 item
+    consume: bool = False               # item 会被用掉（泼出去的油、点着的布条）；拿来捆人的东西成功了一定用掉
     push: Optional[str] = None          # 把对方推、踹、扔进哪个出口（英文方向），成功就挪到那个房间；只能推玩家
     knockback: int = 0                  # 把 NPC 踹开、撞退几格（0 到 2），成功就拉开距离
     difficulty: Difficulty = "normal"   # 做成的难度，引擎按它掷骰
