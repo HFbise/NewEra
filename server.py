@@ -495,7 +495,8 @@ def run_turn(req: CommandReq):
                  # 后台排查用：解析来源、解析出的动作、提示
                  Jsonb({"source": source, "actions": [a.model_dump() for a in actions], "notes": notes})),
             )
-            if moved:
+            # 被抬回来复活的不算走进来：那边已经有"扶起来"的动态了
+            if moved and not any(a.action == "respawn" for a in actions):
                 # 跟着他一起过来的人也写上（engine.do_move 里一起移动的）
                 followers = [r[0] for r in conn.execute(
                     "select name from players where following = %s and room_id = %s order by name",
@@ -544,6 +545,8 @@ def _observer_fallback(name: str, actions: list, results: list[ActionResult]) ->
     for a, r in zip(actions, results):
         if a.action == "look":
             lines.append(f"{name}四下打量了一番。")
+        elif a.action == "respawn" and r.success:
+            lines.append(r.facts[0])            # 原地的人只看到被带走了，那边扶起来的事他们看不到
         elif r.success:
             lines += r.facts
     return "；".join(lines) or None

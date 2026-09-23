@@ -1697,7 +1697,10 @@ def do_respawn(cur: Cursor, player: Player, view: RoomView, a: Respawn) -> list[
         raise ActionError(f"{player.name}已经在{dest['name']}了，等人来扶")
     cur.execute("update players set room_id = %s, following = null, stealth = null, updated_at = now() where id = %s",
                 (dest["id"], player.id))
-    facts = [f"{player.name}被好心的路人抬回了{dest['name']}"]
+    facts = [f"有人把{player.name}带回了{dest['name']}"]
+    # 那边的人先看到被抬进来，再看到扶起来
+    cur.execute("insert into events (room_id, kind, observer) values (%s, 'carried_in', %s)",
+                (dest["id"], f"有人把倒下的{player.name}抬了进来。"))
     revived = _keeper_revive(cur, dest["id"])
     return facts + (revived or [f"{dest['name']}里没人照看，{player.name}还躺着"])
 
