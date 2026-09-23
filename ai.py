@@ -11,7 +11,6 @@ import json
 import os
 import re
 import time
-from difflib import SequenceMatcher
 from typing import Literal, Optional, Union
 from uuid import UUID
 
@@ -46,6 +45,11 @@ def provider() -> str:
 
 def model() -> str:
     return os.environ.get("AI_MODEL") or DEFAULT_MODELS[provider()]
+
+
+def roleplay_model() -> Optional[str]:
+    """NPC 台词（角色扮演）用的模型，不设就跟主模型一样。以后想换好一点的模型只改这个"""
+    return os.environ.get("AI_ROLEPLAY_MODEL") or None
 
 
 def background_model() -> Optional[str]:
@@ -519,13 +523,6 @@ EFFECT_RE = re.compile(r"（[^（）]*(?:点血|伤害|防御|有毒|药倒|没�
 STAT_RE = re.compile(r"[^，。！？,.!?“”'‘’]*(?:回|恢复|加|掉)\s*[0-9一二三四五六七八九十两]+\s*点(?:血|HP|生命)[^，。！？,.!?“”'‘’]*[，,]?")
 TRADE_ACTIONS = {"quote", "npc_sell", "npc_create", "npc_give"}
 
-COPY_RUN = 12                           # 跟以前说过的话连续这么多字一样，就算照抄
-
-
-def _copies(reply: str, said: list[str]) -> bool:
-    return any(SequenceMatcher(None, reply, old, autojunk=False).find_longest_match().size >= COPY_RUN for old in said)
-
-
 def _tidy(text: str) -> str:
     """删掉半句之后收拾标点：连在一起的逗号、逗号接句末标点、开头的逗号"""
     text = re.sub(r"[，,]+(?=[。！？!?…”’'])", "", text)
@@ -613,6 +610,64 @@ NPC 对话（只有 facts 里有对话时才用）：
 - NPC 手上的委托只有 <npc> 里列出的这些，没列就是没有。玩家问还有没有活、有没有别的委托，就照实说（已托付的提一句进度，没有更多就说暂时没有），绝不能编出新的差事、任务、悬赏
 - <npc> 里的"委托"是 NPC 托玩家办的事：写着"主动提起"就在这回合自然地把事情和要他做什么说出来；写着"还没办完"就在聊到相关话题时提一句；写着"刚办完"就照 facts 写交付奖励、夸他；写着"已了结"就别再提，除非玩家问
 - eject：<npc> 里写了"能把闹事的人轰出去"时，玩家挑衅、骚扰、动手、砸场子，NPC 忍无可忍就填 true，并且叙事里必须写清楚 NPC 动手把玩家扔出了门、玩家落到了门外的哪里（照 <npc> 写），不能只是威胁；普通斗嘴、开玩笑不算。没写这项就一律 false"""
+
+
+# ============ NPC 台词（单独一次，只管演戏） ============
+# 以前台词跟叙事、好感、报价挤在一次调用里，模型要守几十条规则，演戏就敷衍了。
+# 拆出来：这一步只看人设、好感、记忆、这回合发生了什么、玩家说了什么，写 NPC 说出口的话；叙事再把它原样包进场景
+
+class NpcLine(BaseModel):
+    line: str                            # NPC 这回合说出口的话，只要台词，不要动作旁白
+
+
+ROLEPLAY_SYSTEM = """你在文字 MUD 游戏里扮演一个 NPC，只写她这回合开口说的话（一到四句），不写动作、旁白、引号外的描写。
+演好这个人：
+- 完全照 <npc> 的人设、外表、说话方式来说，像真人一样接住玩家的话，有情绪、有态度、有她自己的关心和算计
+- 语气跟着好感度走：-30 以下嫌弃刻薄；-30 到 10 是人设本色；10 到 50 嘴上照旧、话里明显更关照；50 以上是老交情，一定流露关心（嘴硬也要露馅）
+- 先回应玩家这句话本身：他问什么就答什么，他骂人就按人设回敬，他求助就按人设和交情决定帮不帮、怎么帮
+- 口头禅、称呼可以用，但一段话里最多一次；比方、话题每次换着来，记忆里最近提过的就别再提，除非他问
+- 开场白也换着来：别每次都用同一个开头（比如老是"哟，杂鱼"开场），有时直接回答、有时先反问、有时先动怒或先笑
+- 不要重复记忆里你以前说过的话（记忆里你的回话只留了开头、后面是省略号，只是提醒你说过什么，不要照着那个开头说，更不要把省略的片段当台词）
+必须守的事实：
+- <this_turn> 是这回合系统里真实发生的：成交就照成交说价钱，开价就把价说出来，委托办完就认可他、说把奖励交给他。没发生的交付不要说成已经给了
+- 只能提 <npc> 里有的货和做过的东西；不提回几点血、伤害多少这类游戏数值，价钱可以说
+- "刚才你……""上次你……"只能说记忆、<recent>、<this_turn> 里真有的事；他问刚才说了什么，就照记忆回答
+- 不提 <npc> 里没有的人物、店铺、委托"""
+
+
+def npc_line(db, view: RoomView, text: str, results: list[ActionResult], npc: Npc, affinity: int, memory: str,
+             recent: Optional[list[str]] = None, quests: Optional[list[tuple[str, dict]]] = None,
+             sells: Optional[list[dict]] = None, made_before: Optional[list[dict]] = None) -> Optional[str]:
+    """NPC 这回合说的话，单独演。失败返回 None（叙事自己写台词）"""
+    this_turn = "\n".join("；".join(EFFECT_RE.sub("", f) for f in r.facts) for r in results if r.success) or "没什么特别的"
+    goods = "、".join([f"{s['name']}（建议价 {s['base_price']} 金币）" for s in sells or []]
+                     + [g["name"] for g in made_before or []]) or "无"
+    tasks = "；".join(f"{q['hook']}（{QUEST_STAGES[st]}）" if st != "closed" else f"{q['after']}"
+                     for st, q in quests or []) or "没有"
+    user = (f"<npc>\n名字：{npc.name}\n外表：{npc.template.description}\n人设：{npc.template.persona}\n"
+            f"对{view.player.name}的好感：{affinity}（-100 到 100）\n对他的记忆：\n{memory or '第一次见面'}\n"
+            f"你卖的货、做过的东西：{goods}\n委托：{tasks}\n</npc>\n\n"
+            + ("<recent>\n" + "\n".join(recent) + "\n</recent>\n\n" if recent else "")
+            + f"<this_turn>\n{this_turn}\n</this_turn>\n\n<player>{view.player.name}</player>\n"
+            f"<player_input>\n{text}\n</player_input>")
+    trading = any(r.success and r.action in TRADE_ACTIONS for r in results)
+    rewards = [m[1] for r in results if r.success and r.action == "quest"
+               for f in r.facts if (m := re.search(r"把(.+?)交给了", f))]
+
+    def check(out: NpcLine, last: bool) -> NpcLine:
+        out.line = out.line.strip().strip("“”\"'").strip()
+        if not out.line:
+            raise ValueError("台词是空的")
+        if (trading or PRICE_RE.search(out.line)) and STAT_RE.search(out.line):
+            if not last:
+                raise ValueError("说了回几点血这种游戏数值")
+            out.line = _tidy(STAT_RE.sub("", out.line))
+        if not last and rewards and re.search(r"已经在你|不是已经|早就有|已经拿到", out.line):
+            raise ValueError("奖励是这回合刚给的，不能说他早就有了")
+        return out
+
+    out, _ = _call(db, view.player.id, "roleplay", ROLEPLAY_SYSTEM, user, NpcLine, 512, check, prefer=roleplay_model())
+    return out.line if out else None
 
 
 # ============ NPC 对玩家的记忆摘要（后台整理，不占玩家等待） ============
@@ -839,8 +894,9 @@ def narrate(db, view: RoomView, text: str, results: list[ActionResult],
             npc: Optional[Npc], affinity: int, memory: str = "", recent: Optional[list[str]] = None,
             quests: Optional[list[tuple[str, dict]]] = None, eject_to: Optional[str] = None,
             sells: Optional[list[dict]] = None, offers: Optional[dict[str, dict]] = None,
-            made_before: Optional[list[dict]] = None) -> tuple[Optional[Narration], dict]:
+            made_before: Optional[list[dict]] = None, line: Optional[str] = None) -> tuple[Optional[Narration], dict]:
     """返回 (叙事, token 统计)。NPC 给东西已经在 decide_give 里定好并执行，结果在 results 里。
+    line 是 npc_line 单独演好的 NPC 台词：叙事只把它原样写进场景，不再自己编台词
     quests 是 engine.quest_turn 给的这个 NPC 的委托情况；eject_to 是 NPC 能把人轰去的地方（房间名），不能轰就空
     memory 是 NPC 对这个玩家的记忆，recent 是这个房间最近几条别人的动态"""
     # 买卖的 facts 里括号中的游戏数值（回 1 点血）不给叙事看，免得 NPC 报价时念出来
@@ -943,6 +999,9 @@ def narrate(db, view: RoomView, text: str, results: list[ActionResult],
     if recent:
         parts.append("<recent>\n" + "\n".join(recent) + "\n</recent>")
     parts += [f"<player_input>\n{text}\n</player_input>", f"<facts>\n{facts}\n</facts>"]
+    if npc and line:
+        parts.append(f"<npc_line>{line}</npc_line>\n这是{npc.name}这回合说的话，已经定好了：一字不改地写进叙事当她的台词，"
+                     "npc_reply 就填它，不要另外编台词，也不要改动她说的内容；你只写她说话时的神态动作和场景")
     # 委托刚办完：单独放在最后提醒，小模型常只顾回玩家的话、把刚给的奖励当成他早就有的
     handed = [f for r in results if r.success and r.action == "quest" for f in r.facts]
     if npc and handed:
@@ -961,6 +1020,13 @@ def narrate(db, view: RoomView, text: str, results: list[ActionResult],
                                                  if k.startswith("made:") and v.get("spec")]
 
     def check(out: Narration, last: bool) -> Narration:
+        # 台词是单独演好的：叙事得原样用上，没写进去就重写一次，还没写就补在末尾
+        if npc and line:
+            out.npc_reply = line
+            if line.strip("“”\"'") not in out.narrative:
+                if not last:
+                    raise ValueError(f"{npc.name}的台词要一字不改地写进叙事：{line}")
+                out.narrative += f"{npc.name}说：“{line}”"
         # 旁人描述里主角写成【主角】，换回角色名；引号外面的"你"也是主角（facts 里名字换成了"你"，模型容易跟着写）
         out.observer = re.sub(r"(“[^”]*”)|你", lambda m: m[1] or name, out.observer.replace("【主角】", name))
         out.narrative = out.narrative.replace("【主角】", "你")
@@ -985,7 +1051,7 @@ def narrate(db, view: RoomView, text: str, results: list[ActionResult],
         # 报价（台词里带着"N 金币"）也算：这时念回几点血就是在念商品数值
         trading = (any(r.success and r.action in TRADE_ACTIONS for r in results)
                    or bool(out.npc_reply and PRICE_RE.search(out.npc_reply)))
-        if npc and trading and out.npc_reply and STAT_RE.search(out.npc_reply):
+        if npc and not line and trading and out.npc_reply and STAT_RE.search(out.npc_reply):
             if not last:
                 raise ValueError("NPC 台词里念了游戏数值")
             cleaned = _tidy(STAT_RE.sub("", out.npc_reply))
@@ -1015,11 +1081,8 @@ def narrate(db, view: RoomView, text: str, results: list[ActionResult],
                       for r in results)
         if npc and charged and not last and re.search(r"请你|送你|白送|免费|不要钱|不收钱|算我的", out.narrative):
             raise ValueError("这回合收了钱，不能写成请客白送")
-        # 照抄自己以前说过的话（记忆里"你回：……"）：连续 COPY_RUN 个字一样就重写一次
-        if npc and out.npc_reply and not last and _copies(out.npc_reply, re.findall(r"你回：“(.+?)”", memory or "")):
-            raise ValueError("照抄了自己以前说过的话")
         # 报价只干巴巴一句"黑啤，1 金币"：让它重写一次，带上闲聊
-        if (npc and out.npc_reply and not last and len(PRICE_RE.sub("", out.npc_reply)) < 16
+        if (npc and not line and out.npc_reply and not last and len(PRICE_RE.sub("", out.npc_reply)) < 16
                 and any(r.success and r.action in TRADE_ACTIONS for r in results)):
             raise ValueError("报价之外还要按人设和好感跟他闲聊一两句，不能只报个价")
         # 报价必须是台词里说出口的价，没说出口的不算（模型会悄悄给别的货填个价，下一句"成交"就卖错东西）
@@ -1041,7 +1104,7 @@ def narrate(db, view: RoomView, text: str, results: list[ActionResult],
         # 委托刚办完：叙事得写到交付的奖励（模型常只顾回玩家的话），第一次重写，第二次还漏就把那条 fact 补在末尾
         rewards = [(m[1], f) for r in results if r.success and r.action == "quest"
                    for f in r.facts if (m := re.search(r"把(.+?)交给了", f))]
-        if npc and rewards and not last and re.search(r"已经在你|不是已经|早就有|已经拿到", out.npc_reply or ""):
+        if npc and not line and rewards and not last and re.search(r"已经在你|不是已经|早就有|已经拿到", out.npc_reply or ""):
             raise ValueError("奖励是这回合刚给的，不能说他早就有了")
         # 比对时不管"的"："地窖的钥匙"也算写到了地窖钥匙
         plain = out.narrative.replace("的", "")

@@ -466,8 +466,13 @@ def run_turn(req: CommandReq):
                             results.append(engine.npc_sell(conn, pid, npc, trade.sell_id, trade.price))
                         now_view = engine.load_view(conn, pid)   # 叙事要看到新拿到的东西和剩下的钱
                         offers = engine.get_offers(conn, pid, npc)
+            # NPC 说话单独演一次（只管角色扮演），叙事再把台词原样包进场景
+            line = None
+            if npc and talk:
+                line = ai.npc_line(pool, now_view, req.text, results, npc, affinity, memory, recent, quests,
+                                   sells, made_before)
             out, u = ai.narrate(pool, now_view, req.text, results, npc, affinity, memory, recent,
-                                quests, eject_to, sells, offers, made_before)
+                                quests, eject_to, sells, offers, made_before, line)
             add(u)
             if out and npc and out.npc_handed and out.npc_handed.key:
                 # 叙事里 NPC 把货递给了他：真的给、按规矩收钱；钱不够就补一句收了回去
