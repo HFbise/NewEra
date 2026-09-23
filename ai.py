@@ -33,7 +33,8 @@ KEY_VARS = {"zhipu": "ZAI_API_KEY", "gemini": "GEMINI_API_KEY", "claude": "ANTHR
 # 调用出错时服务器捕获这些，退回规则结果
 API_ERRORS = (anthropic.APIError, genai_errors.APIError, ZaiError)
 
-ZHIPU_TIMEOUT = 40                      # 秒；超时算报错，有备用模型就换备用。4.5 慢的时候要二三十秒，给足
+ZHIPU_TIMEOUT = 15                      # 秒；后面还有备用模型时，超时就换下一个，别在限流的模型上干等
+ZHIPU_TIMEOUT_LAST = 40                 # 备用链最后一个模型没得换了，多等一会儿（4.5 慢的时候要二三十秒）
 
 _clients: dict = {}
 _action = TypeAdapter(PlayerAction).validate_python
@@ -75,12 +76,14 @@ class Usage(BaseModel):
 
 def _generate_zhipu(system: str, user: str, fmt: type[BaseModel], max_tokens: int, mdl: str):
     # 智谱只有 json_object 模式，不强制 schema，所以把 schema 写进 system，回来再用 Pydantic 校验
-    if "zhipu" not in _clients:
+    chain = list(dict.fromkeys([model()] + fallback_models()))
+    timeout = ZHIPU_TIMEOUT_LAST if mdl == chain[-1] else ZHIPU_TIMEOUT
+    if ("zhipu", timeout) not in _clients:
         # 读 ZAI_API_KEY，默认连国内 bigmodel.cn。SDK 默认限流、超时时自己等着重试 3 次，会拖很久；
         # 这里不让它重试，出问题直接换备用模型（见 _generate_with_fallback）
-        _clients["zhipu"] = ZhipuAiClient(timeout=ZHIPU_TIMEOUT, max_retries=0)
+        _clients[("zhipu", timeout)] = ZhipuAiClient(timeout=timeout, max_retries=0)
     schema = json.dumps(fmt.model_json_schema(), ensure_ascii=False)
-    resp = _clients["zhipu"].chat.completions.create(
+    resp = _clients[("zhipu", timeout)].chat.completions.create(
         model=mdl, max_tokens=max_tokens,
         messages=[{"role": "system",
                    "content": f"{system}\n\n只输出一个符合下面 JSON Schema 的 JSON 对象，不要任何别的文字：\n{schema}"},
