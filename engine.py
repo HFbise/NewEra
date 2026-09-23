@@ -2376,6 +2376,19 @@ NPC_SUMMARY_WINDOW = 40                 # 后台整理摘要时看最近几条�
 MEMORY_STOP = set("我你他她它的了吗呢吧啊呀是在有和就都也还要去来这那个一不没么什怎给把被说对")
 
 
+def ago(when: datetime) -> str:
+    """给 AI 看的相对时间："刚才""20 分钟前""昨天"。具体钟点它用不上（不知道现在几点，而且是 UTC）"""
+    minutes = (datetime.now(timezone.utc) - when).total_seconds() / 60
+    if minutes < 3:
+        return "刚才"
+    if minutes < 60:
+        return f"{int(minutes)} 分钟前"
+    if minutes < 24 * 60:
+        return f"{int(minutes // 60)} 小时前"
+    days = int(minutes // (24 * 60))
+    return "昨天" if days == 1 else f"{days} 天前" if days < 14 else f"{days // 7} 周前"
+
+
 def _bigrams(text: str, skip: set[str]) -> set[str]:
     """中文按两个字一组切（没有分词器，够用来找相关的旧记录）；含虚词的组不要"""
     chars = [c for c in text if "\u4e00" <= c <= "\u9fff" or c.isalnum()]
@@ -2400,7 +2413,7 @@ def get_npc_memory(conn: Connection, player_id: UUID, npc_id: UUID, query: str =
             (player_id, npc_id, NPC_LOG_RECENT),
         )
         recent = cur.fetchall()
-        log = [f"[{r['created_at']:%m-%d %H:%M}] {r['entry']}" for r in recent]
+        log = [f"[{ago(r['created_at'])}] {r['entry']}" for r in recent]
         # 翻旧账：更早的记录里跟这句话重合最多的几条（两人的名字每条都有，不算）
         related = []
         if query and recent:
@@ -2414,7 +2427,7 @@ def get_npc_memory(conn: Connection, player_id: UUID, npc_id: UUID, query: str =
                    where l.player_id = %s and n.id = %s and l.id < %s order by l.id""",
                 (player_id, npc_id, recent[0]["id"]))
             scored = [(len(words & _bigrams(r["entry"], skip)), r) for r in cur.fetchall()] if words else []
-            related = [f"[{r['created_at']:%m-%d %H:%M}] {r['entry']}"
+            related = [f"[{ago(r['created_at'])}] {r['entry']}"
                        for n, r in sorted(scored, key=lambda x: -x[0])[:NPC_LOG_RELATED] if n >= 2]
     summary = row["memory"] if row and row["memory"] else ""
     if not log:
@@ -2435,7 +2448,7 @@ def memory_material(conn: Connection, player_id: UUID, npc_template: str) -> tup
             """select * from (select id, entry, created_at from npc_memory_log where player_id = %s and npc_template = %s
                               order by id desc limit %s) t order by id""",
             (player_id, npc_template, NPC_SUMMARY_WINDOW))
-        return (row["memory"] if row else ""), [f"[{r['created_at']:%m-%d %H:%M}] {r['entry']}" for r in cur.fetchall()]
+        return (row["memory"] if row else ""), [f"[{ago(r['created_at'])}] {r['entry']}" for r in cur.fetchall()]
 
 
 def add_npc_log(conn: Connection, player_id: UUID, npc: Npc, entry: str) -> None:
