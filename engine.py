@@ -624,7 +624,8 @@ def _feed(cur: Cursor, player: Player, item: ItemInstance, name: str) -> list[st
     helpless = target.hp <= 0 or target.status is not None
     mate = bool(player.party_id and player.party_id == target.party_id)
     if (item.harm or item.knockout) and not helpless and not mate:
-        raise ActionError(f"{target.name}不肯吃{player.name}递过来的{item.name}")
+        # 强行塞嘴里也一样：清醒的人会挣扎吐掉，得先把他放倒、捆住
+        raise ActionError(f"{target.name}清醒着，不肯吃{item.name}，硬塞也会被吐掉，得先把他制住")
     _consume(cur, item)
     return [f"{player.name}喂{target.name}{_eat_verb(item)}了{item.name}"] + _eat_effect(cur, target, item)
 

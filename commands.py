@@ -190,6 +190,12 @@ def _parse_one(view: RoomView, t: str) -> dict:
     if m := re.fullmatch(r"(?:说|喊|say)[:：]?\s*(.+)", t, re.I):
         return {"action": "say", "message": m[1]}
 
+    # 喂别人吃（跟"给"不一样：给是东西到他手上，喂是吃下去）："把药草喂给寒风""喂寒风吃药草"
+    if m := re.fullmatch(r"把\s*(.+?)\s*喂给\s*(.+)", t):
+        return {"action": "use", "item": _find(view, m[1], "inv"), "target": _player_or_unsure(view, m[2])}
+    if m := re.fullmatch(r"喂\s*(.+?)\s*(?:吃|喝)\s*(?:了|下|点)?\s*(.+)", t):
+        return {"action": "use", "item": _find(view, m[2], "inv"), "target": _player_or_unsure(view, m[1])}
+
     # 给东西：对方是玩家就填名字，是 NPC 就填 ref
     if m := (re.fullmatch(r"把\s*(.+?)\s*(?:给|交给|递给)\s*(.+)", t)
              or re.fullmatch(r"give\s+(\S+)\s+(?:to\s+)?(\S+)", t, re.I)):

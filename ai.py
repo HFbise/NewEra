@@ -221,7 +221,7 @@ INTENT_SYSTEM = """你是文字 MUD 游戏的指令解析器。读玩家的输�
 - equip: item（背包物品的 ref）。穿上、戴上、装备、拿在手里当武器都是 equip
 - attack: target（NPC 的 ref；打其他玩家时填"其他玩家"里的名字）
 - talk: target（NPC 的 ref），message（玩家说的话，保留原话）。找 NPC 买东西、问价、砍价、点菜、要东西都是 talk
-- give: item（背包物品的 ref），target（NPC 的 ref；给其他玩家时填"其他玩家"里的名字）
+- give: item（背包物品的 ref），target（NPC 的 ref；给其他玩家时填"其他玩家"里的名字）。给、递、交、送、塞到他手里是 give：东西到了对方手上，吃不吃是他的事。喂他吃、塞进他嘴里（强行的也算）、给他灌下去是 use 不是 give
 - say: message（说的话，保留原话），target 可空（对某个玩家说时填"其他玩家"里的名字，对大家说不填）
 - revive: target（"其他玩家"里的名字）。帮倒下的、被捆住的、被打晕的其他玩家都是 revive，不是 freeform 也不是 struggle：急救、包扎、止血、扶起、叫醒、松绑、解开绳子、割断绳子、把人拉出来。用背包里的吃的、药草、酒喂他是 use（target 填他的名字），不是 revive 也不是 stunt。struggle 只用于玩家自己摆脱自己身上的状态
 - invite: target（"其他玩家"里的名字）。邀请对方组队
@@ -229,7 +229,7 @@ INTENT_SYSTEM = """你是文字 MUD 游戏的指令解析器。读玩家的输�
 - leave_party: 不用填字段。离开、退出队伍
 - follow: target（"其他玩家"里的名字）。跟着、跟随、跟上某人：之后对方走到哪就自动跟到哪，这一回合本身不移动
 - unfollow: 不用填字段。不再跟着别人
-- stunt: 借环境或创意动作去伤害、制住某个 NPC 或玩家（推石头砸、用铁叉捅、绊倒、用绳子捆、泼东西迷眼）。只用于伤害、制住对方；喂人吃药草、给人喝酒是帮他，是 use 不是 stunt。你是裁判，要填：
+- stunt: 借环境或创意动作去伤害、制住某个 NPC 或玩家（推石头砸、用铁叉捅、绊倒、用绳子捆、泼东西迷眼）。拿吃的喝的去砸、扔、泼人也是 stunt（item 填那样东西）；喂进嘴里、灌下去是 use 不是 stunt。你是裁判，要填：
   - target（NPC 的 ref 或其他玩家的名字），description（第三人称简述怎么做的）
   - feature：用到"可利用地形"里的东西就填它的 ref（如 f1）；只用环境描述里随手的东西就不填
   - item：用到背包里的东西（绳子、武器等）就填它的 ref，只能填"背包"列表里的；地上的东西要先 take；没用就不填
@@ -320,6 +320,12 @@ JUDGE_WORDS = {
 }
 
 
+# 区分给、喂、砸：玩家原话里的说法比模型选的动作可靠
+FEED_WORDS = re.compile(r"喂|塞[进到]?.{0,4}嘴|灌")
+# 扔给、丢给是递过去（give），扔向、砸、泼是打人
+THROW_WORDS = re.compile(r"砸|泼|抡|掷|(?:扔|丢|甩|抛)(?!给)")
+
+
 def parse_intent(db, view: RoomView, text: str) -> tuple[Optional[list], dict]:
     user = f"<room>\n{room_context(view)}\n</room>\n\n<player_input>\n{text}\n</player_input>"
 
@@ -359,8 +365,23 @@ def parse_intent(db, view: RoomView, text: str) -> tuple[Optional[list], dict]:
                 d.pop("item", None)
             # 拿东西打人，模型常写成 use（对人使用面包），改成借东西打人。
             # 吃的喝的用在其他玩家身上是喂他（引擎 _feed 判他肯不肯吃），不改
+            # 要物品的动作物品却是空的（模型编的 ref 上面被洗掉了）：就是没有这样东西
+            if d["action"] in ("use", "give", "drop", "equip") and not d.get("item"):
+                d = {"action": "reject", "reason": "背包里没有这样东西"}
             food = {by_id[i.id] for i in view.inventory if i.template.type == "consumable"}
-            feeding = d.get("item") in food and d.get("target") in {p.name for p in view.others}
+            to_player = d.get("target") in {p.name for p in view.others}
+            # 给和喂要分开：说了喂、塞嘴里、灌的是 use（吃下去），模型常写成 give；说了砸、扔、泼的就算是吃的也是攻击
+            if d["action"] == "give" and d.get("item") in food and to_player and FEED_WORDS.search(text):
+                d = {"action": "use", "item": d["item"], "target": d["target"]}
+            elif d["action"] == "give" and d.get("item") and THROW_WORDS.search(text):
+                d = {"action": "stunt", "target": d["target"], "item": d["item"], "description": text,
+                     "difficulty": "normal", "tier": "light"}
+            feeding = d.get("item") in food and to_player and not THROW_WORDS.search(text)
+            if feeding and d["action"] == "use":
+                # 喂的东西得是玩家说的那样：模型会拿背包里别的顶替（说喂药草，喂下去的是毒酒）
+                name = next(i.name for i in view.inventory if by_id[i.id] == d["item"])
+                if name not in text and name[-2:] not in text:
+                    d = {"action": "reject", "reason": "背包里没有玩家要喂的那样东西"}
             if d["action"] == "use" and d.get("target") and d["target"] not in DIR_NAMES and not feeding:
                 d = {"action": "stunt", "target": d["target"], "item": d["item"], "description": text,
                      "difficulty": "normal", "tier": "light"}
