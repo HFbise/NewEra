@@ -2368,10 +2368,21 @@ def get_affinity(conn: Connection, player_id: UUID, npc_id: UUID) -> int:
 NPC_MEMORY_LIMIT = 300                  # NPC 对每个玩家的长期记忆总结上限（字）
 NPC_LOG_RECENT = 10                     # 给 AI 看的最近几条完整来往记录（全部记录都留在 npc_memory_log）
 NPC_LOG_LIMIT = 400                     # 每条记录上限（字）
+NPC_LOG_RELATED = 5                     # 再从更早的记录里按玩家这句话翻出几条相关的
+NPC_SUMMARY_WINDOW = 40                 # 后台整理摘要时看最近几条完整记录
+# 翻旧账时不算数的字：常见虚词
+MEMORY_STOP = set("我你他她它的了吗呢吧啊呀是在有和就都也还要去来这那个一不没么什怎给把被说对")
 
 
-def get_npc_memory(conn: Connection, player_id: UUID, npc_id: UUID) -> str:
-    """NPC 对这个玩家记得什么：长期记忆总结 + 最近几条完整来往（按 NPC 模板记，NPC 复活、重新 seed 都不丢）"""
+def _bigrams(text: str, skip: set[str]) -> set[str]:
+    """中文按两个字一组切（没有分词器，够用来找相关的旧记录）；含虚词的组不要"""
+    chars = [c for c in text if "\u4e00" <= c <= "\u9fff" or c.isalnum()]
+    return {a + b for a, b in zip(chars, chars[1:]) if a not in MEMORY_STOP and b not in MEMORY_STOP} - skip
+
+
+def get_npc_memory(conn: Connection, player_id: UUID, npc_id: UUID, query: str = "") -> str:
+    """NPC 对这个玩家记得什么：长期记忆总结 + 最近几条完整来往 + 按玩家这句话（query）从更早的记录里翻出的相关几条。
+    按 NPC 模板记，NPC 复活、重新 seed 都不丢"""
     with conn.transaction():
         cur = _cursor(conn)
         cur.execute(
@@ -2386,11 +2397,43 @@ def get_npc_memory(conn: Connection, player_id: UUID, npc_id: UUID) -> str:
                  where l.player_id = %s and n.id = %s order by l.id desc limit %s) t order by id""",
             (player_id, npc_id, NPC_LOG_RECENT),
         )
-        log = [f"[{r['created_at']:%m-%d %H:%M}] {r['entry']}" for r in cur.fetchall()]
+        recent = cur.fetchall()
+        log = [f"[{r['created_at']:%m-%d %H:%M}] {r['entry']}" for r in recent]
+        # 翻旧账：更早的记录里跟这句话重合最多的几条（两人的名字每条都有，不算）
+        related = []
+        if query and recent:
+            cur.execute("select p.name as player, t.name as npc from players p, npcs n join npc_templates t on t.id = n.template_id"
+                        " where p.id = %s and n.id = %s", (player_id, npc_id))
+            names = cur.fetchone()
+            skip = (_bigrams(names["player"], set()) | _bigrams(names["npc"], set())) if names else set()
+            words = _bigrams(query, skip)
+            cur.execute(
+                """select l.entry, l.created_at from npc_memory_log l join npcs n on n.template_id = l.npc_template
+                   where l.player_id = %s and n.id = %s and l.id < %s order by l.id""",
+                (player_id, npc_id, recent[0]["id"]))
+            scored = [(len(words & _bigrams(r["entry"], skip)), r) for r in cur.fetchall()] if words else []
+            related = [f"[{r['created_at']:%m-%d %H:%M}] {r['entry']}"
+                       for n, r in sorted(scored, key=lambda x: -x[0])[:NPC_LOG_RELATED] if n >= 2]
     summary = row["memory"] if row and row["memory"] else ""
     if not log:
         return summary
-    return (summary or "（还没有总结）") + "\n最近的来往（从早到晚，原话记录）：\n" + "\n".join(log)
+    return ((summary or "（还没有总结）")
+            + ("\n更早的、跟他这次说的有关的来往：\n" + "\n".join(related) if related else "")
+            + "\n最近的来往（从早到晚，原话记录）：\n" + "\n".join(log))
+
+
+def memory_material(conn: Connection, player_id: UUID, npc_template: str) -> tuple[str, list[str]]:
+    """后台整理摘要用：(旧摘要, 最近 NPC_SUMMARY_WINDOW 条完整记录，从早到晚)"""
+    with conn.transaction():
+        cur = _cursor(conn)
+        cur.execute("select memory from player_npc_relations where player_id = %s and npc_template = %s",
+                    (player_id, npc_template))
+        row = cur.fetchone()
+        cur.execute(
+            """select * from (select id, entry, created_at from npc_memory_log where player_id = %s and npc_template = %s
+                              order by id desc limit %s) t order by id""",
+            (player_id, npc_template, NPC_SUMMARY_WINDOW))
+        return (row["memory"] if row else ""), [f"[{r['created_at']:%m-%d %H:%M}] {r['entry']}" for r in cur.fetchall()]
 
 
 def add_npc_log(conn: Connection, player_id: UUID, npc: Npc, entry: str) -> None:
@@ -2400,15 +2443,14 @@ def add_npc_log(conn: Connection, player_id: UUID, npc: Npc, entry: str) -> None
                      (player_id, npc.template.id, entry.strip()[:NPC_LOG_LIMIT]))
 
 
-def set_npc_memory(conn: Connection, player_id: UUID, npc_id: UUID, memory: str) -> None:
-    """对话后更新 NPC 的记忆摘要。只是 NPC 的印象，不是游戏状态，所以由 AI 写，这里只截断长度"""
+def set_npc_memory(conn: Connection, player_id: UUID, npc_template: str, memory: str) -> None:
+    """更新 NPC 对这个玩家的记忆摘要（后台整理好的）。只是 NPC 的印象，不是游戏状态，这里只截断长度"""
     memory = memory.strip()[:NPC_MEMORY_LIMIT]
     with conn.transaction():
         conn.execute(
-            """insert into player_npc_relations (player_id, npc_template, memory)
-               select %s, template_id, %s from npcs where id = %s
+            """insert into player_npc_relations (player_id, npc_template, memory) values (%s, %s, %s)
                on conflict (player_id, npc_template) do update set memory = excluded.memory""",
-            (player_id, memory, npc_id),
+            (player_id, npc_template, memory),
         )
 
 

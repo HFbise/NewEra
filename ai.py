@@ -47,6 +47,11 @@ def model() -> str:
     return os.environ.get("AI_MODEL") or DEFAULT_MODELS[provider()]
 
 
+def background_model() -> Optional[str]:
+    """后台任务（整理 NPC 记忆）用的模型：玩家不用等，可以用慢一点但更好的。不设就跟主模型一样"""
+    return os.environ.get("AI_BACKGROUND_MODEL") or {"zhipu": "glm-4.7-flash"}.get(provider())
+
+
 def fallback_models() -> list[str]:
     """主模型报错（限流、超时）时按顺序换这些再试，同一个后端。逗号分隔，不设就不换"""
     return [m.strip() for m in os.environ.get("AI_FALLBACK_MODEL", "").split(",") if m.strip()]
@@ -142,10 +147,10 @@ def _log(db, player_id: UUID, kind: str, mdl: str, usage: Usage, latency_ms: int
 
 
 def _generate_with_fallback(db, player_id: UUID, kind: str, generate, system: str, user: str,
-                            fmt: type[BaseModel], max_tokens: int):
+                            fmt: type[BaseModel], max_tokens: int, prefer: Optional[str] = None):
     """先用主模型，报错（限流、超时、服务器错）就按顺序换备用模型再试。报错的调用也记进 ai_calls。
     返回 (输出, token, 用的模型, 耗时毫秒)；全都报错就把最后的错误抛给服务器"""
-    models = list(dict.fromkeys([model()] + fallback_models()))     # 去重，保持顺序
+    models = list(dict.fromkeys(([prefer] if prefer else []) + [model()] + fallback_models()))   # 去重，保持顺序
     for i, mdl in enumerate(models):
         start = time.monotonic()
         try:
@@ -159,14 +164,14 @@ def _generate_with_fallback(db, player_id: UUID, kind: str, generate, system: st
 
 
 def _call(db, player_id: UUID, kind: str, system: str, user: str, fmt: type[BaseModel],
-          max_tokens: int, check=None):
+          max_tokens: int, check=None, prefer: Optional[str] = None):
     """调一次结构化输出，校验失败重试一次。返回 (解析结果或 None, 本次 token 统计)。
     check(out, last) 可以抛 ValueError 要求重来，last=True 表示没有重试机会了，应该尽量兜底"""
     generate = {"zhipu": _generate_zhipu, "gemini": _generate_gemini, "claude": _generate_claude}[provider()]
     usage_total = {"input": 0, "output": 0}
     for attempt in range(2):
         out, usage, mdl, latency = _generate_with_fallback(db, player_id, kind, generate, system, user,
-                                                           fmt, max_tokens)
+                                                           fmt, max_tokens, prefer)
         usage_total["input"] += usage.input
         usage_total["output"] += usage.output
         try:
@@ -479,7 +484,6 @@ class Narration(BaseModel):
     narrative: str                       # 给玩家本人看的，第二人称
     observer: str = ""                   # 给同房间其他人看的，第三人称，1 到 2 句
     affinity_delta: int = 0              # 本回合 NPC 好感变化，-5 到 5
-    npc_memory: Optional[str] = None     # 对话后 NPC 对这个玩家的记忆摘要（整段重写），没对话就 null
     eject: bool = False                  # NPC 把闹事的玩家轰出去（只有 NPC 配了 eject_to 才算数）
     npc_reply: Optional[str] = None      # NPC 这回合说出口的台词原文，给同房间的人看完整对话
     npc_offer: Optional["Offer"] = None  # NPC 这回合给卖货清单里的东西报的价，引擎记下来，成交只按这个价
@@ -575,7 +579,7 @@ NPC 对话（只有 facts 里有对话时才用）：
 - 玩家要的东西如果 <player> 里"身上带着"已经有了，NPC 就提醒他已经有了（"钥匙不是已经在你手上了吗"）。但 facts 里这回合刚交给他的东西也会出现在"身上带着"里，那是刚给的，不是他原来就有的
 - affinity_delta：根据玩家这回合的言行，NPC 好感变化，-5 到 5 的整数。一般聊天 0 到 1，礼貌帮忙加分，无礼威胁减分
 - NPC 要记得 <npc> 里"对这个玩家的记忆"，说话时自然体现（认出老熟人、提起上次的事）
-- npc_memory：NPC 对这个玩家的长期记忆总结，300 字以内。<npc> 里的记忆 = 旧总结 + 最近几条原话记录（完整记录另外存着），你把旧总结、最近记录和这回合合并重写成新总结：玩家是谁、做过什么、答应过什么、欠了什么、帮过什么忙、结过什么仇、交易过什么、NPC 对他的看法。重要的事不要因为重写就丢掉
+- <npc> 里的记忆 = 长期总结 + 跟这次话题有关的旧来往 + 最近几条原话记录。说话时自然用上（认出老熟人、提起上次的事），但只能提记忆里真有的事
 - 买卖：成交价只照 facts 写（"卖给了……收了 N 金币"）。facts 里没有成交就不能写东西已经给了、钱已经收了
 - npc_offer：玩家问 <npc> 里"你卖的货"的价钱、想买时，NPC 报价：照建议价上下浮动（看他顺眼可以便宜一点，讨厌他可以贵一点，一般在建议价的一半到两倍之间，超出会被引擎拉回来）；玩家砍价，按人设决定让不让、让多少。"开过价、还没成交的"现做东西也能砍价。把 item（货的名字）和 price（整数金币）填在这里，台词里说的价要跟它一致；没报价就填 null。玩家得下一句同意了才会成交
 - facts 里有"开价：……"就是 NPC 这回合给现做的东西开了价，台词照这个价说出来
@@ -587,10 +591,36 @@ NPC 对话（只有 facts 里有对话时才用）：
 - 玩家嫌贵、还价、说"成交"却没说是哪件，指的就是"开过价、还没成交的"那件（有好几件就是最后一件），不要扯到别的货上
 - npc_reply：NPC 这回合说出口的台词原文，只要说的话，不要动作和旁白，跟叙事里的台词一致；房间里其他人会看到这段
 - 房间里的其他玩家也听得到对话。<recent> 里别人刚跟 NPC 说过的话 NPC 都记得，可以接着那些话说，也可以顺带招呼在场的其他人（用代号）
-- 没有对话时 affinity_delta 填 0，npc_memory 和 npc_reply 填 null
+- 没有对话时 affinity_delta 填 0，npc_reply 填 null
 - NPC 手上的委托只有 <npc> 里列出的这些，没列就是没有。玩家问还有没有活、有没有别的委托，就照实说（已托付的提一句进度，没有更多就说暂时没有），绝不能编出新的差事、任务、悬赏
 - <npc> 里的"委托"是 NPC 托玩家办的事：写着"主动提起"就在这回合自然地把事情和要他做什么说出来；写着"还没办完"就在聊到相关话题时提一句；写着"刚办完"就照 facts 写交付奖励、夸他；写着"已了结"就别再提，除非玩家问
 - eject：<npc> 里写了"能把闹事的人轰出去"时，玩家挑衅、骚扰、动手、砸场子，NPC 忍无可忍就填 true，并且叙事里必须写清楚 NPC 动手把玩家扔出了门、玩家落到了门外的哪里（照 <npc> 写），不能只是威胁；普通斗嘴、开玩笑不算。没写这项就一律 false"""
+
+
+# ============ NPC 对玩家的记忆摘要（后台整理，不占玩家等待） ============
+
+class MemorySummary(BaseModel):
+    summary: str                         # 300 字以内
+
+
+MEMORY_SYSTEM = """你在帮文字 MUD 游戏里的一个 NPC 整理她对某个玩家的长期记忆。
+根据 <old> 旧总结和 <log> 完整来往记录（原话、交易、结果，从早到晚），重写成一段新总结，300 字以内。
+视角：以 <npc> 的口吻写，"我"永远是 <npc> 自己，"他"是 <player>，开头写"<player>……"，不要把"我"写成玩家。
+- 写：他做过什么、答应过什么、欠我什么、帮过什么忙、结过什么仇、跟我买卖过什么、我现在怎么看他
+- 只写 <log> 里真的发生过的，或者 <old> 里跟 <log> 不矛盾的旧事；<old> 里跟 <log> 矛盾的，以 <log> 为准，改掉
+- <world> 列了这个世界真实存在的委托和人物。<old> 里提到的委托、人物、地方，<world> 和 <log> 里都找不到的，是以前记错了，一定删掉。例：<old> 写"对蜘蛛的任务很感兴趣"，而 <world> 里没有蜘蛛委托、<log> 里也没出现过"蜘蛛"，这句就删掉
+- 对他的评价（胆小、爱吹牛、有礼貌）必须能在 <log> 或 <old> 里找到出处，不要把别人身上的事安到他头上
+- 按时间理顺：先发生的在前，最近的状态放最后，不要前后矛盾（比如先写"拒绝了委托"，后来又办完了，就写"一开始推脱，后来还是办完了"）
+- 不写游戏数值（回几点血），买卖的价钱可以写"""
+
+
+def summarize_memory(db, player_id: UUID, npc_name: str, player_name: str, old: str, log: list[str],
+                     world: str) -> Optional[str]:
+    """后台整理 NPC 对玩家的记忆摘要；失败返回 None（保留旧摘要）"""
+    user = (f"<npc>{npc_name}</npc>\n<player>{player_name}</player>\n<world>\n{world}\n</world>\n\n"
+            f"<old>\n{old or '（还没有）'}\n</old>\n\n<log>\n" + "\n".join(log) + "\n</log>")
+    out, _ = _call(db, player_id, "memory", MEMORY_SYSTEM, user, MemorySummary, 1024, prefer=background_model())
+    return out.summary.strip() if out and out.summary.strip() else None
 
 
 # ============ 看店 NPC 扶起倒下的人时说的话 ============
@@ -918,7 +948,7 @@ def narrate(db, view: RoomView, text: str, results: list[ActionResult],
         out.affinity_delta = max(-5, min(5, out.affinity_delta))
         out.eject = out.eject and bool(eject_to)
         if not npc:
-            out.npc_memory = out.npc_reply = None
+            out.npc_reply = None
         elif out.npc_reply:
             # 台词里的"你"就是对主角说的，留着；模型偶尔写出【主角】就换回名字，外层引号去掉（旁人那条自己加）
             out.npc_reply = out.npc_reply.replace("【主角】", name).strip().strip("“”\"'")
@@ -1008,6 +1038,6 @@ def narrate(db, view: RoomView, text: str, results: list[ActionResult],
 
     out, usage = _call(db, view.player.id, "narrate", NARRATE_SYSTEM, "\n\n".join(parts), Narration, 1024, check)
     if out:
-        out.narrative, out.observer, out.npc_memory = show(out.narrative), show(out.observer), show(out.npc_memory)
+        out.narrative, out.observer = show(out.narrative), show(out.observer)
         out.npc_reply = show(out.npc_reply)
     return out, usage

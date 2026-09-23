@@ -236,6 +236,29 @@ def _load_npc(conn, npc_id: UUID):
     return npcs[0] if npcs else None
 
 
+def _summarize_later(player_id: UUID, player_name: str, npc_template: str, npc_name: str) -> None:
+    """记完一条来往，后台让 AI 按完整记录重新整理 NPC 对这个玩家的记忆摘要（玩家不用等）"""
+    threading.Thread(target=_summarize, args=(player_id, player_name, npc_template, npc_name), daemon=True).start()
+
+
+def _summarize(player_id: UUID, player_name: str, npc_template: str, npc_name: str) -> None:
+    try:
+        with pool.connection() as conn:
+            old, log = engine.memory_material(conn, player_id, npc_template)
+            # 世界里真实存在的委托、人物：旧摘要里凭空多出来的（"蜘蛛任务"）靠这个认出来删掉
+            quests = conn.execute("select q.name, q.goal, t.name from quests q join npc_templates t on t.id = q.giver").fetchall()
+            npcs = [r[0] for r in conn.execute("select name from npc_templates").fetchall()]
+            conn.commit()
+        world = ("委托：" + "；".join(f"{n}（{g}，找{who}）" for n, g, who in quests) + "\n"
+                 + "人物：" + "、".join(npcs) + "，以及各位玩家")
+        summary = ai.summarize_memory(pool, player_id, npc_name, player_name, old, log, world)
+        if summary:
+            with pool.connection() as conn:
+                engine.set_npc_memory(conn, player_id, npc_template, summary)
+    except Exception:                    # 后台整理失败就留着旧摘要，不影响游戏
+        pass
+
+
 def _revive_hook(room_id: str, keeper_tid: str, player_id: UUID, player_name: str, why: dict, fallback: str) -> None:
     """看店 NPC 扶起人了：后台让 AI 按人设、好感、倒下的原因现写一句话，写好了作为房间动态出现（扶人本身已经生效）"""
     threading.Thread(target=_revive_quip, args=(room_id, keeper_tid, player_id, player_name, why, fallback),
@@ -393,7 +416,7 @@ def run_turn(req: CommandReq):
                 offers = engine.get_offers(conn, pid, npc) if sells or creatable else {}
                 made_before = engine.known_goods(conn, npc) if creatable else []
                 affinity = engine.get_affinity(conn, pid, npc_id)
-                memory = engine.get_npc_memory(conn, pid, npc_id)
+                memory = engine.get_npc_memory(conn, pid, npc_id, req.text)
                 if engine.can_eject(npc):
                     ex = engine._find_exit(engine._cursor(conn), npc.room_id, npc.template.props["eject_to"])
                     eject_to = engine.load_room(engine._cursor(conn), ex["to_room"]).name if ex else None
@@ -470,8 +493,6 @@ def run_turn(req: CommandReq):
         if npc and out:
             if out.affinity_delta:
                 results.append(engine.adjust_affinity(conn, pid, npc_id, out.affinity_delta))
-            if out.npc_memory:
-                engine.set_npc_memory(conn, pid, npc_id, out.npc_memory)
             # 叙事判定 NPC 把玩家轰出去：叙事和旁人描述已经写了，这里真的挪人（门外那边的人会看到他被轰出来）
             if out.eject and (kicked := engine.npc_eject(conn, pid, npc)):
                 results.append(kicked)
@@ -496,6 +517,8 @@ def run_turn(req: CommandReq):
                 [_said(name, npc, talk, actions, results)]
                 + ([f"你回：“{out.npc_reply}”"] if out and out.npc_reply else [])
                 + [f for r in results if r.success and r.action in NPC_OUTCOMES | {"affinity"} for f in r.facts]))
+            if ai.enabled():
+                _summarize_later(pid, name, npc.template.id, npc.name)
         with conn.transaction():
             conn.execute(
                 """insert into events (room_id, player_id, kind, facts, narrative, observer, input, meta)
