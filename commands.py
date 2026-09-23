@@ -165,6 +165,14 @@ def _parse_one(view: RoomView, t: str) -> dict:
         except _Unsure:
             return {"action": "attack", "target": _player_or_unsure(view, name)}
 
+    # "对麦琪 来杯黑啤"（侧栏点 NPC 名字填的就是"对麦琪 "）：名字要完全对上，对不上的留给下面和 AI
+    if m := re.fullmatch(r"(?:对|向)\s*(\S+?)\s+(.+)", t):
+        if any(p.name == m[1] for p in view.others):
+            return {"action": "say", "target": m[1], "message": m[2]}
+        if npc := next((n for n in view.npcs if n.name == m[1]), None):
+            by_id = {uid: ref for ref, uid in view.refs.items()}
+            return {"action": "talk", "target": by_id[npc.id], "message": m[2]}
+
     # 对某人说：对方是玩家就是 say（广播，不走 AI），是 NPC 就是 talk（AI 扮演 NPC 回话）
     if m := (re.fullmatch(r"(?:对|跟|和|向)\s*(.+?)\s*(?:说|讲|问)[:：]?\s*(.+)", t)
              or re.fullmatch(r"(?:say|talk)\s+(?:to\s+)?(\S+)\s+(.+)", t, re.I)):

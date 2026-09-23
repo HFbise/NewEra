@@ -1,5 +1,5 @@
 """
-规则引擎集成测试：不接 AI，手动构造动作，把老汉斯任务线跑一遍。
+规则引擎集成测试：不接 AI，手动构造动作，把麦琪任务线跑一遍。
 会重置世界（seed）和测试玩家，别对正式库跑。
 
 用法: python test_engine.py
@@ -84,15 +84,15 @@ def main():
         step(conn, view, {"action": "take", "item": "i99"}, expect=False)
         step(conn, view, {"action": "move", "direction": "west"}, expect=False)
 
-        print("\n== 先去酒馆：没打哥布林，老汉斯不给钥匙")
+        print("\n== 先去酒馆：没打哥布林，麦琪不给钥匙")
         step(conn, view, {"action": "move", "direction": "north"})
         view = v()
-        hans = view.resolve(ref(view, "老汉斯"))
+        hans = view.resolve(ref(view, "麦琪"))
         check("giveable 为空", engine.giveable_items(conn, TEST_ID, hans) == [])
         key_id = engine.load_items(engine._cursor(conn), "i.npc_id = %s", (hans,))[0].id
         conn.commit()
         check("npc_give 被拒", not engine.npc_give(conn, TEST_ID, hans, key_id).success)
-        step(conn, view, {"action": "attack", "target": ref(view, "老汉斯")}, expect=False)
+        step(conn, view, {"action": "attack", "target": ref(view, "麦琪")}, expect=False)
         step(conn, view, {"action": "move", "direction": "down"}, expect=False)
 
         print("\n== 好感度限幅")
@@ -133,7 +133,7 @@ def main():
         for d in ("north", "north", "north"):
             step(conn, view, {"action": "move", "direction": d})
         view = v()
-        step(conn, view, {"action": "talk", "target": ref(view, "老汉斯"), "message": "哥布林我解决了"})
+        step(conn, view, {"action": "talk", "target": ref(view, "麦琪"), "message": "哥布林我解决了"})
         giveable = engine.giveable_items(conn, TEST_ID, hans)
         check("giveable 里有钥匙", [i.name for i in giveable] == ["地窖钥匙"])
         r = engine.npc_give(conn, TEST_ID, hans, giveable[0].id)

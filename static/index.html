@@ -86,7 +86,7 @@
     <div id="log"></div>
     <form id="cmd-form">
       <div id="grip" title="上下拖动调整信息栏高度"></div>
-      <input id="cmd" autocomplete="off" placeholder="比如：拿面包；北；对老汉斯说 你好">
+      <input id="cmd" autocomplete="off" placeholder="比如：拿面包；北；对麦琪 来杯黑啤">
       <button>发送</button>
     </form>
   </div>
@@ -127,8 +127,9 @@ function log(html) {
 
 function render(s) {
   const p = s.player;
-  const li = (ref, label, extra = "") =>
-    `<li data-name="${esc(label)}"><span class="ref">${ref}</span>${esc(label)}${extra}</li>`;
+  // fill 是点一下填进输入框的文字，默认就是名字
+  const li = (ref, label, extra = "", fill = label) =>
+    `<li data-name="${esc(fill)}"><span class="ref">${ref}</span>${esc(label)}${extra}</li>`;
   $("#side").innerHTML = `
     <h2>${esc(p.name)}</h2>
     <div>HP ${p.hp}/${p.max_hp} · 攻 ${p.attack} · 防 ${p.defense}</div>
@@ -143,10 +144,10 @@ function render(s) {
     <ul>${s.exits.map(e => `<li data-name="${e.label}">${e.label}<span class="tag">${esc(e.to)}${e.locked ? "（锁着）" : ""}</span></li>`).join("")}</ul>
     ${s.npcs.length ? `<h2>NPC</h2><ul>${s.npcs.map(n => li(n.ref, n.name,
       (n.max_hp ? `<span class="tag">${n.hp}/${n.max_hp}</span>` : "") +
-      (n.status ? `<span class="tag">${esc(n.status)}</span>` : ""))).join("")}</ul>` : ""}
+      (n.status ? `<span class="tag">${esc(n.status)}</span>` : ""), `对${n.name} `)).join("")}</ul>` : ""}
     ${s.others.length ? `<h2>其他玩家</h2><ul>${s.others.map(o => o.hp <= 0
-      ? `<li data-name="${esc(o.name)}">${esc(o.name)}<span class="tag">倒下了</span></li>`
-      : `<li data-name="${esc(o.name)}">${esc(o.name)}<span class="tag">${o.status ? esc(o.status) : o.awake ? "HP " + o.hp : "睡着了"}</span></li>`).join("")}</ul>` : ""}
+      ? `<li data-name="对${esc(o.name)} ">${esc(o.name)}<span class="tag">倒下了</span></li>`
+      : `<li data-name="对${esc(o.name)} ">${esc(o.name)}<span class="tag">${o.status ? esc(o.status) : o.awake ? "HP " + o.hp : "睡着了"}</span></li>`).join("")}</ul>` : ""}
     ${s.following ? `<div class="sys">正跟着${esc(s.following)}（输入"停止跟随"不跟了）</div>` : ""}
     ${s.party.length ? `<h2>队伍</h2><ul>${s.party.map(n => `<li>${esc(n)}</li>`).join("")}</ul>` : ""}
     ${s.invites.length ? `<h2>组队邀请</h2><ul>${s.invites.map(n => `<li data-name="${esc(n)}">${esc(n)}<span class="tag">邀请你组队</span></li>`).join("")}</ul>` : ""}
