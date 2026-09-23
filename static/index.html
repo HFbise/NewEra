@@ -33,6 +33,7 @@
   button { background: var(--accent); color: #0d1117; border: 0; border-radius: 6px; padding: 0 18px; font: inherit; font-weight: 600; cursor: pointer; }
   #side { background: var(--panel); border-left: 1px solid var(--border); padding: 16px; overflow-y: auto;
           min-height: 0; overflow-wrap: anywhere; }
+  #grip { display: none; }            /* 拖动条只在窄屏用 */
   #side h2 { font-size: 13px; color: var(--dim); font-weight: 600; margin: 18px 0 6px; }
   #side h2:first-child { margin-top: 0; }
   #side .room { font-size: 18px; font-weight: 700; }
@@ -44,16 +45,24 @@
   .hp { height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; margin-top: 4px; }
   .hp div { height: 100%; background: var(--ok); }
   #help { color: var(--dim); font-size: 12px; line-height: 1.7; }
-  #login { position: fixed; inset: 0; background: var(--bg); display: flex; align-items: center; justify-content: center; }
+  #login { position: fixed; inset: 0; z-index: 20; background: var(--bg); display: flex; align-items: center; justify-content: center; }
   #login form { border: 1px solid var(--border); border-radius: 8px; flex-direction: column; width: 300px; padding: 20px; }
   #login button { padding: 10px; }
   /* 窄屏：信息栏放到下面，聊天框和输入框在上面，信息栏最多占 40% 屏高、自己滚动 */
   @media (max-width: 720px) {
     #app { grid-template-columns: minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; }
-    #side { border-left: 0; border-top: 1px solid var(--border); max-height: 40vh; max-height: 40dvh;
+    /* 信息栏高度默认 40%，拖输入框上沿的拖动条可以调（--side-h，记在本机），拖到底就收起 */
+    #side { border-left: 0; border-top: 1px solid var(--border); height: var(--side-h, 40vh); height: var(--side-h, 40dvh);
             padding-bottom: calc(16px + env(safe-area-inset-bottom)); }
+    body.side-hidden #side { display: none; }
     #log { padding: 12px; }
-    form { padding: 8px 10px; }
+    #cmd-form { position: relative; padding: 14px 10px 8px; touch-action: none; }   /* 拖的时候别让浏览器当成滚动 */
+    #cmd-form input, #cmd-form button { touch-action: manipulation; }
+    #grip { display: block; position: absolute; top: 0; left: 0; right: 0; height: 14px; cursor: row-resize; }
+    #grip::after { content: ""; position: absolute; top: 5px; left: 50%; width: 36px; height: 4px; margin-left: -18px;
+                   border-radius: 2px; background: var(--border); }
+    body.dragging #grip::after { background: var(--accent); }
+    body.dragging { user-select: none; }
     input { font-size: 16px; }                 /* 小于 16px 时 iPhone 聚焦输入框会自动放大页面 */
     #login form { width: auto; max-width: 300px; margin: 0 16px; }
   }
@@ -76,6 +85,7 @@
   <div id="main">
     <div id="log"></div>
     <form id="cmd-form">
+      <div id="grip" title="上下拖动调整信息栏高度"></div>
       <input id="cmd" autocomplete="off" placeholder="比如：拿面包；北；对老汉斯说 你好">
       <button>发送</button>
     </form>
@@ -339,6 +349,43 @@ $("#cmd-form").onsubmit = e => {
   $("#cmd").value = "";
   send(text);
 };
+
+// 窄屏：按住输入框上沿的拖动条（或输入框两边的空白）上下拖，调信息栏高度；拖到很矮就收起，高度记在本机
+const SIDE_MIN = 60;                // 比这更矮就当收起
+function setSideHeight(h) {
+  const hidden = h < SIDE_MIN;
+  document.body.classList.toggle("side-hidden", hidden);
+  if (!hidden) document.documentElement.style.setProperty("--side-h", Math.round(h) + "px");
+  return hidden ? 0 : Math.round(h);
+}
+try {
+  const saved = localStorage.getItem("newera.sideH");
+  if (saved !== null) setSideHeight(+saved);
+} catch {}
+$("#cmd-form").addEventListener("pointerdown", e => {
+  if (!matchMedia("(max-width: 720px)").matches) return;
+  if (e.target.id !== "grip" && e.target !== e.currentTarget) return;   // 点输入框、按钮照常
+  e.preventDefault();
+  const form = e.currentTarget;
+  try { form.setPointerCapture(e.pointerId); } catch {}                  // 手指拖出表单范围也继续跟
+  document.body.classList.add("dragging");
+  const grabOffset = e.clientY - form.getBoundingClientRect().top;       // 手指按在表单的哪个位置
+  let h = null;
+  const move = ev => {
+    // 信息栏高度 = 屏幕底部到表单底边的距离；最多留 80px 给聊天记录
+    const formBottom = ev.clientY - grabOffset + form.offsetHeight;
+    h = setSideHeight(Math.min(innerHeight - formBottom, innerHeight - form.offsetHeight - 80));
+    $("#log").scrollTop = $("#log").scrollHeight;
+  };
+  const up = () => {
+    form.removeEventListener("pointermove", move);
+    document.body.classList.remove("dragging");
+    if (h !== null) try { localStorage.setItem("newera.sideH", h); } catch {}
+  };
+  form.addEventListener("pointermove", move);
+  form.addEventListener("pointerup", up, { once: true });
+  form.addEventListener("pointercancel", up, { once: true });
+});
 
 $("#side").onclick = e => {
   if (e.target.id === "logout") { e.preventDefault(); logout(); return; }
