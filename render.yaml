@@ -18,7 +18,7 @@ services:
       # 2026-09-23 换回 glm-4.7-flash 试角色扮演效果（之前排队 30 到 100 秒，最近平均 5 秒左右，偶尔失败）
       - key: AI_MODEL
         value: glm-4.5-flash
-      # 主模型限流、超时时按顺序换这些再试（4.5 秒回但扮演弱些，4-flash 叙事差些但基本不排队）
+      # 主模型限流、超时时按顺序换这些再试（4.7 常限流，4-flash 质量差，只当最后兜底）
       - key: AI_FALLBACK_MODEL
         value: glm-4.7-flash,glm-4-flash-250414
       - key: PARSE_MODE
