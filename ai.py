@@ -184,7 +184,7 @@ def _call(db, player_id: UUID, kind: str, system: str, user: str, fmt: type[Base
 class AIAction(BaseModel):
     """给 AI 的扁平格式，比嵌套 union 好填；回来再转成 PlayerAction 校验"""
     action: Literal["move", "look", "take", "drop", "use", "equip", "unequip", "attack", "talk", "give", "say",
-                    "revive", "invite", "join", "leave_party", "follow", "unfollow", "challenge", "accept_duel",
+                    "upgrade", "revive", "invite", "join", "leave_party", "follow", "unfollow", "challenge", "accept_duel",
                     "decline_duel", "flee", "stunt", "struggle",
                     "maneuver", "dodge", "hide", "search", "freeform", "reject"]
     direction: Optional[str] = None
@@ -229,6 +229,7 @@ INTENT_SYSTEM = """你是文字 MUD 游戏的指令解析器。读玩家的输�
 - attack: target（NPC 的 ref；打其他玩家时填"其他玩家"里的名字。玩家之间只有决斗中才会受伤，没在决斗也照样输出 attack，由引擎拒绝）
 - talk: target（NPC 的 ref），message（玩家说的话，保留原话）。找 NPC 买东西、问价、砍价、点菜、要东西都是 talk
 - give: item（背包物品的 ref），target（NPC 的 ref；给其他玩家时填"其他玩家"里的名字）。给、递、交、送、塞到他手里是 give：东西到了对方手上，吃不吃是他的事。喂他吃、塞进他嘴里（强行的也算）、给他灌下去是 use 不是 give
+- upgrade: item（背包里武器的 ref），target（会升级武器的铁匠 NPC 的 ref）。找铁匠升级、强化、重新锻打自己的武器；问升级要多少钱也是 upgrade（第一次引擎只开价，再说一次才动手）
 - say: message（说的话，保留原话），target 可空（对某个玩家说时填"其他玩家"里的名字，对大家说不填）
 - revive: target（"其他玩家"里的名字）。帮倒下的、被捆住的、被打晕的其他玩家都是 revive，不是 freeform 也不是 struggle：急救、包扎、止血、扶起、叫醒、松绑、解开绳子、割断绳子、把人拉出来。用背包里的吃的、药草、酒喂他是 use（target 填他的名字），不是 revive 也不是 stunt。struggle 只用于玩家自己摆脱自己身上的状态
 - invite: target（"其他玩家"里的名字）。邀请对方组队
@@ -375,6 +376,14 @@ def parse_intent(db, view: RoomView, text: str) -> tuple[Optional[list], dict]:
             for field in ("difficulty", "escape", "tier", "status"):
                 if isinstance(d.get(field), str):
                     d[field] = JUDGE_WORDS.get(d[field].strip().lower(), d[field].strip().lower())
+            # 跟铁匠说要升级、强化自己的武器，模型常写成 talk：转成 upgrade，武器按原话挑，挑不出就用手上拿着的
+            by_id = {uid: ref for ref, uid in view.refs.items()}
+            smith =next((n for n in view.npcs if n.template.props.get("upgrades") and by_id[n.id] == d.get("target")), None)
+            weapons = [i for i in view.inventory if i.template.type == "weapon"]
+            if d["action"] == "talk" and smith and weapons and re.search(r"升级|强化|打磨|重新锻打|加强", d.get("message", "")):
+                named = [i for i in weapons if any(ch in d["message"] for ch in set(i.name) - set("的"))]
+                pick = (named or sorted(weapons, key=lambda i: i.equipped_slot != "right_hand"))[0]
+                d = {"action": "upgrade", "item": by_id[pick.id], "target": d["target"]}
             # 捆人、缠住一律是体操（模型常常不填技能，落到默认的运动上）
             if d["action"] == "stunt" and d.get("status") == "restrained":
                 d["skill"] = "acrobatics"
@@ -515,13 +524,14 @@ observer（给同房间其他人看）：
 
 NPC 对话（只有 facts 里有对话时才用）：
 - NPC 按 <npc> 里的人设说话，要回应玩家说的内容，把 NPC 的台词写进叙事
+- 语气跟着 <npc> 里的好感度走：-30 以下嫌弃、刻薄、爱搭不理；-30 到 10 是人设的本色；10 到 50 嘴上照旧，但话里明显更关照、更愿意多说；50 以上是老交情，一定要流露出关心（嘴硬的人设也要露馅），不能只是冷冰冰地挖苦。人设里的口头禅、称呼可以用，但别每次都原样重复同一句，换着花样说
 - 物品交付只以 facts 为准：facts 里有"把某物交给了"才能写 NPC 给出东西；没有就绝对不能写 NPC 给了、递了、塞了任何物品，也不要暗示马上会给。玩家要的东西 facts 里既没交付也没开价，NPC 就按人设说没有、不卖或者做不了（货架上、"你卖的货"里有的除外，那些可以报价），不能写拿出来、取出来
 - 玩家要的东西如果 <player> 里"身上带着"已经有了，NPC 就提醒他已经有了（"钥匙不是已经在你手上了吗"）。但 facts 里这回合刚交给他的东西也会出现在"身上带着"里，那是刚给的，不是他原来就有的
 - affinity_delta：根据玩家这回合的言行，NPC 好感变化，-5 到 5 的整数。一般聊天 0 到 1，礼貌帮忙加分，无礼威胁减分
 - NPC 要记得 <npc> 里"对这个玩家的记忆"，说话时自然体现（认出老熟人、提起上次的事）
 - npc_memory：NPC 对这个玩家的长期记忆总结，300 字以内。<npc> 里的记忆 = 旧总结 + 最近几条原话记录（完整记录另外存着），你把旧总结、最近记录和这回合合并重写成新总结：玩家是谁、做过什么、答应过什么、欠了什么、帮过什么忙、结过什么仇、交易过什么、NPC 对他的看法。重要的事不要因为重写就丢掉
 - 买卖：成交价只照 facts 写（"卖给了……收了 N 金币"）。facts 里没有成交就不能写东西已经给了、钱已经收了
-- npc_offer：玩家问 <npc> 里"你卖的货"的价钱、想买时，NPC 报价：第一次报原价（看他顺眼可以便宜一点，讨厌他可以贵一点）；玩家砍价，按人设决定让不让、让多少。"开过价、还没成交的"现做东西也能砍价。把 item（货的名字）和 price（整数金币）填在这里，台词里说的价要跟它一致；没报价就填 null。玩家得下一句同意了才会成交
+- npc_offer：玩家问 <npc> 里"你卖的货"的价钱、想买时，NPC 报价：照建议价上下浮动（看他顺眼可以便宜一点，讨厌他可以贵一点，一般在建议价的一半到两倍之间，超出会被引擎拉回来）；玩家砍价，按人设决定让不让、让多少。"开过价、还没成交的"现做东西也能砍价。把 item（货的名字）和 price（整数金币）填在这里，台词里说的价要跟它一致；没报价就填 null。玩家得下一句同意了才会成交
 - facts 里有"开价：……"就是 NPC 这回合给现做的东西开了价，台词照这个价说出来
 - facts 里有"卖给了……收了 N 金币"就照这个数写付钱，直接付 N 金币，不要写找零
 - <player> 里写着"敌人还没注意到你"或"躲着"时，敌人没发现他：写敌人自顾自地做事，不要写敌人看过来、扑上来、攻击他。facts 里有"发现了""扑上来攻击"才写敌人动手
@@ -533,6 +543,45 @@ NPC 对话（只有 facts 里有对话时才用）：
 - NPC 手上的委托只有 <npc> 里列出的这些，没列就是没有。玩家问还有没有活、有没有别的委托，就照实说（已托付的提一句进度，没有更多就说暂时没有），绝不能编出新的差事、任务、悬赏
 - <npc> 里的"委托"是 NPC 托玩家办的事：写着"主动提起"就在这回合自然地把事情和要他做什么说出来；写着"还没办完"就在聊到相关话题时提一句；写着"刚办完"就照 facts 写交付奖励、夸他；写着"已了结"就别再提，除非玩家问
 - eject：<npc> 里写了"能把闹事的人轰出去"时，玩家挑衅、骚扰、动手、砸场子，NPC 忍无可忍就填 true，并且叙事里必须写清楚 NPC 动手把玩家扔出了门、玩家落到了门外的哪里（照 <npc> 写），不能只是威胁；普通斗嘴、开玩笑不算。没写这项就一律 false"""
+
+
+# ============ 看店 NPC 扶起倒下的人时说的话 ============
+
+class Quip(BaseModel):
+    line: str                            # 以 NPC 名字开头的一两句：动作加说的话
+
+
+TONE = """按好感度定语气：-30 以下嫌弃、刻薄、巴不得他别来；-30 到 10 照人设的本色；10 到 50 嘴上照旧、手上明显关照；
+50 以上是老交情，一定要流露出关心或心疼（嘴硬的人设也要露馅：顺手给点吃的、多照料一下、念叨他小心），不能只是冷冰冰地挖苦。
+口头禅可以用，但别每次都原样重复同一句，换着花样说"""
+
+QUIP_SYSTEM = f"""你在扮演文字 MUD 游戏里的一个 NPC。有人倒在你店里，你刚把他扶起来、照料到回满了血。
+写你一边扶一边说的话：以你的名字开头，第三人称写一个小动作，再接一句台词，总共不超过 60 字。
+- 按人设说话，结合他是怎么倒下的（被什么怪打倒、输给了谁、吃了什么）和你对他的记忆
+- {TONE}
+- 只写这一下，不要替他写反应，不要写他 HP 多少"""
+
+DOWN_CAUSE = {"npc": "被{by}打倒了", "player": "跟{by}打架输了，被打倒", "poison": "吃喝了{by}，被毒倒了"}
+
+
+def keeper_quip(db, npc_name: str, persona: str, player_id: UUID, player_name: str, why: dict,
+                affinity: int, memory: str, example: str) -> Optional[str]:
+    """看店 NPC 扶人时的一句话，AI 按人设、好感、倒下的原因现写；失败返回 None（用 example 保底）"""
+    cause = DOWN_CAUSE.get(why.get("kind"), "不知怎么倒在了地上").format(by=why.get("by", ""))
+    user = (f"<npc>\n名字：{npc_name}\n人设：{persona}\n对他的好感：{affinity}（-100 到 100）\n"
+            f"对他的记忆：{memory or '第一次见面'}\n</npc>\n\n"
+            f"<fallen>{player_name}，{cause}</fallen>\n\n"
+            + (f"<example>语气参考（别照抄）：{example}</example>" if example else ""))
+
+    def check(out: Quip, last: bool) -> Quip:
+        if not out.line.strip().startswith(npc_name):
+            if not last:
+                raise ValueError("要以 NPC 名字开头")
+            out.line = f"{npc_name}{out.line.strip()}"
+        return out
+
+    out, _ = _call(db, player_id, "quip", QUIP_SYSTEM, user, Quip, 256, check)
+    return out.line.strip()[:120] if out else None
 
 
 # ============ NPC 给不给东西（叙事之前单独决定） ============
@@ -548,6 +597,7 @@ class MadeItem(BaseModel):
     harm: int = 0                        # 有毒：吃喝下去、砸到别人身上掉多少血
     damage: int = 0                      # 武器伤害
     knockout: Optional[str] = None       # 蒙汗药这类能把人放倒：被放倒后的样子，接在人名后面，比如"昏睡不醒"
+    alcohol: bool = False                # 是酒（喝了可能醉），酒水种类才有用
 
 
 class GiveDecision(BaseModel):
@@ -571,14 +621,24 @@ def _kind_caps(kind: str, caps: dict) -> str:
              f"有毒的最多掉 {caps['harm']} 血" if caps.get("harm") else "",
              "可以下药把人放倒" if caps.get("knockout") else "",
              f"伤害最多 {caps['damage']}" if caps.get("damage") else ""]
+    # 建议价随效果指数涨，给几个点让模型心里有数
+    key = {"food": "heal", "drink": "heal", "weapon": "damage"}.get(kind)
+    top = caps.get(key, 0) if key else 0
+    if top:
+        pts = sorted({1, (top + 1) // 2, top})
+        parts.append("建议价 " + "、".join(f"{'回' if key == 'heal' else '伤害'} {v} 约 {engine.base_price({key: v})} 金币"
+                                          for v in pts))
+    elif kind == "misc":
+        parts.append("没有建议价，价钱你自己定")
     return f"{kind} {KIND_NAMES.get(kind, kind)}" + ("：" + "，".join(p for p in parts if p) if any(parts) else "")
 
 
 GIVE_SYSTEM = """你在扮演文字 MUD 游戏里的一个 NPC，要决定这一回合要不要交给（或者卖给）正在和你说话的玩家一样东西。三种方式：
 - give：把身上现有的东西给他，填"可给物品"里的编号（如 g1），price 填收多少金币（0 是白给）
 - create：现做一样东西，只能是"能现做的种类"里的。填 kind（种类英文 key）、name（12 字以内）、description（一两句；字条就把上面写了什么写进去）和效果：
-  吃的喝的填 heal（回血）；有毒的填 harm（掉血）；蒙汗药这类填 knockout（被放倒后的样子，四到八个字，接在人名后面读得通，如"昏睡不醒""瘫软在地"）；武器填 damage。数值不能超过这个种类的上限，按你做的东西好坏来定
-  price 填 0 就是白送、当场给；填 1 就是要收钱：这回合不会当场给，引擎按效果开价（效果越好越贵），玩家下一句同意了才成交
+  吃的喝的填 heal（回血）；是酒（啤酒、烈酒、蜜酒）就填 alcohol true，果汁、茶、水、醒酒汤不填；有毒的填 harm（掉血）；蒙汗药这类填 knockout（被放倒后的样子，四到八个字，接在人名后面读得通，如"昏睡不醒""瘫软在地"）；武器填 damage。数值不能超过这个种类的上限，按你做的东西好坏来定
+  price 填 0 就是白送、当场给；填正数就是你开的价：这回合不会当场给，先报价，玩家下一句同意了才成交。有数值的东西按"能现做的种类"里的建议价开，可以看人设、好感上下浮动（引擎限在建议价的一半到两倍）；杂物没有建议价，你自己定
+  "你做过的货"是你以前做过、随时能再做的东西：玩家要的是其中一样，就 create 同一个名字（引擎会照原来的样子做），不要说没有
 - sell：卖"卖货清单"里标着"已报价"的东西（墙上的货、你开过价的现做东西），按报的价收钱
 
 怎么判断：
@@ -603,10 +663,18 @@ class Trade(BaseModel):
     price: int = 0
 
 
+def made_text(made_before: Optional[list[dict]]) -> str:
+    """NPC 做过的东西，给交易和叙事 AI 看"""
+    return "、".join(f"{g['name']}（{KIND_NAMES.get(g['spec'].get('kind'), '')[:2]}，{engine.effect_text(g['spec'])}"
+                    + (f"，上次 {g['price']} 金币" if g.get("price") else "") + "）"
+                    for g in made_before or []) or "无"
+
+
 def decide_give(db, view: RoomView, text: str, npc: Npc, giveable: list[ItemInstance], creatable: dict[str, dict],
                 affinity: int, memory: str, recent: Optional[list[str]] = None, sells: Optional[list[dict]] = None,
-                offers: Optional[dict[str, dict]] = None) -> tuple[Optional[Trade], dict]:
-    """返回 (这回合的交易或 None, token 统计)。
+                offers: Optional[dict[str, dict]] = None, made_before: Optional[list[dict]] = None
+                ) -> tuple[Optional[Trade], dict]:
+    """返回 (这回合的交易或 None, token 统计)。made_before 是 engine.known_goods，NPC 做过的东西
     recent 是房间里最近别人的动态，"我也要一杯跟他一样的"得知道他点了什么；sells 是 engine.sellable 的货，
     creatable 是 engine.creatable_kinds 的种类和上限，offers 是 engine.get_offers 的报价（报过价的才能成交）"""
     offers = offers or {}
@@ -625,7 +693,8 @@ def decide_give(db, view: RoomView, text: str, npc: Npc, giveable: list[ItemInst
     user = (f"<npc>\n名字：{npc.name}\n人设：{npc.template.persona}\n对玩家的好感：{affinity}（-100 到 100）\n"
             f"对这个玩家的记忆：{memory or '第一次见面'}\n"
             f"玩家做过的事：{'、'.join(view.player.flags) or '无'}\n可给物品：{gives}\n能现做的种类：{kinds}\n"
-            f"卖货清单：{goods}\n</npc>\n\n"
+            f"卖货清单：{goods}\n"
+            f"你做过的货：{made_text(made_before)}\n</npc>\n\n"
             f"<player>{view.player.name}，身上有 {view.player.gold} 金币</player>\n\n"
             + ("<recent>\n" + "\n".join(recent) + "\n</recent>\n\n" if recent else "")
             + f"<player_input>\n{text}\n</player_input>")
@@ -666,8 +735,8 @@ def decide_give(db, view: RoomView, text: str, npc: Npc, giveable: list[ItemInst
 def narrate(db, view: RoomView, text: str, results: list[ActionResult],
             npc: Optional[Npc], affinity: int, memory: str = "", recent: Optional[list[str]] = None,
             quests: Optional[list[tuple[str, dict]]] = None, eject_to: Optional[str] = None,
-            sells: Optional[list[dict]] = None, offers: Optional[dict[str, dict]] = None
-            ) -> tuple[Optional[Narration], dict]:
+            sells: Optional[list[dict]] = None, offers: Optional[dict[str, dict]] = None,
+            made_before: Optional[list[dict]] = None) -> tuple[Optional[Narration], dict]:
     """返回 (叙事, token 统计)。NPC 给东西已经在 decide_give 里定好并执行，结果在 results 里。
     quests 是 engine.quest_turn 给的这个 NPC 的委托情况；eject_to 是 NPC 能把人轰去的地方（房间名），不能轰就空
     memory 是 NPC 对这个玩家的记忆，recent 是这个房间最近几条别人的动态"""
@@ -747,7 +816,8 @@ def narrate(db, view: RoomView, text: str, results: list[ActionResult],
                     "不要暗示以后会有什么差事\n")
             + (f"能把闹事的人轰出去，轰到门外的{eject_to}\n" if eject_to else "")
             + ("你卖的货：" + "、".join(f"{s['name']}（" + (f"伤害 {s['damage']}，" if s["damage"] else "")
-                                       + f"原价 {s['base_price']} 金币）" for s in sells) + "\n" if sells else "")
+                                       + f"建议价 {s['base_price']} 金币）" for s in sells) + "\n" if sells else "")
+            + (f"你以前做过、随时能再做的：{made_text(made_before)}（有人要就说有）\n" if made_before else "")
             + ("你给他开过价、还没成交的：" + "、".join(f"{v['spec']['name']} {v['price']} 金币" for k, v in (offers or {}).items()
                                             if k.startswith("made:") and v.get("spec")) + "\n"
                if any(k.startswith("made:") for k in offers or {}) else "")

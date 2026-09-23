@@ -8,7 +8,7 @@ AI MUD 核心数据结构
 from typing import Annotated, Any, Literal, Optional, Union
 from uuid import UUID
 
-from pydantic import BaseModel, BeforeValidator, Field, model_validator
+from pydantic import BaseModel, BeforeValidator, Field
 
 
 # ============ 玩家动作（意图解析输出） ============
@@ -72,6 +72,13 @@ class Give(BaseModel):
     target: str                         # NPC 的 ref，或者同房间玩家的名字
 
 
+class Upgrade(BaseModel):
+    """找铁匠升级武器：第一次说是问价（开价、说清碎掉的几率），开过价再说一次就动手"""
+    action: Literal["upgrade"]
+    item: str                           # 背包里武器的 ref
+    target: str                         # 铁匠 NPC 的 ref
+
+
 class Revive(BaseModel):
     """急救倒下的玩家，救起来只有 1 HP"""
     action: Literal["revive"]
@@ -128,7 +135,7 @@ class Flee(BaseModel):
 
 
 # 借环境、创意动作打人：AI 当裁判给出难度、伤害档位、负面状态，规则引擎掷骰、限幅后执行。
-# AI 只能选档位，具体数字在 engine.TIER_DAMAGE，说得再夸张也超不过上限
+# AI 只能选档位，伤害区间在 engine.TIER_RANGE，说得再夸张也超不过上限
 def _difficulty(v: Any) -> Any:
     """难度是 1 到 10 的整数；老数据、老写法的 easy / normal / hard 换成 1 / 2 / 3"""
     if isinstance(v, str):
@@ -221,7 +228,7 @@ class Reject(BaseModel):
 
 
 PlayerAction = Annotated[
-    Union[Move, Look, Take, Drop, Use, Equip, Unequip, Attack, Talk, Give, Say, Revive, Invite, Join, LeaveParty,
+    Union[Move, Look, Take, Drop, Use, Equip, Unequip, Attack, Talk, Give, Upgrade, Say, Revive, Invite, Join, LeaveParty,
           Follow, Unfollow, Challenge, AcceptDuel, DeclineDuel, Flee, Stunt, Struggle, Maneuver, Dodge, Hide, Search,
           Freeform, Reject],
     Field(discriminator="action"),
@@ -326,17 +333,6 @@ class ItemInstance(BaseModel):
     equipped_slot: Optional[Slot] = None
     props: dict[str, Any] = {}          # NPC 现造的东西（酒、地图）把名字和描述存在这里，覆盖模板的
 
-    @model_validator(mode="before")
-    @classmethod
-    def _legacy_slot(cls, data: Any) -> Any:
-        """装备栏以前只有 weapon / armor 两格，库里的老数据读出来换成新格子（武器算右手，护甲按它能装的位置）"""
-        if isinstance(data, dict) and data.get("equipped_slot") in ("weapon", "armor"):
-            tpl = data.get("template") or {}
-            slot = tpl.get("slot") if isinstance(tpl, dict) else getattr(tpl, "slot", None)
-            data = dict(data, equipped_slot="right_hand" if data["equipped_slot"] == "weapon"
-                        else {"ring": "ring1", "hand": "left_hand"}.get(slot, slot or "chest"))
-        return data
-
     @property
     def name(self) -> str:
         return self.props.get("name") or self.template.name
@@ -423,6 +419,7 @@ class Player(BaseModel):
     following: Optional[UUID] = None    # 正在跟着谁
     stealth: Optional["Stealth"] = None # 在有敌人的地方有没有被发现
     skills: dict[str, int] = {}         # 每个技能攒了几次熟练（有风险的成功），等级由它算出来
+    drunk: bool = False                 # 喝醉了（players.drunk_until 没过）：说话含糊，判定成功率降低
 
 
 class Stealth(BaseModel):

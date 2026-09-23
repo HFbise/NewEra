@@ -51,6 +51,7 @@ rooms:
         description: 门边一只箍着铁圈的旧木桶，插着几把生锈的短剑，都是被麦琪轰出去的闹事者落下的。桶上用粉笔写着"缺家伙的拿一把，别贪"。
         item: rusty_sword
         unless: [shiny_sword]
+        once: true              # 每人只能拿一把，丢了、交给莉娜了也不能再拿
     features:
       spit: {name: 壁炉上的铁叉, max_tier: heavy, uses: 1, respawn: 120}
 
@@ -183,6 +184,11 @@ items:
     name: 武器
     description: NPC 现打的武器。
     type: weapon
+  sober_potion:
+    name: 解酒药
+    description: 麦琪自己熬的醒酒汤，装在小陶瓶里，闻着又苦又冲，一口下去酒意全消。
+    type: consumable
+    props: {sober: true, price: 3}   # 喝了马上酒醒；没数值的东西在 props.price 写建议价
   old_map:
     name: 标着陷阱的破地图
     description: >-
@@ -215,7 +221,15 @@ npcs:
         drink: {heal: 5, harm: 5, knockout: true}
         misc: {}
       # 玩家闹事时能把人轰出去：从这个出口扔出去。不写就不能轰人
+      # 吧台上的货，价钱由 AI 按建议价浮动
+      sells: [sober_potion]
       eject_to: south
+      # 店里有人倒下时扶起来回满血，按倒下的原因说一句（{name} 倒下的人，{by} 打倒他的怪、人或者吃下的东西）
+      revive_lines:
+        npc: 麦琪踮着脚把{name}从地上拽起来，往嘴里灌了一口黑啤：“被{by}揍成这副德行，还有脸躺我地板上？杂鱼就是杂鱼。”
+        player: 麦琪一脚把{name}踢醒，又塞过去半杯酒：“输给{by}了？下回约架前先掂掂自己几斤几两，笨蛋杂鱼。”
+        poison: 麦琪捏着{name}的鼻子灌下一碗解毒草药汤：“{by}这种东西也敢往嘴里送？杂鱼的胃口倒是比胆子大。”
+        other: 麦琪把{name}拖到长凳上，拍了拍脸：“醒醒，杂鱼，我这儿是酒馆，不是停尸房。”
   smith:
     name: 莉娜
     description: 铁匠铺技术老练的年轻女铁匠，因炉火烘烤常年只穿透气的粗麻布抹胸与短裤，外罩一条斑驳防烫的厚重皮围裙，露出健壮有力、线条分明的肌肉与小麦色肌肤，浑身蒸腾着热气并挂满晶莹的汗珠。一头利落的暗红马尾随手扎在脑后，脸上和手臂常沾着炭灰。腰间挂着锻造锤与铁钳，手掌布满厚茧，眼睛明亮而专注。
@@ -226,7 +240,14 @@ npcs:
       # 现打武器，伤害最多 4（墙上的铁斧是 5）
       creates:
         weapon: {damage: 4}
+      # 能帮人升级武器：每级伤害 +1，费用和碎掉的几率随等级涨（engine.upgrade_terms）
+      upgrades: true
       eject_to: west
+      revive_lines:
+        npc: 莉娜单手把{name}拎起来靠在铁砧边，瞥了一眼：“……{by}？太弱。”又盯着那把武器皱眉：“刃口也钝了。”
+        player: 莉娜把{name}扶起来，上下打量一遍：“输给{by}。站姿不对，手腕太软。”
+        poison: 莉娜舀了一瓢凉水泼在{name}脸上：“{by}……别乱吃。”
+        other: 莉娜把{name}扶起来，丢下一句：“别躺这儿，挡路。”
   goblin:
     name: 哥布林
     description: 矮小的绿皮生物，手里攥着一根木棒。

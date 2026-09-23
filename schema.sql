@@ -70,6 +70,10 @@ create table players (
   following   uuid references players(id) on delete set null,  -- 正在跟着的玩家，对方移动时一起走
   stealth     jsonb,                             -- 在有敌人的区域里有没有被发现（schema.Stealth），换区域作废
   skills      jsonb not null default '{}',       -- 生活技能的熟练次数 {技能: 次数}，等级由次数算（engine.skill_level）
+  drunk_until timestamptz,                       -- 喝醉到什么时候（engine.DRUNK_TIME）
+  drinks      int not null default 0,            -- 连着喝了几杯，喝醉几率随它指数上升
+  last_drink_at timestamptz,
+  downed_by   jsonb,                             -- 上次倒下的原因 {kind: npc|player|poison, by}，看店 NPC 扶人时说俏皮话
   gold        int not null default 0 check (gold >= 0),       -- 金币：打怪掉，跟 NPC 买东西花
   created_at  timestamptz not null default now(),
   updated_at  timestamptz not null default now()
@@ -225,6 +229,16 @@ create table npc_memory_log (
 );
 create index on npc_memory_log (player_id, npc_template, id);
 
+-- NPC 现做过的东西（按名字）：下次有人要同一样就照原规格做，价钱参考上次
+create table npc_goods (
+  npc_template text not null references npc_templates(id) on delete cascade,
+  name         text not null,
+  spec         jsonb not null,                   -- 同 engine.made_spec：kind、description、heal、harm、damage、knockout
+  price        int,                              -- 上次开的价，白送的不记
+  updated_at   timestamptz not null default now(),
+  primary key (npc_template, name)
+);
+
 -- 玩家决斗（PvP）：没接受前是申请，接受了才能互相造成伤害。每人同时只发起一场。
 -- 双方不在 room_id 这里了、有人倒下了就算结束（engine._end_stale_duels 清掉）
 create table duels (
@@ -233,6 +247,7 @@ create table duels (
   room_id     text not null references rooms(id) on delete cascade,
   accepted    boolean not null default false,
   distance    int not null default 3,
+  dodging     uuid[] not null default '{}',     -- 摆好了闪避的一方，对手下一次攻击时生效
   created_at  timestamptz not null default now()
 );
 create index on duels (target);
@@ -295,6 +310,7 @@ alter table forage_log     enable row level security;
 alter table dispenser_log  enable row level security;
 alter table npc_memory_log enable row level security;
 alter table duels          enable row level security;
+alter table npc_goods      enable row level security;
 
 create policy "read static" on rooms          for select to authenticated using (true);
 create policy "read static" on room_exits     for select to authenticated using (true);

@@ -9,6 +9,7 @@
   view = load_view(conn, player_id)
   results = execute_all(conn, view, parsed.actions)
 """
+import math
 import random
 import re
 from datetime import datetime, timezone
@@ -24,7 +25,7 @@ from schema import (
     ActionResult, Attack, Drop, Equip, Feature, Follow, Freeform, Give, Invite, ItemInstance, Join, LeaveParty, Look,
     Move, Npc, OtherPlayer, Player, PlayerAction, Reject, Revive, Room, RoomExit, RoomView, Say, Status, Struggle,
     Stunt, Take, Talk, Unfollow, Unequip, Use, dir_name, Dispenser, SLOT_CHOICES, SLOT_NAMES, Dodge, Hide, Maneuver, Search, Stealth,
-    AcceptDuel, Challenge, DeclineDuel, Duel, Flee, SKILL_NAMES,
+    AcceptDuel, Challenge, DeclineDuel, Duel, Flee, SKILL_NAMES, Upgrade,
 )
 
 
@@ -79,6 +80,14 @@ SKILL_STEP = 3
 FLEE_DIFFICULTY = {0: 3, 1: 2, 2: 1}    # 决斗逃跑（运动）按距离的难度，更远不用判定
 REVIVE_DIFFICULTY = 1                   # 急救倒下的人（医药）
 
+# 喝酒（名字带"酒"字，或者 props.alcohol；毒酒也算，毒照样生效）有几率喝醉：一段时间里说话含糊
+# （系统往原话里插"嗝""……"），技能判定和普通攻击命中率都降低。几率随连着喝的杯数指数上升：
+# 第 n 杯是 DRUNK_CHANCE × 2^(n-1)，DRINK_WINDOW 里没再喝就重新数。醉着再喝重新计时；吃解酒药（props.sober）马上清醒
+DRUNK_CHANCE = 0.2
+DRINK_WINDOW = "10 minutes"
+DRUNK_TIME = "5 minutes"
+DRUNK_PENALTY = 0.2
+
 # 搜索找东西（world.yaml 房间 forage）的默认几率和冷却秒数：默认一搜就有、不冷却，房间里可以单独配
 FORAGE_CHANCE = 1.0
 FORAGE_COOLDOWN = 0
@@ -114,7 +123,8 @@ def _cursor(conn: Connection) -> Cursor:
 
 def load_player(cur: Cursor, player_id: UUID, lock: bool = False) -> Player:
     cur.execute(
-        "select id, name, room_id, hp, max_hp, attack, defense, flags, party_id, status, following, gold, stealth, skills"
+        "select id, name, room_id, hp, max_hp, attack, defense, flags, party_id, status, following, gold, stealth, skills,"
+        " coalesce(drunk_until > now(), false) as drunk"
         " from players where id = %s"
         + (" for update" if lock else ""),
         (player_id,),
@@ -264,11 +274,17 @@ def _refresh_room(cur: Cursor, room_id: str) -> None:
                             (sp["template_id"], val))
 
 
+# 看店 NPC 扶起人之后，服务器用它让 AI 按人设、好感、倒下的原因现写一句话，稍后作为房间动态出现。
+# 引擎不调 AI，没设（纯规则模式）就用 world.yaml 的 revive_lines 当场说一句
+# 参数：(房间 id, NPC 模板 id, 玩家 id, 玩家名字, 倒下的原因 {kind, by}, 保底台词)
+REVIVE_HOOK: Optional[Callable[[str, str, UUID, str, dict, str], None]] = None
+
+
 def _keeper_revive(cur: Cursor, room_id: str) -> list[str]:
     """看店的 NPC（配了 eject_to、不敌对、醒着）把自己店里倒下的人扶起来，回满血。
     房间里的人会看到一条动态；返回 facts 给当回合用"""
     cur.execute(
-        """select t.name from npcs n join npc_templates t on t.id = n.template_id
+        """select t.id, t.name, t.props->'revive_lines' as lines from npcs n join npc_templates t on t.id = n.template_id
            where n.room_id = %s and n.alive and n.status is null and not t.hostile and t.props ? 'eject_to'
            order by t.name limit 1""",
         (room_id,),
@@ -277,10 +293,19 @@ def _keeper_revive(cur: Cursor, room_id: str) -> list[str]:
     if keeper is None:
         return []
     cur.execute("""update players set hp = max_hp, updated_at = now() where room_id = %s and hp <= 0
-                   returning id, name, max_hp""", (room_id,))
+                   returning id, name, max_hp, downed_by""", (room_id,))
     facts = []
     for r in cur.fetchall():
+        # 按倒下的原因说句话：有 REVIVE_HOOK 就让 AI 现写（稍后出现），world.yaml 的 revive_lines 只当保底
+        why = r["downed_by"] or {}
+        lines = keeper["lines"] or {}
+        line = lines.get(why.get("kind")) or lines.get("other")
+        quip = line.format(name=r["name"], by=why.get("by", "")) if line else ""
         fact = f"{keeper['name']}把倒在地上的{r['name']}扶了起来，照料了一番，{r['name']}缓过劲来，HP {r['max_hp']}/{r['max_hp']}"
+        if REVIVE_HOOK:
+            REVIVE_HOOK(room_id, keeper["id"], r["id"], r["name"], why, quip)
+        elif quip:
+            fact = f"{fact}。{quip}"
         # 不记在谁名下，房间里所有人（包括被扶起来的本人）都看得到
         cur.execute("insert into events (room_id, kind, observer) values (%s, 'keeper_revive', %s)", (room_id, fact + "。"))
         facts.append(fact)
@@ -387,7 +412,7 @@ def _active_duel(cur: Cursor, player_id: UUID, other_id: Optional[UUID] = None) 
     """player 正在打的决斗（已接受）：challenger、target、distance、opponent（对手名字）；
     给了 other_id 就只认跟这个人的"""
     cur.execute(
-        """select d.challenger, d.target, d.distance, o.name as opponent from duels d
+        """select d.challenger, d.target, d.distance, d.dodging, o.name as opponent from duels d
            join players o on o.id = case when d.challenger = %(p)s then d.target else d.challenger end
            where d.accepted and (d.challenger = %(p)s or d.target = %(p)s)
              and (%(o)s::uuid is null or o.id = %(o)s::uuid)""",
@@ -461,11 +486,25 @@ def do_decline_duel(cur: Cursor, player: Player, view: RoomView, a: DeclineDuel)
 
 
 def do_flee(cur: Cursor, player: Player, view: RoomView, a: Flee) -> list[str]:
-    """逃跑：决斗的发起者按距离判运动，逃掉了决斗就结束，可以离开；被挑战的一方不用判定"""
+    """逃跑（运动，难度按距离）：决斗的发起者逃掉了决斗就结束；被挑战的一方不用判定。
+    被敌人缠住时按离得最近的敌人算，逃掉了就甩开了（不再算被发现），可以离开"""
     duel = _active_duel(cur, player.id)
-    if duel is None:
-        raise ActionError(f"{player.name}没有在决斗，用不着逃跑")
     facts = [f"{player.name}尝试：{a.description or '逃跑'}"]
+    if duel is None:
+        st = _stealth(player)
+        foes = [n for n in _enemies(cur, player.room_id) if n.status is None]
+        if not (st.detected and foes):
+            raise ActionError(f"{player.name}没有在决斗，也没被敌人缠住，用不着逃跑")
+        near = min(_distance(st, n) for n in foes)
+        if diff := FLEE_DIFFICULTY.get(near):
+            ok, rolled = _check(cur, player, view, "athletics", diff)
+            facts += rolled
+            if not ok:
+                return facts + [f"{player.name}没能甩开{'、'.join(n.name for n in foes)}"]
+        st.detected = st.hidden = False
+        st.chance = DETECT_START
+        _save_stealth(cur, player, st)
+        return facts + [f"{player.name}甩开了{'、'.join(n.name for n in foes)}，可以离开了"]
     if duel["target"] == player.id:
         return facts + [f"{player.name}是被挑战的一方，随时可以直接走开，离开这里决斗就结束"]
     if diff := FLEE_DIFFICULTY.get(duel["distance"]):
@@ -550,13 +589,22 @@ def _worn(cur: Cursor, player: Player) -> list[ItemInstance]:
 
 
 def _weapons(cur: Cursor, player: Player) -> list[ItemInstance]:
-    """手上拿着的武器（双持就是两把，普通攻击伤害相加）"""
+    """手上拿着的武器（双持就是两把，副手只加一部分，见 weapon_damage）"""
     return [i for i in _worn(cur, player) if i.template.type == "weapon" and i.equipped_slot in SLOT_CHOICES["hand"]]
 
 
 def _defense(cur: Cursor, player: Player) -> int:
     """基础防御加上所有装备的防御（护甲、护符、以后的盾）"""
     return player.defense + sum(i.defense for i in _worn(cur, player))
+
+
+OFFHAND_SHARE = 0.25                    # 双持时副手（左手）武器只加这么多伤害，向下取整；只拿一把的不管在哪只手都算主手
+
+
+def weapon_damage(weapons: list[ItemInstance]) -> int:
+    """手上武器加的伤害：主手（右手，右手空着就是那唯一一把）全额，副手按 OFFHAND_SHARE"""
+    main = next((w for w in weapons if w.equipped_slot == "right_hand"), weapons[0] if weapons else None)
+    return sum(w.damage if w is main else int(w.damage * OFFHAND_SHARE) for w in weapons)
 
 
 def _wielding(weapons: list[ItemInstance]) -> str:
@@ -584,6 +632,9 @@ def do_move(cur: Cursor, player: Player, view: RoomView, a: Move) -> list[str]:
             raise ActionError(f"{player.name}发起的决斗还没结束，得先逃跑成功才能离开")
         cur.execute("delete from duels where challenger = %s", (duel["challenger"],))
         facts.append(f"{player.name}走开了，和{duel['opponent']}的决斗结束了")
+    # 被敌人发现、正在交手：得先逃跑成功（甩开了就不算被发现）才能离开
+    if _stealth(player).detected and (foes := [n.name for n in _enemies(cur, player.room_id) if n.status is None]):
+        raise ActionError(f"{'、'.join(foes)}正缠着{player.name}，得先逃跑成功才能离开")
     if ex["locked"]:
         # 身上带着对应的钥匙就顺手打开，不用玩家专门说"用钥匙开门"
         keys = load_items(cur, "i.player_id = %s and i.template_id = %s", (player.id, ex["key_item"])) \
@@ -795,10 +846,44 @@ def _eat_effect(cur: Cursor, eater: Player, item: ItemInstance, user: Player) ->
             facts.append(f"{eater.name}醒了过来")
     if hp == 0:
         facts.append(f"{eater.name}倒下了")
+        _downed_by(cur, eater, "poison", item.name)
     elif item.knockout:
         _knock_out(cur, "players", eater.id, item.knockout)
         facts.append(f"{eater.name}{item.knockout}，失去战斗能力")
+    if _prop(item, "sober"):
+        cur.execute("update players set drunk_until = null where id = %s", (eater.id,))
+        facts.append(f"{eater.name}酒醒了，脑子清楚了")
+    elif _prop(item, "alcohol") or "酒" in item.name:
+        # 连着喝第几杯：上一杯在 DRINK_WINDOW 里就接着数，否则从 1 开始
+        cur.execute(f"""update players set drinks = case when last_drink_at > now() - interval '{DRINK_WINDOW}'
+                                                         then drinks + 1 else 1 end, last_drink_at = now()
+                        where id = %s returning drinks""", (eater.id,))
+        n = cur.fetchone()["drinks"]
+        if hp > 0 and _roll(min(1.0, DRUNK_CHANCE * 2 ** (n - 1))):
+            cur.execute(f"update players set drunk_until = now() + interval '{DRUNK_TIME}' where id = %s", (eater.id,))
+            facts.append(f"{eater.name}喝醉了（连着喝了 {n} 杯）：接下来一阵子说话含糊，做什么都不太利索")
     return facts
+
+
+def _drunk(player: Player) -> float:
+    return DRUNK_PENALTY if player.drunk else 0.0
+
+
+def _prop(item: ItemInstance, key: str) -> Any:
+    """物品特性：实例上的（NPC 现做的）优先，没有就看模板"""
+    return item.props.get(key, item.template.props.get(key))
+
+
+def slur(text: str) -> str:
+    """醉话：在原话里随机插“嗝”和“……”"""
+    out = []
+    for ch in text:
+        out.append(ch)
+        if ch in "，。！？、,.!? " and random.random() < 0.6:
+            out.append(random.choice(["……", "……嗝，", "嗝……"]))
+        elif ch not in "，。！？、,.!? " and random.random() < 0.08:
+            out.append(random.choice(["……", "嗝"]))
+    return "".join(out) + random.choice(["……嗝", "……", ""])
 
 
 def _feed(cur: Cursor, player: Player, item: ItemInstance, name: str) -> list[str]:
@@ -924,10 +1009,11 @@ def _check(cur: Cursor, player: Player, view: RoomView, skill: Optional[str], di
     成功而且难度高于当前等级才算一次熟练，一条消息里同一个技能最多涨一次"""
     count = player.skills.get(skill, 0) if skill else 0
     level = skill_level(count)
-    chance = skill_chance(level, difficulty)
+    chance = max(0.0, skill_chance(level, difficulty) - _drunk(player))
     ok = _roll(chance)
     name = SKILL_NAMES[skill] if skill else "判定"
-    facts = [f"（{name} {level} 级对难度 {difficulty}，成功率 {round(chance * 100)}%：{'成功' if ok else '失败'}）"]
+    facts = [f"（{name} {level} 级对难度 {difficulty}，成功率 {round(chance * 100)}%"
+             + ("，喝醉了" if player.drunk else "") + f"：{'成功' if ok else '失败'}）"]
     if ok and skill and difficulty > level and skill not in view.trained:
         view.trained.append(skill)
         player.skills[skill] = count + 1
@@ -1013,14 +1099,22 @@ def _hurt_npc(cur: Cursor, player: Player, npc: Npc, dmg: int) -> tuple[list[str
     return facts, True
 
 
-def _hurt_player(cur: Cursor, target: Player, dmg: int) -> tuple[list[str], bool]:
-    """扣玩家血，返回 (facts, 是否倒下)。被打的人不自动反击，要还手得自己出手"""
+def _hurt_player(cur: Cursor, target: Player, dmg: int, kind: str, by: str) -> tuple[list[str], bool]:
+    """扣玩家血，返回 (facts, 是否倒下)。被打的人不自动反击，要还手得自己出手。
+    kind / by 是倒下的原因（见 _downed_by）"""
     hp = max(0, target.hp - dmg)
     cur.execute("update players set hp = %s, updated_at = now() where id = %s", (hp, target.id))
     facts = [f"{target.name} HP {hp}/{target.max_hp}"]
     if hp == 0:
         facts.append(f"{target.name}倒下了")
+        _downed_by(cur, target, kind, by)
     return facts, hp == 0
+
+
+def _downed_by(cur: Cursor, player: Player, kind: str, by: str) -> None:
+    """记下为什么倒下：npc 被怪打倒 / player 被人打倒 / poison 吃了有毒的东西，by 是谁、什么东西。
+    看店的 NPC 扶人时按这个说俏皮话（world.yaml 的 revive_lines）"""
+    cur.execute("update players set downed_by = %s where id = %s", (Jsonb({"kind": kind, "by": by}), player.id))
 
 
 def _npc_counter(cur: Cursor, player: Player, npc: Npc) -> list[str]:
@@ -1048,6 +1142,7 @@ def _npc_strike(cur: Cursor, player: Player, npc: Npc, verb: str, chance: float 
     facts = [f"{npc.name}{verb}，对{player.name}造成 {dmg} 点伤害", f"{player.name} HP {player.hp}/{player.max_hp}"]
     if player.hp == 0:
         facts.append(f"{player.name}倒下了")
+        _downed_by(cur, player, "npc", npc.name)
     return facts
 
 
@@ -1102,7 +1197,15 @@ def do_maneuver(cur: Cursor, player: Player, view: RoomView, a: Maneuver) -> lis
 
 
 def do_dodge(cur: Cursor, player: Player, view: RoomView, a: Dodge) -> list[str]:
+    """闪避：打敌人时在 enemy_turn 里算；决斗中记下来，对手下一次攻击他时生效"""
+    cur.execute("""update duels set dodging = array_append(array_remove(dodging, %(p)s), %(p)s)
+                   where accepted and (challenger = %(p)s or target = %(p)s)""", {"p": player.id})
     return [f"{player.name}{a.description or '摆好架势，准备闪避'}"]
+
+
+def _dodge_bonus(player: Player) -> float:
+    """闪避让对方这一下命中率降多少：察觉越高降得越多"""
+    return DODGE_BONUS + DODGE_PER_LEVEL * skill_level(player.skills.get("perception", 0))
 
 
 def do_hide(cur: Cursor, player: Player, view: RoomView, a: Hide) -> list[str]:
@@ -1186,7 +1289,7 @@ def enemy_turn(conn: Connection, player_id: UUID, actions: list[PlayerAction], r
                 step = max(DETECT_STEP_MIN, DETECT_STEP - 0.01 * skill_level(player.skills.get("stealth", 0)))
                 st.chance = round(min(1.0, st.chance + step), 2)
         # 闪避：察觉越高躲得越好
-        dodge_bonus = DODGE_BONUS + DODGE_PER_LEVEL * skill_level(player.skills.get("perception", 0)) if dodge else 0.0
+        dodge_bonus = _dodge_bonus(player) if dodge else 0.0
         if st.detected:
             for npc in enemies:
                 # 挨打那一下刚摆脱状态的，这回合来不及还手
@@ -1207,21 +1310,26 @@ def enemy_turn(conn: Connection, player_id: UUID, actions: list[PlayerAction], r
 
 def do_attack(cur: Cursor, player: Player, view: RoomView, a: Attack) -> list[str]:
     # target 是 ref 就是打 NPC，不是 ref 就当玩家名字（PvP）
-    # 双持：两把武器的伤害加在一起
+    # 双持：主手全额，副手加四分之一
     weapons = _weapons(cur, player)
     how = _wielding(weapons)
-    power = player.attack + sum(w.damage for w in weapons)
+    power = player.attack + weapon_damage(weapons)
     if a.target not in view.refs:
         target = _pvp_target(cur, player, a.target)
         duel = _active_duel(cur, player.id, target.id)
         if duel is None:
             raise ActionError(f"{player.name}和{target.name}没有在决斗，不能伤害对方（先申请决斗，对方接受了才行）")
         d = duel["distance"]
-        if not _roll(MELEE_HIT.get(d, 0)):
+        # 对手上一回合摆好了闪避：这一下更难打中，用掉就没了
+        dodged = target.id in duel["dodging"]
+        if dodged:
+            cur.execute("update duels set dodging = array_remove(dodging, %s) where challenger = %s",
+                        (target.id, duel["challenger"]))
+        if not _roll(max(0.0, MELEE_HIT.get(d, 0) - (_dodge_bonus(target) if dodged else 0) - _drunk(player))):
             return [f"{player.name}用{how}攻击{target.name}，" + (f"隔着 {distance_word(d)}够不着" if d not in MELEE_HIT
                                                                 else f"隔着 {distance_word(d)}，没打中")]
         dmg = max(1, power - _defense(cur, target))
-        facts, down = _hurt_player(cur, target, dmg)
+        facts, down = _hurt_player(cur, target, dmg, "player", player.name)
         return [f"{player.name}用{how}攻击{target.name}，造成 {dmg} 点伤害"] + facts + _duel_over(cur, down)
 
     npc = _room_npc(cur, view, player, a.target)
@@ -1230,7 +1338,7 @@ def do_attack(cur: Cursor, player: Player, view: RoomView, a: Attack) -> list[st
     if npc.template.hostile:
         # 近战按距离算命中；敌人以外的 NPC 就在跟前说话，不算距离
         d = _distance(_stealth(player), npc)
-        if not _roll(MELEE_HIT.get(d, 0)):
+        if not _roll(max(0.0, MELEE_HIT.get(d, 0) - _drunk(player))):
             return [f"{player.name}用{how}攻击{npc.name}，" + (f"隔着 {distance_word(d)}够不着" if d not in MELEE_HIT
                                                              else f"隔着 {distance_word(d)}，没打中")]
     dmg = max(1, power - npc.template.defense)
@@ -1347,7 +1455,10 @@ def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]
     lethal_blow = finisher and tier == "lethal"
     if dmg := (0 if harmless_prank else poison.harm if poison else target.hp if lethal_blow
                else random.randint(*TIER_RANGE[tier])):
-        hurt, down = _hurt_npc(cur, player, target, dmg) if is_npc else _hurt_player(cur, target, dmg)
+        if is_npc:
+            hurt, down = _hurt_npc(cur, player, target, dmg)
+        else:
+            hurt, down = _hurt_player(cur, target, dmg, *(("poison", poison.name) if poison else ("player", player.name)))
         facts += [f"{target.name}受到 {dmg} 点伤害"] + hurt + ([] if is_npc else _duel_over(cur, down))
     if poison and poison.knockout and not down:
         _knock_out(cur, "npcs" if is_npc else "players", target.id, poison.knockout)
@@ -1527,6 +1638,48 @@ def do_give(cur: Cursor, player: Player, view: RoomView, a: Give) -> list[str]:
     return [f"{player.name}把{_label(item)}交给了{npc.name}"]
 
 
+# 铁匠升级武器：每级伤害 +1，名字后面标 +N。升到第 N 级有 N × UPGRADE_BREAK_STEP 的几率碎掉（最多 UPGRADE_BREAK_MAX），
+# 等级不封顶。费用是升级后和升级前建议价的差（至少 UPGRADE_MIN_COST），跟着伤害指数涨
+UPGRADE_BREAK_STEP = 0.10
+UPGRADE_BREAK_MAX = 0.90
+UPGRADE_MIN_COST = 5
+
+
+def upgrade_terms(item: ItemInstance) -> tuple[int, int, float]:
+    """(升到几级, 费用, 碎掉的几率)"""
+    level = item.props.get("plus", 0) + 1
+    cost = max(UPGRADE_MIN_COST, base_price({"damage": item.damage + 1}) - base_price({"damage": item.damage}))
+    return level, cost, min(UPGRADE_BREAK_MAX, UPGRADE_BREAK_STEP * level)
+
+
+def do_upgrade(cur: Cursor, player: Player, view: RoomView, a: Upgrade) -> list[str]:
+    npc = _room_npc(cur, view, player, a.target)
+    if not npc.template.props.get("upgrades"):
+        raise ActionError(f"{npc.name}不会升级武器")
+    item = _inv_item(cur, view, player, a.item)
+    if item.template.type != "weapon":
+        raise ActionError(f"{item.name}不是武器，{npc.name}没法升级")
+    level, cost, risk = upgrade_terms(item)
+    key = f"upgrade:{item.id}"
+    offer = _offers(cur, player.id, npc).get(key)
+    terms = f"升到 +{level}（伤害 {item.damage} → {item.damage + 1}）要 {cost} 金币，有 {round(risk * 100)}% 的可能碎掉"
+    if offer is None or offer["price"] != cost:
+        # 第一次只开价，说清风险，玩家再说一次才动手
+        _put_offer(cur, player.id, npc, key, cost)
+        return [f"{npc.name}看了看{player.name}的{item.name}：{terms}", f"{player.name}再说一次要升级，{npc.name}就动手"]
+    _pay(cur, player, cost)
+    cur.execute("update player_npc_relations set offers = offers - %s where player_id = %s and npc_template = %s",
+                (key, player.id, npc.template.id))
+    facts = [f"{player.name}付了 {cost} 金币，{npc.name}把{item.name}放进炉火里重新锻打（{terms}）"]
+    if _roll(risk):
+        cur.execute("delete from item_instances where id = %s", (item.id,))
+        return facts + [f"淬火的时候{item.name}裂成了两截，碎掉了"]
+    name = re.sub(r" \+\d+$", "", item.name) + f" +{level}"
+    cur.execute("update item_instances set props = props || %s where id = %s",
+                (Jsonb({"plus": level, "damage": item.damage + 1, "name": name}), item.id))
+    return facts + [f"升级成功：{item.name}变成了{name}，伤害 {item.damage + 1}"]
+
+
 def do_say(cur: Cursor, player: Player, view: RoomView, a: Say) -> list[str]:
     if a.target is None:
         return [f"{player.name}说：“{a.message}”"]
@@ -1556,7 +1709,7 @@ HANDLERS: dict[str, Callable[..., list[str]]] = {
     "say": do_say, "revive": do_revive, "stunt": do_stunt, "struggle": do_struggle,
     "follow": do_follow, "unfollow": do_unfollow, "invite": do_invite, "join": do_join, "leave_party": do_leave_party,
     "maneuver": do_maneuver, "dodge": do_dodge, "hide": do_hide, "search": do_search, "reject": do_reject,
-    "challenge": do_challenge, "accept_duel": do_accept_duel, "decline_duel": do_decline_duel, "flee": do_flee,
+    "upgrade": do_upgrade, "challenge": do_challenge, "accept_duel": do_accept_duel, "decline_duel": do_decline_duel, "flee": do_flee,
 }
 
 
@@ -1590,6 +1743,9 @@ def execute_all(conn: Connection, view: RoomView, actions: list[PlayerAction]) -
     有动静就打断剩下的"""
     results, enemy_done = [], False
     for i, action in enumerate(actions, 1):
+        # 喝醉了说话含糊：改的是原话本身，叙事、旁人、NPC 听到的都是醉话
+        if view.player.drunk and action.action in ("say", "talk"):
+            action.message = slur(action.message)
         result = execute(conn, view, action)
         results.append(result)
         if not result.success:
@@ -1701,7 +1857,8 @@ def sellable(conn: Connection, npc: Npc) -> list[dict]:
         return []
     with conn.transaction():
         cur = _cursor(conn)
-        cur.execute("select id, name, description, type, damage, defense, heal from item_templates where id = any(%s)", (ids,))
+        cur.execute("select id, name, description, type, damage, defense, heal, props->'price' as price"
+                    " from item_templates where id = any(%s)", (ids,))
         return [r | {"base_price": base_price(r)} for r in cur.fetchall()]
 
 
@@ -1712,14 +1869,17 @@ def get_offers(conn: Connection, player_id: UUID, npc: Npc) -> dict[str, dict]:
     """NPC 给这个玩家报过、还没过期的价 {key: {price, spec}}。
     key 是卖货的物品 id，或者 "made:名字"（现造的东西，spec 是报价时定好的规格）"""
     with conn.transaction():
-        cur = _cursor(conn)
-        cur.execute(
-            f"""select o.key, o.value from player_npc_relations r, jsonb_each(r.offers) o
-                where r.player_id = %s and r.npc_template = %s
-                  and to_timestamp((o.value->>'at')::float) > now() - interval '{OFFER_WINDOW}'""",
-            (player_id, npc.template.id),
-        )
-        return {r["key"]: r["value"] for r in cur.fetchall()}
+        return _offers(_cursor(conn), player_id, npc)
+
+
+def _offers(cur: Cursor, player_id: UUID, npc: Npc) -> dict[str, dict]:
+    cur.execute(
+        f"""select o.key, o.value from player_npc_relations r, jsonb_each(r.offers) o
+            where r.player_id = %s and r.npc_template = %s
+              and to_timestamp((o.value->>'at')::float) > now() - interval '{OFFER_WINDOW}'""",
+        (player_id, npc.template.id),
+    )
+    return {r["key"]: r["value"] for r in cur.fetchall()}
 
 
 def _put_offer(cur: Cursor, player_id: UUID, npc: Npc, key: str, price: int, spec: Optional[dict] = None) -> None:
@@ -1737,10 +1897,17 @@ def _put_offer(cur: Cursor, player_id: UUID, npc: Npc, key: str, price: int, spe
 
 def set_offer(conn: Connection, player_id: UUID, npc: Npc, key: str, price: int) -> None:
     """叙事里 NPC 报了价、砍价让了步就记下来：卖货清单里的物品 id，或者已经报过价的现造东西"""
-    if key not in npc.template.props.get("sells", []) and key not in get_offers(conn, player_id, npc):
+    offers = get_offers(conn, player_id, npc)
+    if key not in npc.template.props.get("sells", []) and key not in offers:
         return
     with conn.transaction():
-        _put_offer(_cursor(conn), player_id, npc, key, price)
+        cur = _cursor(conn)
+        if key.startswith("made:"):
+            stats = offers[key].get("spec", {})
+        else:
+            cur.execute("select damage, defense, heal, props->'price' as price from item_templates where id = %s", (key,))
+            stats = cur.fetchone()
+        _put_offer(cur, player_id, npc, key, clamp_price(stats, price))
 
 
 def npc_sell(conn: Connection, player_id: UUID, npc: Npc, template_id: str) -> ActionResult:
@@ -1842,13 +2009,36 @@ def _set_quest(cur: Cursor, player_id: UUID, quest_id: str, status: str) -> None
 
 MADE_TEMPLATES = {"food": "made_food", "drink": "made_drink", "misc": "made_misc", "weapon": "made_weapon"}
 CREATE_COOLDOWN = "3 minutes"           # 同一个 NPC 白送现造东西给同一个玩家的间隔
-# 开价按效果算，数值越高越贵（之后可以砍价）：伤害、防御每点 3 金币，回血、毒每点 1 金币，能把人药倒另加 3
-PRICE_PER = {"damage": 3, "defense": 3, "heal": 1, "harm": 1}
-KNOCKOUT_PRICE = 3
+# 建议价按效果指数增长：好东西贵得快。NPC 报价在建议价的 OFFER_BAND 倍之间浮动；没有数值的东西（绳子、字条）
+# 没有建议价，价钱全由 AI 定，限在 FREE_PRICE 之间
+GEAR_PRICE = (2, 1.6)                   # 武器护甲：2 × 1.6^(伤害+防御)，伤害 3 约 8，伤害 5 约 21，伤害 6 约 34
+POTION_PRICE = (0.8, 1.4)               # 吃喝：0.8 × 1.4^(回血+毒)，回 3 约 2，回 6 约 6
+KNOCKOUT_PRICE = 5
+OFFER_BAND = (0.5, 2.0)
+FREE_PRICE = (1, 200)
 
 
 def base_price(stats: dict) -> int:
-    return max(1, sum(stats.get(k, 0) * v for k, v in PRICE_PER.items()) + (KNOCKOUT_PRICE if stats.get("knockout") else 0))
+    if stats.get("price"):
+        return stats["price"]               # 模板写死了建议价（解酒药这类没数值的）
+    gear = stats.get("damage", 0) + stats.get("defense", 0)
+    potion = stats.get("heal", 0) + stats.get("harm", 0)
+    price = ((GEAR_PRICE[0] * GEAR_PRICE[1] ** gear if gear else 0)
+             + (POTION_PRICE[0] * POTION_PRICE[1] ** potion if potion else 0)
+             + (KNOCKOUT_PRICE if stats.get("knockout") else 0))
+    return max(1, round(price))
+
+
+def has_stats(stats: dict) -> bool:
+    return any(stats.get(k) for k in ("damage", "defense", "heal", "harm", "knockout", "price"))
+
+
+def clamp_price(stats: dict, price: int) -> int:
+    """AI 报的价限在建议价的一半到两倍；没数值的东西只限一个大范围"""
+    if not has_stats(stats):
+        return max(FREE_PRICE[0], min(FREE_PRICE[1], price))
+    base = base_price(stats)
+    return max(math.ceil(base * OFFER_BAND[0]), min(math.floor(base * OFFER_BAND[1]), price))
 
 
 # 白送的门槛：NPC 现做的东西、AI 决定给不给的东西（地图），好感够高才白送，不然模型第一次见面就把剑白送了。
@@ -1879,7 +2069,7 @@ def create_limits(npc: Npc) -> dict[str, dict]:
 
 
 def made_spec(npc: Npc, kind: str, name: str, description: str, heal: int = 0, harm: int = 0,
-              damage: int = 0, knockout: Optional[str] = None) -> dict:
+              damage: int = 0, knockout: Optional[str] = None, alcohol: bool = False) -> dict:
     """AI 提议的现造东西，按 NPC 的上限裁剪成规格。种类不允许就抛 ActionError"""
     caps = create_limits(npc).get(kind)
     if caps is None:
@@ -1892,6 +2082,8 @@ def made_spec(npc: Npc, kind: str, name: str, description: str, heal: int = 0, h
             spec["knockout"] = knockout.strip()[:20]
         # 有毒、下了药的就不回血
         spec["heal"] = 0 if spec["harm"] or spec.get("knockout") else clamp(heal, "heal")
+        if alcohol and kind == "drink":
+            spec["alcohol"] = True              # 酒：喝了可能醉
     elif kind == "weapon":
         spec["damage"] = max(1, clamp(damage, "damage"))
     return spec
@@ -1928,19 +2120,21 @@ def npc_gift(conn: Connection, player_id: UUID, npc: Npc, spec: dict) -> ActionR
             player = load_player(cur, player_id, lock=True)
             _gift_cooldown(cur, player_id, npc)
             _make(cur, player_id, spec)
+            _remember_goods(cur, npc, spec)
         return ActionResult(action="npc_create", success=True,
                             facts=[f"{npc.name}把{spec['name']}（{effect_text(spec)}）送给了{player.name}"])
     except ActionError as e:
         return ActionResult(action="npc_create", success=False, facts=[str(e)])
 
 
-def quote_made(conn: Connection, player_id: UUID, npc: Npc, spec: dict) -> ActionResult:
-    """要收钱的现造东西先报价：按效果算开价，连同规格记进报价，玩家同意了再照这个规格做"""
-    price = base_price(spec)
+def quote_made(conn: Connection, player_id: UUID, npc: Npc, spec: dict, price: Optional[int] = None) -> ActionResult:
+    """要收钱的现造东西先报价：AI 开的价按建议价限幅（没给就按建议价），连同规格记进报价，玩家同意了再照这个规格做"""
+    price = clamp_price(spec, price or base_price(spec))
     with conn.transaction():
         cur = _cursor(conn)
         player = load_player(cur, player_id)
         _put_offer(cur, player_id, npc, "made:" + spec["name"], price, spec)
+        _remember_goods(cur, npc, spec, price)
     return ActionResult(action="quote", success=True,
                         facts=[f"{npc.name}给{player.name}开价：{spec['name']}（{effect_text(spec)}），{price} 金币"])
 
@@ -1957,12 +2151,34 @@ def npc_buy_made(conn: Connection, player_id: UUID, npc: Npc, key: str) -> Actio
             player = load_player(cur, player_id, lock=True)
             _pay(cur, player, offer["price"])
             _make(cur, player_id, spec)
+            _remember_goods(cur, npc, spec, offer["price"])
             cur.execute("update player_npc_relations set offers = offers - %s where player_id = %s and npc_template = %s",
                         (key, player_id, npc.template.id))
         return ActionResult(action="npc_create", success=True,
                             facts=[_deal(npc, player, f"{spec['name']}（{effect_text(spec)}）", offer["price"])])
     except ActionError as e:
         return ActionResult(action="npc_create", success=False, facts=[str(e)])
+
+
+# NPC 做过的东西记下来（按名字），下次有人要同一样就照原来的规格做，不会这回有下回没有
+GOODS_SHOWN = 20                        # 给 AI 看最近做过的几样
+
+
+def _remember_goods(cur: Cursor, npc: Npc, spec: dict, price: Optional[int] = None) -> None:
+    cur.execute(
+        """insert into npc_goods (npc_template, name, spec, price) values (%s, %s, %s, %s)
+           on conflict (npc_template, name) do update set spec = excluded.spec,
+               price = coalesce(excluded.price, npc_goods.price), updated_at = now()""",
+        (npc.template.id, spec["name"], Jsonb(spec), price))
+
+
+def known_goods(conn: Connection, npc: Npc) -> list[dict]:
+    """NPC 做过的东西 [{name, spec, price}]，最近的在前"""
+    with conn.transaction():
+        cur = _cursor(conn)
+        cur.execute("select name, spec, price from npc_goods where npc_template = %s order by updated_at desc limit %s",
+                    (npc.template.id, GOODS_SHOWN))
+        return cur.fetchall()
 
 
 def can_eject(npc: Npc) -> bool:

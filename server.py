@@ -37,7 +37,7 @@ app.include_router(admin.router)
 # 这些动作的回合不调叙事 AI：facts 已经说清楚了，AI 反而容易替别的玩家编动作
 NO_NARRATION = {"say", "follow", "unfollow", "invite", "join", "leave_party", "challenge", "accept_duel", "decline_duel"}
 # NPC 对话里这些结果旁人也看得到（交东西、提委托、轰人），跟在对话原文后面
-NPC_OUTCOMES = {"npc_give", "npc_create", "npc_sell", "quote", "quest", "npc_eject"}
+NPC_OUTCOMES = {"npc_give", "npc_create", "npc_sell", "quote", "quest", "npc_eject", "upgrade"}
 
 
 class LoginReq(BaseModel):
@@ -122,10 +122,9 @@ def state(conn, view: RoomView, after: Optional[int] = None) -> dict:
                                      if i.equipped_slot == slot), None)} for slot, label in SLOT_NAMES.items()],
         "inventory": [{"ref": by_id[i.id], "name": i.name, "quantity": i.quantity}
                       for i in view.inventory if not i.equipped_slot],
-        # 攻防算上装备：双持两把武器伤害相加，所有装备的防御相加
-        "attack_total": view.player.attack + sum(i.damage for i in view.inventory
-                                                 if i.equipped_slot in ("left_hand", "right_hand")
-                                                 and i.template.type == "weapon"),
+        # 攻防算上装备：双持时副手武器只加四分之一，所有装备的防御相加
+        "attack_total": view.player.attack + engine.weapon_damage(
+            [i for i in view.inventory if i.equipped_slot in ("left_hand", "right_hand") and i.template.type == "weapon"]),
         "defense_total": view.player.defense + sum(i.defense for i in view.inventory if i.equipped_slot),
         "others": others,
         "party": view.party,
@@ -237,6 +236,35 @@ def _load_npc(conn, npc_id: UUID):
     return npcs[0] if npcs else None
 
 
+def _revive_hook(room_id: str, keeper_tid: str, player_id: UUID, player_name: str, why: dict, fallback: str) -> None:
+    """看店 NPC 扶起人了：后台让 AI 按人设、好感、倒下的原因现写一句话，写好了作为房间动态出现（扶人本身已经生效）"""
+    threading.Thread(target=_revive_quip, args=(room_id, keeper_tid, player_id, player_name, why, fallback),
+                     daemon=True).start()
+
+
+def _revive_quip(room_id: str, keeper_tid: str, player_id: UUID, player_name: str, why: dict, fallback: str) -> None:
+    line = None
+    try:
+        with pool.connection() as conn:
+            name, persona = conn.execute("select name, persona from npc_templates where id = %s", (keeper_tid,)).fetchone()
+            rel = conn.execute("select affinity, memory from player_npc_relations where player_id = %s and npc_template = %s",
+                               (player_id, keeper_tid)).fetchone() or (0, "")
+            conn.commit()
+        if ai.enabled():
+            line = ai.keeper_quip(pool, name, persona, player_id, player_name, why, rel[0], rel[1], fallback)
+    except Exception:                    # 后台线程出错不能影响游戏，退回保底台词
+        pass
+    line = line or fallback
+    if not line:
+        return
+    with pool.connection() as conn, conn.transaction():
+        conn.execute("insert into events (room_id, kind, observer) values (%s, 'keeper_quip', %s)", (room_id, line))
+        conn.execute("insert into npc_memory_log (player_id, npc_template, entry) values (%s, %s, %s)",
+                     (player_id, keeper_tid, f"{player_name}倒在你店里，你把他扶起来照料好了，说：{line}"[:engine.NPC_LOG_LIMIT]))
+
+
+engine.REVIVE_HOOK = _revive_hook
+
 _busy: set[UUID] = set()               # 正在判定的玩家
 _busy_lock = threading.Lock()
 
@@ -338,12 +366,12 @@ def run_turn(req: CommandReq):
     use_ai = ai.enabled() and not all(a.action in NO_NARRATION for a in actions)
     npc_id = npc = eject_to = None
     giveable, creatable, sells, quests, affinity, memory, recent = [], [], [], [], 0, "", []
-    offers = {}
+    offers, made_before = {}, []
     with pool.connection() as conn:
         results = engine.execute_all(conn, view, actions)
-        # 跟 NPC 说话、把东西交给 NPC 都算跟他打交道：委托结算、NPC 回应
+        # 跟 NPC 说话、把东西交给 NPC、找铁匠升级都算跟他打交道：委托结算、NPC 回应
         talk = next((a for a, r in zip(actions, results) if r.success and (
-            a.action == "talk" or a.action == "give" and a.target in view.refs)), None)
+            a.action in ("talk", "upgrade") or a.action == "give" and a.target in view.refs)), None)
         npc_id = view.resolve(talk.target) if talk else None
         npc = _load_npc(conn, npc_id) if npc_id else None
         if npc:
@@ -360,6 +388,7 @@ def run_turn(req: CommandReq):
                 creatable = engine.creatable_kinds(conn, pid, npc)
                 sells = engine.sellable(conn, npc)
                 offers = engine.get_offers(conn, pid, npc) if sells or creatable else {}
+                made_before = engine.known_goods(conn, npc) if creatable else []
                 affinity = engine.get_affinity(conn, pid, npc_id)
                 memory = engine.get_npc_memory(conn, pid, npc_id)
                 if engine.can_eject(npc):
@@ -377,9 +406,10 @@ def run_turn(req: CommandReq):
         try:
             # NPC 身上有能给的东西、或者能现造东西时，先单独决定给不给，执行完变成 fact，叙事再照着写
             # 交易：给现有的、现造、卖货，价钱 AI 定，引擎查钱够不够、扣钱、交货
-            if giveable or creatable or sells:
+            # 升级武器这回合就只是升级，不再另外做买卖
+            if (giveable or creatable or sells) and talk.action != "upgrade":
                 trade, u = ai.decide_give(pool, view, req.text, npc, giveable, creatable, affinity, memory,
-                                          recent, sells, offers)
+                                          recent, sells, offers, made_before)
                 add(u)
                 if trade:
                     with pool.connection() as conn:
@@ -392,13 +422,16 @@ def run_turn(req: CommandReq):
                         elif trade.made:
                             # 现做：AI 给的效果按上限裁剪；白送当场给，要收钱就先按效果开价。
                             # 值钱的东西交情不够不能白送，改成开价
+                            # 做过的东西（名字一样）照原来的规格做，免得同一样东西每次效果都不一样
                             m = trade.made
+                            if old := next((g["spec"] for g in made_before if g["name"] == m.name.strip()), None):
+                                m = ai.MadeItem(**old)
                             try:
                                 spec = engine.made_spec(npc, m.kind, m.name, m.description, m.heal, m.harm,
-                                                        m.damage, m.knockout)
+                                                        m.damage, m.knockout, m.alcohol)
                                 free = trade.price == 0 and engine.can_gift(affinity)
                                 results.append(engine.npc_gift(conn, pid, npc, spec) if free
-                                               else engine.quote_made(conn, pid, npc, spec))
+                                               else engine.quote_made(conn, pid, npc, spec, trade.price))
                             except engine.ActionError as e:
                                 results.append(ActionResult(action="npc_create", success=False, facts=[str(e)]))
                         elif trade.sell_id.startswith("made:"):
@@ -408,7 +441,7 @@ def run_turn(req: CommandReq):
                         now_view = engine.load_view(conn, pid)   # 叙事要看到新拿到的东西和剩下的钱
                         offers = engine.get_offers(conn, pid, npc)
             out, u = ai.narrate(pool, now_view, req.text, results, npc, affinity, memory, recent,
-                                quests, eject_to, sells, offers)
+                                quests, eject_to, sells, offers, made_before)
             add(u)
             if out:
                 narrative, observer = out.narrative, out.observer or None

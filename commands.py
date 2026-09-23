@@ -169,6 +169,13 @@ def _parse_one(view: RoomView, t: str) -> dict:
              or re.fullmatch(r"invite\s+(.+)", t, re.I)):
         return {"action": "invite", "target": _player_or_unsure(view, m[1])}
 
+    # 找铁匠升级武器："升级短剑""强化生锈的短剑"；铁匠就是这里会升级的那个 NPC
+    if m := re.fullmatch(r"(?:升级|强化|锻造|改良)\s*(.+)", t):
+        smith = next((n for n in view.npcs if n.template.props.get("upgrades")), None)
+        if smith:
+            by_id = {uid: ref for ref, uid in view.refs.items()}
+            return {"action": "upgrade", "item": _find(view, m[1], "inv"), "target": by_id[smith.id]}
+
     # 决斗（PvP）：申请、接受、拒绝、逃跑
     if re.fullmatch(r"逃跑|逃走|逃|跑路|撤退|脱战|脱身|flee", t, re.I):
         return {"action": "flee", "description": "转身逃跑"}
