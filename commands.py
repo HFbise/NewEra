@@ -47,8 +47,8 @@ def _find(view: RoomView, text: str, where: str = "all") -> str:
     text = text.strip()
     if text in view.refs:
         return text
-    everything = view.items + view.inventory + view.npcs
-    preferred = {"room": view.items, "inv": view.inventory, "npc": view.npcs, "all": everything}[where]
+    everything = view.items + view.inventory + view.npcs + view.dispensers
+    preferred = {"room": view.items + view.dispensers, "inv": view.inventory, "npc": view.npcs, "all": everything}[where]
     by_id = {uid: ref for ref, uid in view.refs.items()}
     for pool in (preferred, everything):
         for match in (lambda n: n == text, lambda n: text in n):
@@ -103,6 +103,8 @@ def _parse_one(view: RoomView, t: str) -> dict:
 
     if re.fullmatch(r"搜索|搜寻|搜查|找找|四处找找|search", t, re.I):
         return {"action": "search", "description": "四处搜寻"}
+    if re.fullmatch(r"闪避|闪躲|躲闪|闪开|dodge", t, re.I):
+        return {"action": "dodge", "description": "摆好架势，准备闪避"}
     # 躲在哪、怎么躲要 AI 看环境判难度，这里只认光秃秃的一句"躲起来"
     if re.fullmatch(r"躲起来|躲一躲|藏起来|hide", t, re.I):
         return {"action": "hide", "description": "找地方躲了起来", "difficulty": "normal"}

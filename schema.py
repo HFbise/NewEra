@@ -111,6 +111,7 @@ class Stunt(BaseModel):
     feature: Optional[str] = None       # 用到的可利用地形 ref（f1）；只用环境里随手的东西就空，最多轻伤
     item: Optional[str] = None          # 用到的背包物品 ref（绳子、武器）；捆人（restrained）必须有 feature 或 item
     push: Optional[str] = None          # 把对方推、踹、扔进哪个出口（英文方向），成功就挪到那个房间；只能推玩家
+    knockback: int = 0                  # 把 NPC 踹开、撞退几格（0 到 2），成功就拉开距离
     difficulty: Difficulty = "normal"   # 做成的难度，引擎按它掷骰
     tier: Tier = "none"                 # 做成时的伤害档位
     status: Optional[StatusKind] = None # 做成时给对方加的负面状态
@@ -123,6 +124,20 @@ class Struggle(BaseModel):
     action: Literal["struggle"]
     description: str = ""
     difficulty: Difficulty = "normal"
+
+
+class Maneuver(BaseModel):
+    """同一区域里走近、退开某个 NPC。格数由 AI 看玩家怎么说来判，引擎限在每次最多 engine.MAX_STEP 格"""
+    action: Literal["maneuver"]
+    target: str                         # NPC 的 ref
+    steps: int                          # 正数是靠近，负数是退开
+    description: str = ""
+
+
+class Dodge(BaseModel):
+    """摆好架势准备闪避：这个动作之后敌人的这一下命中率降低"""
+    action: Literal["dodge"]
+    description: str = ""
 
 
 class Hide(BaseModel):
@@ -159,7 +174,7 @@ class Reject(BaseModel):
 
 PlayerAction = Annotated[
     Union[Move, Look, Take, Drop, Use, Equip, Attack, Talk, Give, Say, Revive, Invite, Join, LeaveParty,
-          Follow, Unfollow, Stunt, Struggle, Hide, Search, Freeform, Reject],
+          Follow, Unfollow, Stunt, Struggle, Maneuver, Dodge, Hide, Search, Freeform, Reject],
     Field(discriminator="action"),
 ]
 
@@ -179,6 +194,20 @@ class Room(BaseModel):
     name: str
     description: str
     details: str = ""                   # 只给 AI 的环境细节
+    props: dict[str, Any] = {}          # world.yaml 里房间的 forage（搜索能找到的东西）、dispensers（取用处）
+
+
+class Dispenser(BaseModel):
+    """取用处：酒馆的武器桶这类，每人能拿一件，身上已经有 unless 里的东西就不能再拿。配在 world.yaml 房间的 dispensers 里"""
+    id: UUID                            # 按房间和 key 算出来的固定 id，只用来分配短编号
+    container: str                      # "武器桶"
+    item: str                           # 物品模板 id
+    item_name: str
+    unless: list[str] = []
+
+    @property
+    def name(self) -> str:
+        return f"{self.container}里的{self.item_name}"
 
 
 # 出口方向：数据库和动作里用英文 key，显示时翻成中文
@@ -325,6 +354,7 @@ class Stealth(BaseModel):
     chance: float                       # 下一个动作被发现的几率，进门时 engine.DETECT_START，每个动作涨一点
     detected: bool = False              # 被发现了：敌人每个动作都打他
     hidden: bool = False                # 躲着：几率不再上涨
+    distance: dict[str, int] = {}       # 和每只 NPC（id）隔几格，没记的是 engine.START_DISTANCE
 
 
 Player.model_rebuild()                  # stealth 引用了后面才定义的 Stealth
@@ -352,12 +382,15 @@ class RoomView(BaseModel):
     party: list[str] = []               # 队友名字（不含自己，不论在不在同一房间）
     invites: list[str] = []             # 还有效的、邀请自己组队的玩家名字
     features: list[Feature] = []        # 这里还能用的可利用地形
+    dispensers: list[Dispenser] = []    # 取用处
+    forage: list[str] = []              # 搜索能找到的东西，带几率："药草（搜索，60%）"
     following: Optional[str] = None     # 正在跟着的玩家名字
     refs: dict[str, UUID] = {}
 
     def assign_refs(self) -> None:
         self.refs = {}
-        for prefix, objs in (("i", self.items + self.inventory), ("n", self.npcs), ("f", self.features)):
+        for prefix, objs in (("i", self.items + self.inventory), ("n", self.npcs), ("f", self.features),
+                             ("d", self.dispensers)):
             for n, obj in enumerate(objs, 1):
                 self.refs[f"{prefix}{n}"] = obj.id
 

@@ -105,7 +105,10 @@ def state(conn, view: RoomView, after: Optional[int] = None) -> dict:
         "room": view.room.model_dump(),
         "exits": [{"direction": e.direction, "label": dir_name(e.direction), "to": room_names[e.to_room],
                    "locked": e.locked} for e in view.exits],
-        "items": [{"ref": by_id[i.id], "name": i.name, "quantity": i.quantity} for i in view.items],
+        "items": [{"ref": by_id[i.id], "name": i.name, "quantity": i.quantity} for i in view.items]
+                 + [{"ref": by_id[d.id], "name": d.name, "quantity": 1} for d in view.dispensers]
+                 # 搜索能找到的：点一下填"搜索"
+                 + [{"ref": "", "name": n, "quantity": 1, "fill": "搜索"} for n in view.forage],
         "npcs": [{"ref": by_id[n.id], "name": n.name, "hp": n.hp, "max_hp": n.template.max_hp,
                   "status": n.status and n.status.label} for n in view.npcs],
         "inventory": [{"ref": by_id[i.id], "name": i.name, "quantity": i.quantity,
@@ -304,7 +307,9 @@ def run_turn(req: CommandReq):
     offers = {}
     with pool.connection() as conn:
         results = engine.execute_all(conn, view, actions)
-        talk = next((a for a, r in zip(actions, results) if a.action == "talk" and r.success), None)
+        # 跟 NPC 说话、把东西交给 NPC 都算跟他打交道：委托结算、NPC 回应
+        talk = next((a for a, r in zip(actions, results) if r.success and (
+            a.action == "talk" or a.action == "give" and a.target in view.refs)), None)
         npc_id = view.resolve(talk.target) if talk else None
         npc = _load_npc(conn, npc_id) if npc_id else None
         if npc:
@@ -399,8 +404,11 @@ def run_turn(req: CommandReq):
                 if key:
                     engine.set_offer(conn, pid, npc, key, out.npc_offer.price)
             if talk and out.npc_reply:
+                # 交东西的回合开头是"把锈剑递给了莉娜"这条 fact，说话的回合是说的原话
+                said = (f"{name}对{npc.name}说：“{talk.message}”" if talk.action == "talk"
+                        else next(f for a, r in zip(actions, results) if a is talk for f in r.facts[:1]))
                 observer = "\n".join(
-                    [f"{name}对{npc.name}说：“{talk.message}”", f"{npc.name}：“{out.npc_reply}”"]
+                    [said, f"{npc.name}：“{out.npc_reply}”"]
                     + [f for r in results if r.success and r.action in NPC_OUTCOMES for f in r.facts])
         with conn.transaction():
             conn.execute(

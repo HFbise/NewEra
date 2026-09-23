@@ -13,7 +13,7 @@ import random
 import re
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
-from uuid import UUID, uuid4
+from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
 
 from psycopg import Connection, Cursor
 from psycopg import errors as pg_errors
@@ -23,7 +23,7 @@ from psycopg.types.json import Jsonb
 from schema import (
     ActionResult, Attack, Drop, Equip, Feature, Follow, Freeform, Give, Invite, ItemInstance, Join, LeaveParty, Look,
     Move, Npc, OtherPlayer, Player, PlayerAction, Reject, Revive, Room, RoomExit, RoomView, Say, Status, Struggle,
-    Stunt, Take, Talk, Unfollow, Use, dir_name, Hide, Search, Stealth,
+    Stunt, Take, Talk, Unfollow, Use, dir_name, Dispenser, Dodge, Hide, Maneuver, Search, Stealth,
 )
 
 
@@ -45,12 +45,31 @@ ESCAPE_CHANCE = {"easy": 0.7, "normal": 0.45, "hard": 0.2}
 ESCAPE_BONUS = 0.15                     # 每挣脱失败一次，下次成功率加这么多
 STATUS_MAX = "3 minutes"                # 负面状态最长多久自动解除，防止 AI 一直判醒不过来把人卡死
 # 被束缚时做不了的动作；失去战斗能力时只能挣脱（醒来）
-RESTRAINED_BLOCKED = {"move", "attack", "stunt", "take", "drop", "equip", "use", "give", "revive", "hide", "search"}
+RESTRAINED_BLOCKED = {"move", "attack", "stunt", "take", "drop", "equip", "use", "give", "revive", "hide", "search",
+                      "maneuver", "dodge"}
 
-# 敌人发现玩家：进门时几率 DETECT_START，之后每个动作先掷骰，没被发现就涨 DETECT_STEP（躲着不涨）。
-# 被发现了，在场能动的敌人每个动作都打他一下
+# 敌人发现玩家：进门时几率 DETECT_START，之后玩家每发一条消息掷一次骰，没被发现就涨 DETECT_STEP（躲着不涨）。
+# 被发现了，在场能动的敌人每条消息都打他一下（一句话拆成几个动作也只算一次，太长会被打断，见 INTERRUPT_AFTER）
 DETECT_START = 0.05
 DETECT_STEP = 0.10
+
+# 同一区域里的距离（格）：刚发现时隔 START_DISTANCE 格。近战（普通攻击，玩家打敌人、敌人打玩家）按距离算命中，
+# 够不着的格数命中率是 0。扔东西、推石头这类 stunt 不看距离。
+# 玩家挪几格、把敌人踹开几格由 AI 判（每次最多 MAX_STEP）；敌人被发现后每条消息自己逼近 ENEMY_STEP 格再出手
+START_DISTANCE = 2
+MAX_DISTANCE = 4
+MAX_STEP = 2
+ENEMY_STEP = 1
+MELEE_HIT = {0: 0.95, 1: 0.45, 2: 0.05}
+DODGE_BONUS = 0.15                      # 闪避动作让敌人这一下的命中率降低这么多
+DISTANCE_WORDS = {0: "贴身", 1: "一步之遥", 2: "几步开外"}
+# 一句话拆出很多动作时，做完这么多个敌人就先行动；敌人有动静（发现、逼近、出手）就打断后面的，
+# 免得一条超长的消息一口气打出一串伤害
+INTERRUPT_AFTER = 2
+
+# 搜索找东西（world.yaml 房间 forage）的默认几率和冷却秒数：每个人找到一次后隔一阵才能再找到
+FORAGE_CHANCE = 0.6
+FORAGE_COOLDOWN = 120
 
 
 class ActionError(Exception):
@@ -89,8 +108,30 @@ def load_player(cur: Cursor, player_id: UUID, lock: bool = False) -> Player:
 
 
 def load_room(cur: Cursor, room_id: str) -> Room:
-    cur.execute("select id, name, description, details from rooms where id = %s", (room_id,))
+    cur.execute("select id, name, description, details, props from rooms where id = %s", (room_id,))
     return Room(**cur.fetchone())
+
+
+def forage_labels(cur: Cursor, room: Room) -> list[str]:
+    """搜索能找到的东西，写明要搜、几率多少，不然没人会去搜：["药草（搜索，60%）"]"""
+    forage = room.props.get("forage", [])
+    if not forage:
+        return []
+    cur.execute("select id, name from item_templates where id = any(%s)", ([f["item"] for f in forage],))
+    names = {r["id"]: r["name"] for r in cur.fetchall()}
+    return [f"{names[f['item']]}（搜索，{round(f.get('chance', FORAGE_CHANCE) * 100)}%）" for f in forage]
+
+
+def load_dispensers(cur: Cursor, room: Room) -> list[Dispenser]:
+    """房间里的取用处（武器桶这类），id 按房间和 key 算，每次都一样"""
+    cfg = room.props.get("dispensers", {})
+    if not cfg:
+        return []
+    cur.execute("select id, name from item_templates where id = any(%s)", ([d["item"] for d in cfg.values()],))
+    names = {r["id"]: r["name"] for r in cur.fetchall()}
+    return [Dispenser(id=uuid5(NAMESPACE_URL, f"newera:dispenser:{room.id}:{key}"), container=d["name"],
+                      item=d["item"], item_name=names[d["item"]], unless=d.get("unless", []))
+            for key, d in cfg.items()]
 
 
 def load_exits(cur: Cursor, room_id: str) -> list[RoomExit]:
@@ -242,9 +283,10 @@ def load_view(conn: Connection, player_id: UUID) -> RoomView:
         if player.following:
             cur.execute("select name from players where id = %s", (player.following,))
             following = cur.fetchone()["name"]
+        room = load_room(cur, player.room_id)
         view = RoomView(
             player=player,
-            room=load_room(cur, player.room_id),
+            room=room,
             exits=load_exits(cur, player.room_id),
             items=load_items(cur, "i.room_id = %s", (player.room_id,)),
             npcs=load_npcs(cur, "n.room_id = %s and n.alive", (player.room_id,)),
@@ -253,6 +295,8 @@ def load_view(conn: Connection, player_id: UUID) -> RoomView:
             party=party,
             invites=invites,
             features=features,
+            dispensers=load_dispensers(cur, room),
+            forage=forage_labels(cur, room),
             following=following,
         )
     view.assign_refs()
@@ -402,8 +446,11 @@ def do_look(cur: Cursor, player: Player, view: RoomView, a: Look) -> list[str]:
                 f"{dir_name(e.direction)}（通往{load_room(cur, e.to_room).name}" + ("，门锁着" if e.locked else "") + "）"
                 for e in exits))
         items = load_items(cur, "i.room_id = %s", (player.room_id,))
-        if items:
-            facts.append("地上有：" + "、".join(_label(i) for i in items))
+        ground = [_label(i) for i in items] + view.forage
+        if ground:
+            facts.append("地上有：" + "、".join(ground))
+        if view.dispensers:
+            facts.append("可以取用：" + "、".join(f"{d.container}（{d.item_name}，每人一件）" for d in view.dispensers))
         npcs = load_npcs(cur, "n.room_id = %s and n.alive", (player.room_id,))
         if npcs:
             facts.append("这里有：" + "、".join(n.name + (f"（{n.status.describe()}）" if n.status else "")
@@ -455,7 +502,36 @@ def do_look(cur: Cursor, player: Player, view: RoomView, a: Look) -> list[str]:
     raise ActionError("这里看不到那个东西")
 
 
+def _give_player_new(cur: Cursor, player: Player, template_id: str) -> None:
+    """凭空给玩家一件新东西（武器桶、搜索找到的），可叠加的并进已有的那堆"""
+    cur.execute(
+        """update item_instances i set quantity = quantity + 1 from item_templates t
+           where t.id = i.template_id and t.stackable and i.template_id = %s and i.player_id = %s
+             and i.equipped_slot is null
+           returning i.id""",
+        (template_id, player.id),
+    )
+    if not cur.fetchone():
+        cur.execute("insert into item_instances (template_id, player_id) values (%s, %s)", (template_id, player.id))
+
+
+def _take_from(cur: Cursor, player: Player, d: Dispenser) -> list[str]:
+    """从武器桶这类地方拿一件：每人一件，身上已经有同类的（锈剑、磨亮的剑）就不能再拿"""
+    cur.execute(
+        """select t.name from item_instances i join item_templates t on t.id = i.template_id
+           where i.player_id = %s and i.template_id = any(%s) limit 1""",
+        (player.id, [d.item] + d.unless),
+    )
+    if row := cur.fetchone():
+        raise ActionError(f"{player.name}身上已经有{row['name']}了，{d.container}里的留给别人")
+    _give_player_new(cur, player, d.item)
+    return [f"{player.name}从{d.container}里拿了一件{d.item_name}"]
+
+
 def do_take(cur: Cursor, player: Player, view: RoomView, a: Take) -> list[str]:
+    uid = _resolve(view, a.item)
+    if d := next((d for d in view.dispensers if d.id == uid), None):
+        return _take_from(cur, player, d)
     item = _get_item(cur, view, a.item)
     if item.player_id == player.id:
         # "从背包里拿出钥匙开门"会解析成先 take，东西本来就在身上，算成功，后面的动作照常执行
@@ -638,11 +714,15 @@ def _npc_counter(cur: Cursor, player: Player, npc: Npc) -> list[str]:
         st.attempts += 1
         _set_status(cur, "npcs", npc.id, st)
         return [f"{npc.name}还{st.label}，没法还手"]
+    if npc.template.hostile:
+        return []                       # 敌人的还手在 enemy_turn 里按距离算
     return _npc_strike(cur, player, npc, "反击")
 
 
-def _npc_strike(cur: Cursor, player: Player, npc: Npc, verb: str) -> list[str]:
-    """NPC 打玩家一下（反击、主动攻击）。player.hp 跟着更新，同一回合几个敌人连着打能接上"""
+def _npc_strike(cur: Cursor, player: Player, npc: Npc, verb: str, chance: float = 1.0) -> list[str]:
+    """NPC 打玩家一下（反击、主动攻击），chance 是命中率。player.hp 跟着更新，同一回合几个敌人连着打能接上"""
+    if not _roll(chance):
+        return [f"{npc.name}{verb}，没打中{player.name}"]
     armor = _equipped(cur, player, "armor")
     dmg = max(1, npc.template.attack - player.defense - (armor.defense if armor else 0))
     player.hp = max(0, player.hp - dmg)
@@ -659,6 +739,20 @@ def _stealth(player: Player) -> Stealth:
     return st if st and st.room == player.room_id else Stealth(room=player.room_id, chance=DETECT_START)
 
 
+def distance_word(d: int) -> str:
+    return f"{d} 格（{DISTANCE_WORDS.get(d, '离得很远')}）"
+
+
+def _distance(st: Stealth, npc: Npc) -> int:
+    return st.distance.get(str(npc.id), START_DISTANCE)
+
+
+def _set_distance(st: Stealth, npc: Npc, d: int) -> int:
+    d = max(0, min(MAX_DISTANCE, d))
+    st.distance[str(npc.id)] = d
+    return d
+
+
 def _save_stealth(cur: Cursor, player: Player, st: Stealth) -> None:
     cur.execute("update players set stealth = %s where id = %s", (Jsonb(st.model_dump()), player.id))
 
@@ -667,6 +761,21 @@ def _enemies(cur: Cursor, room_id: str) -> list[Npc]:
     """在场、活着的敌人"""
     return [n for n in load_npcs(cur, "n.room_id = %s and n.alive", (room_id,), lock=True)
             if n.template.hostile and n.combatable]
+
+
+def do_maneuver(cur: Cursor, player: Player, view: RoomView, a: Maneuver) -> list[str]:
+    """在同一区域里走近、退开某个 NPC"""
+    npc = _room_npc(cur, view, player, a.target)
+    st = _stealth(player)
+    steps = max(-MAX_STEP, min(MAX_STEP, a.steps))
+    d = _set_distance(st, npc, _distance(st, npc) - steps)
+    _save_stealth(cur, player, st)
+    how = f"朝{npc.name}靠近了 {steps} 格" if steps > 0 else f"从{npc.name}身边退开了 {-steps} 格" if steps else f"在{npc.name}附近挪了挪"
+    return [f"{player.name}{how}，现在离{npc.name} {distance_word(d)}"]
+
+
+def do_dodge(cur: Cursor, player: Player, view: RoomView, a: Dodge) -> list[str]:
+    return [f"{player.name}{a.description or '摆好架势，准备闪避'}"]
 
 
 def do_hide(cur: Cursor, player: Player, view: RoomView, a: Hide) -> list[str]:
@@ -682,35 +791,62 @@ def do_hide(cur: Cursor, player: Player, view: RoomView, a: Hide) -> list[str]:
 
 
 def do_search(cur: Cursor, player: Player, view: RoomView, a: Search) -> list[str]:
-    """四处搜寻：该回来的敌人（到了复活时间）被找出来"""
-    found = _respawn_npcs(cur, player.room_id, found=True)
+    """四处搜寻：该回来的敌人（到了复活时间）被找出来；房间 forage 里的东西（草药）按几率找到，
+    每个人各算各的冷却，不再先到先得"""
     facts = [f"{player.name}尝试：{a.description or '四处搜寻'}"]
-    if found:
-        return facts + [f"{player.name}发现了{'、'.join(found)}"]
-    here = [n.name for n in view.npcs if n.template.hostile]
-    return facts + ([f"{'、'.join(here)}就在这里"] if here else ["什么也没找到"])
+    if found := _respawn_npcs(cur, player.room_id, found=True):
+        facts.append(f"{player.name}发现了{'、'.join(found)}")
+    elif here := [n.name for n in view.npcs if n.template.hostile]:
+        facts.append(f"{'、'.join(here)}就在这里")
+    for f in view.room.props.get("forage", []):
+        cur.execute("select name from item_templates where id = %s", (f["item"],))
+        name = cur.fetchone()["name"]
+        cur.execute(
+            """select 1 from forage_log where player_id = %s and room_id = %s and template_id = %s
+               and found_at > now() - make_interval(secs => %s)""",
+            (player.id, player.room_id, f["item"], f.get("cooldown", FORAGE_COOLDOWN)),
+        )
+        if cur.fetchone():
+            facts.append(f"附近能找的{name}刚被{player.name}采过，一时找不到新的")
+        elif _roll(f.get("chance", FORAGE_CHANCE)):
+            _give_player_new(cur, player, f["item"])
+            cur.execute(
+                """insert into forage_log (player_id, room_id, template_id) values (%s, %s, %s)
+                   on conflict (player_id, room_id, template_id) do update set found_at = now()""",
+                (player.id, player.room_id, f["item"]),
+            )
+            facts.append(f"{player.name}找到了{name}")
+        else:
+            facts.append(f"{player.name}没找到{name}")
+    return facts if len(facts) > 1 else facts + ["什么也没找到"]
 
 
-def enemy_turn(conn: Connection, player_id: UUID, action: PlayerAction, result: ActionResult) -> list[str]:
-    """玩家每个动作之后，同区域的敌人看一眼：没发现就掷骰，发现了就动手。返回敌人这一下的 facts"""
+def enemy_turn(conn: Connection, player_id: UUID, actions: list[PlayerAction], results: list[ActionResult]) -> list[str]:
+    """玩家每发一条消息（一句话里可能有几个动作），同区域的敌人看一眼：没发现就掷骰，发现了就动手一次。
+    返回敌人这一下的 facts"""
+    done = list(zip(actions, results))
     with conn.transaction():
         cur = _cursor(conn)
         player = load_player(cur, player_id, lock=True)
         st = _stealth(player)
-        if action.action == "move" and result.success or action.action == "reject" or player.hp <= 0:
+        if any(a.action == "move" and r.success for a, r in done) or all(a.action == "reject" for a, _ in done)                 or player.hp <= 0:
             return []                   # 刚进门这一下不算；没做成的空话不算；倒下的不管
         alive = _enemies(cur, player.room_id)
         if not alive:
             st = Stealth(room=player.room_id, chance=DETECT_START)   # 敌人都死了，下一只（搜出来、刷回来的）重新算
         # 被放倒、被捆住的看不见也打不了人，正是偷袭的时候
         enemies = [n for n in alive if n.status is None]
-        if action.action in ("attack", "stunt") and result.success:
-            st.detected, st.hidden = bool(alive), False    # 动了手就暴露了，挨的那下就是反击
-            _save_stealth(cur, player, st)
-            return []
-        if action.action in ("say", "talk"):
-            st.hidden = False                       # 出声就藏不住了
-        if not enemies or action.action == "hide" and result.success:
+        hid = dodge = False
+        for a, r in done:                           # 按先后顺序：先躲再动手就暴露，动完手再躲成了就藏住
+            if a.action in ("attack", "stunt") and r.success:
+                st.detected, st.hidden, hid = bool(alive), False, False     # 动了手就暴露了
+            elif a.action in ("say", "talk"):
+                st.hidden = hid = False                                     # 出声就藏不住了
+            elif a.action == "hide" and r.success:
+                st.hidden, st.detected, hid = True, False, True
+            elif a.action == "dodge" and r.success:
+                dodge = True
+        if not enemies or hid:
             _save_stealth(cur, player, st)
             return []
         facts = []
@@ -722,7 +858,16 @@ def enemy_turn(conn: Connection, player_id: UUID, action: PlayerAction, result: 
                 st.chance = round(min(1.0, st.chance + DETECT_STEP), 2)
         if st.detected:
             for npc in enemies:
-                facts += _npc_strike(cur, player, npc, "扑上来攻击")
+                # 挨打那一下刚摆脱状态的，这回合来不及还手
+                if any(f.startswith(f"{npc.name}摆脱了") for r in results for f in r.facts):
+                    continue
+                d = _distance(st, npc)
+                if d > 0:
+                    d = _set_distance(st, npc, d - ENEMY_STEP)
+                    facts.append(f"{npc.name}逼近过来，离{player.name} {distance_word(d)}")
+                if d not in MELEE_HIT:
+                    continue
+                facts += _npc_strike(cur, player, npc, "扑上来攻击", max(0.0, MELEE_HIT[d] - (DODGE_BONUS if dodge else 0)))
                 if player.hp <= 0:
                     break
         _save_stealth(cur, player, st)
@@ -744,6 +889,12 @@ def do_attack(cur: Cursor, player: Player, view: RoomView, a: Attack) -> list[st
     npc = _room_npc(cur, view, player, a.target)
     if not npc.combatable:
         raise ActionError(f"{npc.name}不是能打的对象")
+    if npc.template.hostile:
+        # 近战按距离算命中；敌人以外的 NPC 就在跟前说话，不算距离
+        d = _distance(_stealth(player), npc)
+        if not _roll(MELEE_HIT.get(d, 0)):
+            return [f"{player.name}用{how}攻击{npc.name}，" + (f"隔着 {distance_word(d)}够不着" if d not in MELEE_HIT
+                                                             else f"隔着 {distance_word(d)}，没打中")]
     dmg = max(1, player.attack + (weapon.damage if weapon else 0) - npc.template.defense)
     facts, dead = _hurt_npc(cur, player, npc, dmg)
     facts = [f"{player.name}用{how}攻击{npc.name}，造成 {dmg} 点伤害"] + facts
@@ -825,6 +976,11 @@ def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]
         _set_status(cur, "npcs" if is_npc else "players", target.id, st)
         facts.append(f"{target.name}{st.describe()}")
         stunned = True                                # 刚被放倒、捆住的 NPC 这回合不还手
+    if is_npc and not down and a.knockback > 0 and target.template.hostile:
+        pst = _stealth(player)
+        d = _set_distance(pst, target, _distance(pst, target) + min(MAX_STEP, a.knockback))
+        _save_stealth(cur, player, pst)
+        facts.append(f"{target.name}被弄开了，离{player.name} {distance_word(d)}")
     if exit_:
         room = load_room(cur, exit_["to_room"])
         cur.execute("update players set room_id = %s, following = null, updated_at = now() where id = %s",
@@ -956,6 +1112,15 @@ def do_give(cur: Cursor, player: Player, view: RoomView, a: Give) -> list[str]:
         _move_item(cur, item, player_id=other.id)          # 装备着的会自动卸下
         return [f"{player.name}把{_label(item)}交给了{other.name}"]
     npc = _room_npc(cur, view, player, a.target)
+    # 正好是这个 NPC 的委托要的东西（锈剑交给莉娜）：先留在身上，接下来的 quest_turn 收走并发奖励，
+    # 不然东西进了 NPC 背包，委托就再也触发不了
+    cur.execute(
+        """select 1 from quests q left join player_quests pq on pq.quest_id = q.id and pq.player_id = %s
+           where q.giver = %s and q.needs_item = %s and pq.status is distinct from 'rewarded'""",
+        (player.id, npc.template.id, item.template.id),
+    )
+    if cur.fetchone():
+        return [f"{player.name}把{item.name}递给了{npc.name}"]
     _move_item(cur, item, npc_id=npc.id)
     return [f"{player.name}把{_label(item)}交给了{npc.name}"]
 
@@ -984,7 +1149,7 @@ HANDLERS: dict[str, Callable[..., list[str]]] = {
     "equip": do_equip, "attack": do_attack, "talk": do_talk, "give": do_give, "freeform": do_freeform,
     "say": do_say, "revive": do_revive, "stunt": do_stunt, "struggle": do_struggle,
     "follow": do_follow, "unfollow": do_unfollow, "invite": do_invite, "join": do_join, "leave_party": do_leave_party,
-    "hide": do_hide, "search": do_search, "reject": do_reject,
+    "maneuver": do_maneuver, "dodge": do_dodge, "hide": do_hide, "search": do_search, "reject": do_reject,
 }
 
 
@@ -1013,15 +1178,24 @@ def execute(conn: Connection, view: RoomView, action: PlayerAction) -> ActionRes
 
 
 def execute_all(conn: Connection, view: RoomView, actions: list[PlayerAction]) -> list[ActionResult]:
-    """按顺序执行，前一步失败就中断。每个动作之后同区域的敌人跟着行动（发现、攻击），
-    facts 接在这个动作后面，results 和 actions 仍然一一对应"""
-    results = []
-    for action in actions:
+    """按顺序执行，前一步失败就中断。同区域的敌人每条消息行动一次（发现、攻击），facts 接在最后执行的动作后面，
+    results 和执行了的 actions 一一对应。动作多于 INTERRUPT_AFTER 个时，敌人在第 INTERRUPT_AFTER 个之后就行动，
+    有动静就打断剩下的"""
+    results, enemy_done = [], False
+    for i, action in enumerate(actions, 1):
         result = execute(conn, view, action)
-        result.facts += enemy_turn(conn, view.player.id, action, result)
         results.append(result)
         if not result.success:
             break
+        if i == INTERRUPT_AFTER and len(actions) > i:
+            enemy_done = True
+            enemy = enemy_turn(conn, view.player.id, actions[:i], results)
+            result.facts += enemy
+            if enemy:
+                result.facts.append(f"{view.player.name}被打断了，后面的动作没来得及做")
+                return results
+    if results and not enemy_done:
+        results[-1].facts += enemy_turn(conn, view.player.id, actions[:len(results)], results)
     return results
 
 

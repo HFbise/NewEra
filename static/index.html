@@ -153,7 +153,7 @@ function render(s) {
     ${s.party.length ? `<h2>队伍</h2><ul>${s.party.map(n => `<li>${esc(n)}</li>`).join("")}</ul>` : ""}
     ${s.invites.length ? `<h2>组队邀请</h2><ul>${s.invites.map(n => `<li data-name="${esc(n)}">${esc(n)}<span class="tag">邀请你组队</span></li>`).join("")}</ul>` : ""}
     ${s.items.length ? `<h2>地上</h2><ul>${s.items.map(i => li(i.ref, i.name,
-      i.quantity > 1 ? `<span class="tag">x${i.quantity}</span>` : "")).join("")}</ul>` : ""}
+      i.quantity > 1 ? `<span class="tag">x${i.quantity}</span>` : "", i.fill)).join("")}</ul>` : ""}
     <h2>背包</h2>
     <ul>${s.inventory.map(i => li(i.ref, i.name,
       (i.quantity > 1 ? `<span class="tag">x${i.quantity}</span>` : "") +

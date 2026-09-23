@@ -11,7 +11,8 @@ create table rooms (
   id          text primary key,
   name        text not null,
   description text not null,                     -- 玩家看到的简短描述
-  details     text not null default ''           -- 只给 AI 的环境细节，不能拿、不参与规则，freeform 可以用
+  details     text not null default '',          -- 只给 AI 的环境细节，不能拿、不参与规则，freeform 可以用
+  props       jsonb not null default '{}'        -- forage（搜索能找到的东西）、dispensers（武器桶这类取用处），见 world.yaml
 );
 
 create table item_templates (
@@ -211,6 +212,15 @@ create table spawns (
   check (num_nonnulls(room_id, npc_template) = 1)
 );
 
+-- 搜索找到东西的记录：每个人各算各的冷却，不再先到先得
+create table forage_log (
+  player_id   uuid not null references players(id) on delete cascade,
+  room_id     text not null references rooms(id) on delete cascade,
+  template_id text not null references item_templates(id) on delete cascade,
+  found_at    timestamptz not null default now(),
+  primary key (player_id, room_id, template_id)
+);
+
 -- AI 调用记录：每次调用的 token 数，用来算成本
 create table ai_calls (
   id              bigserial primary key,
@@ -247,6 +257,7 @@ alter table room_features  enable row level security;
 alter table player_log     enable row level security;
 alter table quests         enable row level security;
 alter table player_quests  enable row level security;
+alter table forage_log     enable row level security;
 
 create policy "read static" on rooms          for select to authenticated using (true);
 create policy "read static" on room_exits     for select to authenticated using (true);

@@ -23,11 +23,12 @@ DEFAULT_RESPAWN = 300                   # 物品被拿走后默认多少秒重�
 def _content(cur, world, reset: bool) -> None:
     """房间、物品模板、出口、地形、NPC 模板。reset=False 时不动门锁状态和地形剩余次数"""
     for rid, r in world["rooms"].items():
+        props = {k: r[k] for k in ("forage", "dispensers") if k in r}
         cur.execute(
-            """insert into rooms (id, name, description, details) values (%s, %s, %s, %s)
+            """insert into rooms (id, name, description, details, props) values (%s, %s, %s, %s, %s)
                on conflict (id) do update set name = excluded.name, description = excluded.description,
-                 details = excluded.details""",
-            (rid, r["name"], r["description"], r.get("details", "")),
+                 details = excluded.details, props = excluded.props""",
+            (rid, r["name"], r["description"], r.get("details", ""), Jsonb(props)),
         )
 
     for iid, it in world["items"].items():
@@ -102,10 +103,30 @@ def _content(cur, world, reset: bool) -> None:
     cur.execute("delete from quests where id <> all(%s)", (list(quests),))
 
 
+def _room_items(world) -> dict[tuple[str, str], int]:
+    """房间地上的刷新点 {(房间, 物品): 刷新秒数}。写法：bread 或 {item: bread, respawn: 120}"""
+    return {(rid, e["item"] if isinstance(e, dict) else e):
+            e.get("respawn", DEFAULT_RESPAWN) if isinstance(e, dict) else DEFAULT_RESPAWN
+            for rid, r in world["rooms"].items() for e in r.get("items", [])}
+
+
 def sync(conn, world) -> None:
-    """只同步设定，不动世界状态"""
+    """只同步设定，不动世界状态。房间地上的刷新点对齐 yaml：删掉的连地上那件一起收走，新加的马上放一件"""
     with conn.transaction():
-        _content(conn.cursor(), world, reset=False)
+        cur = conn.cursor()
+        _content(cur, world, reset=False)
+        wanted = _room_items(world)
+        cur.execute("select id, room_id, template_id from spawns where room_id is not null")
+        for sid, rid, item in cur.fetchall():
+            if (rid, item) in wanted:
+                cur.execute("update spawns set respawn_seconds = %s where id = %s", (wanted.pop((rid, item)), sid))
+            else:
+                cur.execute("delete from spawns where id = %s", (sid,))
+                cur.execute("delete from item_instances where room_id = %s and template_id = %s", (rid, item))
+        for (rid, item), respawn in wanted.items():
+            cur.execute("insert into spawns (room_id, template_id, respawn_seconds) values (%s, %s, %s)",
+                        (rid, item, respawn))
+            cur.execute("insert into item_instances (template_id, room_id) values (%s, %s)", (item, rid))
 
 
 def seed(conn, world) -> None:
@@ -125,16 +146,11 @@ def seed(conn, world) -> None:
                     (nid, item, n.get("restock", DEFAULT_RESPAWN)),
                 )
 
+        for (rid, item), respawn in _room_items(world).items():
+            cur.execute("insert into item_instances (template_id, room_id) values (%s, %s)", (item, rid))
+            cur.execute("insert into spawns (room_id, template_id, respawn_seconds) values (%s, %s, %s)",
+                        (rid, item, respawn))
         for rid, r in world["rooms"].items():
-            for entry in r.get("items", []):
-                # 写法：bread 或 {item: bread, respawn: 120}
-                item = entry["item"] if isinstance(entry, dict) else entry
-                respawn = entry.get("respawn", DEFAULT_RESPAWN) if isinstance(entry, dict) else DEFAULT_RESPAWN
-                cur.execute("insert into item_instances (template_id, room_id) values (%s, %s)", (item, rid))
-                cur.execute(
-                    "insert into spawns (room_id, template_id, respawn_seconds) values (%s, %s, %s)",
-                    (rid, item, respawn),
-                )
             for npc_tid in r.get("npcs", []):
                 s = world["npcs"][npc_tid].get("stats") or {}
                 cur.execute(
