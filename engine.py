@@ -25,7 +25,7 @@ from schema import (
     ActionResult, Attack, Drop, Equip, Feature, Follow, Freeform, Give, Invite, ItemInstance, Join, LeaveParty, Look,
     Move, Npc, OtherPlayer, Player, PlayerAction, Reject, Revive, Room, RoomExit, RoomView, Say, Status, Struggle,
     Stunt, Take, Talk, Unfollow, Unequip, Use, dir_name, Dispenser, SLOT_CHOICES, SLOT_NAMES, Dodge, Hide, Maneuver, Search, Stealth,
-    AcceptDuel, Challenge, DeclineDuel, Duel, Flee, SKILL_NAMES, Upgrade,
+    AcceptDuel, Challenge, DeclineDuel, Duel, Flee, SKILL_NAMES, Upgrade, Respawn,
 )
 
 
@@ -35,7 +35,8 @@ AFFINITY_STEP = 5                       # 对话 AI 每次最多调整的好感�
 AFFINITY_RANGE = (-100, 100)
 PARTY_MAX = 5                           # 一支队伍最多几个人
 INVITE_WINDOW = "10 minutes"            # 组队邀请多久内有效
-DOWNED_ALLOWED = {"look", "say"}        # 倒下的人只能看和说话（喊人来救）
+DOWNED_ALLOWED = {"look", "say", "respawn"}   # 倒下的人只能看、说话（喊人来救），或者选择被抬回酒馆
+RESPAWN_ROOM = "tavern"                 # 倒下的人选择复活时默认被抬去的地方
 
 # 创意攻击（stunt）和负面状态。AI 只选档位和难度，数字都在这里
 TIERS = ["none", "light", "heavy", "lethal"]
@@ -1680,6 +1681,27 @@ def do_upgrade(cur: Cursor, player: Player, view: RoomView, a: Upgrade) -> list[
     return facts + [f"升级成功：{item.name}变成了{name}，伤害 {item.damage + 1}"]
 
 
+def do_respawn(cur: Cursor, player: Player, view: RoomView, a: Respawn) -> list[str]:
+    """倒下的人被抬回有看店 NPC 的地方（默认酒馆），NPC 当场扶起来回满血，按倒下的原因说句话"""
+    if player.hp > 0:
+        raise ActionError(f"{player.name}没有倒下，用不着复活")
+    cur.execute(
+        """select distinct r.id, r.name from rooms r join npcs n on n.room_id = r.id join npc_templates t on t.id = n.template_id
+           where n.alive and not t.hostile and t.props ? 'eject_to'""")
+    havens = cur.fetchall()
+    named = next((r for r in havens if a.target and (a.target in r["name"] or r["name"] in a.target)), None)
+    dest = named or next((r for r in havens if r["id"] == RESPAWN_ROOM), None)
+    if dest is None:
+        raise ActionError(f"没有能把{player.name}抬过去照看的地方" + (f"（{a.target}）" if a.target else ""))
+    if dest["id"] == player.room_id:
+        raise ActionError(f"{player.name}已经在{dest['name']}了，等人来扶")
+    cur.execute("update players set room_id = %s, following = null, stealth = null, updated_at = now() where id = %s",
+                (dest["id"], player.id))
+    facts = [f"{player.name}被好心的路人抬回了{dest['name']}"]
+    revived = _keeper_revive(cur, dest["id"])
+    return facts + (revived or [f"{dest['name']}里没人照看，{player.name}还躺着"])
+
+
 def do_say(cur: Cursor, player: Player, view: RoomView, a: Say) -> list[str]:
     if a.target is None:
         return [f"{player.name}说：“{a.message}”"]
@@ -1709,7 +1731,7 @@ HANDLERS: dict[str, Callable[..., list[str]]] = {
     "say": do_say, "revive": do_revive, "stunt": do_stunt, "struggle": do_struggle,
     "follow": do_follow, "unfollow": do_unfollow, "invite": do_invite, "join": do_join, "leave_party": do_leave_party,
     "maneuver": do_maneuver, "dodge": do_dodge, "hide": do_hide, "search": do_search, "reject": do_reject,
-    "upgrade": do_upgrade, "challenge": do_challenge, "accept_duel": do_accept_duel, "decline_duel": do_decline_duel, "flee": do_flee,
+    "upgrade": do_upgrade, "respawn": do_respawn, "challenge": do_challenge, "accept_duel": do_accept_duel, "decline_duel": do_decline_duel, "flee": do_flee,
 }
 
 

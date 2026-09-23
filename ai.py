@@ -184,7 +184,7 @@ def _call(db, player_id: UUID, kind: str, system: str, user: str, fmt: type[Base
 class AIAction(BaseModel):
     """给 AI 的扁平格式，比嵌套 union 好填；回来再转成 PlayerAction 校验"""
     action: Literal["move", "look", "take", "drop", "use", "equip", "unequip", "attack", "talk", "give", "say",
-                    "upgrade", "revive", "invite", "join", "leave_party", "follow", "unfollow", "challenge", "accept_duel",
+                    "upgrade", "respawn", "revive", "invite", "join", "leave_party", "follow", "unfollow", "challenge", "accept_duel",
                     "decline_duel", "flee", "stunt", "struggle",
                     "maneuver", "dodge", "hide", "search", "freeform", "reject"]
     direction: Optional[str] = None
@@ -230,6 +230,7 @@ INTENT_SYSTEM = """你是文字 MUD 游戏的指令解析器。读玩家的输�
 - talk: target（NPC 的 ref），message（玩家说的话，保留原话）。找 NPC 买东西、问价、砍价、点菜、要东西都是 talk
 - give: item（背包物品的 ref），target（NPC 的 ref；给其他玩家时填"其他玩家"里的名字）。给、递、交、送、塞到他手里是 give：东西到了对方手上，吃不吃是他的事。喂他吃、塞进他嘴里（强行的也算）、给他灌下去是 use 不是 give
 - upgrade: item（背包里武器的 ref），target（会升级武器的铁匠 NPC 的 ref）。找铁匠升级、强化、重新锻打自己的武器；问升级要多少钱也是 upgrade（第一次引擎只开价，再说一次才动手）
+- respawn: target 可空（想被抬去的地方名字，不说就是酒馆）。自己倒下了，选择复活、回酒馆、回城
 - say: message（说的话，保留原话），target 可空（对某个玩家说时填"其他玩家"里的名字，对大家说不填）
 - revive: target（"其他玩家"里的名字）。帮倒下的、被捆住的、被打晕的其他玩家都是 revive，不是 freeform 也不是 struggle：急救、包扎、止血、扶起、叫醒、松绑、解开绳子、割断绳子、把人拉出来。用背包里的吃的、药草、酒喂他是 use（target 填他的名字），不是 revive 也不是 stunt。struggle 只用于玩家自己摆脱自己身上的状态
 - invite: target（"其他玩家"里的名字）。邀请对方组队

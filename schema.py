@@ -79,6 +79,12 @@ class Upgrade(BaseModel):
     target: str                         # 铁匠 NPC 的 ref
 
 
+class Respawn(BaseModel):
+    """倒下的人自己选择被抬回有人照看的地方（酒馆、铁匠铺），那里的 NPC 扶起来回满血"""
+    action: Literal["respawn"]
+    target: Optional[str] = None        # 想去哪（地方名字的一部分），不填就是酒馆
+
+
 class Revive(BaseModel):
     """急救倒下的玩家，救起来只有 1 HP"""
     action: Literal["revive"]
@@ -228,7 +234,7 @@ class Reject(BaseModel):
 
 
 PlayerAction = Annotated[
-    Union[Move, Look, Take, Drop, Use, Equip, Unequip, Attack, Talk, Give, Upgrade, Say, Revive, Invite, Join, LeaveParty,
+    Union[Move, Look, Take, Drop, Use, Equip, Unequip, Attack, Talk, Give, Upgrade, Say, Revive, Respawn, Invite, Join, LeaveParty,
           Follow, Unfollow, Challenge, AcceptDuel, DeclineDuel, Flee, Stunt, Struggle, Maneuver, Dodge, Hide, Search,
           Freeform, Reject],
     Field(discriminator="action"),

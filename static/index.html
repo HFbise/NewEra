@@ -140,7 +140,7 @@ function render(s) {
     <h2>${esc(p.name)}</h2>
     <div>HP ${p.hp}/${p.max_hp} · 攻 ${s.attack_total} · 防 ${s.defense_total} · 金币 ${p.gold}</div>
     <div class="hp"><div style="width:${100 * p.hp / p.max_hp}%"></div></div>
-    ${p.hp <= 0 ? `<div class="sys">你倒下了，只能看和说话，等别人来急救</div>` : ""}
+    ${p.hp <= 0 ? `<div class="sys">你倒下了，只能看和说话，等别人来急救；或者输入“复活”被抬回酒馆（“回铁匠铺复活”去莉娜那）</div>` : ""}
     ${s.stealth ? `<div class="sys">${esc(s.stealth)}</div>` : ""}
     ${p.status ? `<div class="sys">你${esc(p.status.label)}，${p.status.kind === "incapacitated" ? "说什么都算挣扎着醒来" : "动不了，试试挣脱"}</div>` : ""}
     ${Object.keys(p.flags).length ? `<div class="tag">标记：${Object.keys(p.flags).map(esc).join("、")}</div>` : ""}

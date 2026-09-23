@@ -106,6 +106,10 @@ def _parse_one(view: RoomView, t: str) -> dict:
     if re.fullmatch(r"挣脱|挣扎|醒来|醒过来|struggle", t, re.I):
         return {"action": "struggle", "description": t}
 
+    # 倒下了选择被抬回酒馆（或者说了去哪）："复活""回酒馆复活""在铁匠铺复活"
+    if m := re.fullmatch(r"(?:(?:在|回|去|到)\s*(.+?)\s*)?(?:复活|重生|回城)|respawn", t, re.I):
+        return {"action": "respawn", "target": m[1]}
+
     if re.fullmatch(r"搜索|搜寻|搜查|找找|四处找找|search", t, re.I):
         return {"action": "search", "description": "四处搜寻"}
     if re.fullmatch(r"闪避|闪躲|躲闪|闪开|dodge", t, re.I):
