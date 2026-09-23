@@ -33,7 +33,7 @@ KEY_VARS = {"zhipu": "ZAI_API_KEY", "gemini": "GEMINI_API_KEY", "claude": "ANTHR
 # 调用出错时服务器捕获这些，退回规则结果
 API_ERRORS = (anthropic.APIError, genai_errors.APIError, ZaiError)
 
-ZHIPU_TIMEOUT = 15                      # 秒；超时算报错，有备用模型就换备用（备用的 4-flash 一般 1 到 3 秒）
+ZHIPU_TIMEOUT = 40                      # 秒；超时算报错，有备用模型就换备用。4.5 慢的时候要二三十秒，给足
 
 _clients: dict = {}
 _action = TypeAdapter(PlayerAction).validate_python
