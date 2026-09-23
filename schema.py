@@ -85,6 +85,11 @@ class Respawn(BaseModel):
     target: Optional[str] = None        # 想去哪（地方名字的一部分），不填就是酒馆
 
 
+class Stand(BaseModel):
+    """倒地（被绊倒、掀翻）后爬起来：不用掷骰，但占掉这一下"""
+    action: Literal["stand"]
+
+
 class Revive(BaseModel):
     """急救倒下的玩家，救起来只有 1 HP"""
     action: Literal["revive"]
@@ -157,7 +162,8 @@ SKILL_NAMES = {"acrobatics": "体操", "animal": "驯兽", "athletics": "运动"
 Skill = Literal["acrobatics", "animal", "athletics", "sleight", "stealth", "investigation", "nature", "perception",
                 "survival", "medicine"]
 Tier = Literal["none", "light", "heavy", "lethal"]      # 无伤 / 轻伤 / 重伤 / 致命
-StatusKind = Literal["incapacitated", "restrained"]     # 失去战斗能力（昏迷、砸晕） / 束缚（捆住、压住）
+# 失去战斗能力（昏迷、砸晕） / 束缚（捆住、压住） / 倒地（绊倒、扫腿、掀翻：站起来之前不能走、不能打）
+StatusKind = Literal["incapacitated", "restrained", "prone"]
 
 
 class Stunt(BaseModel):
@@ -234,7 +240,7 @@ class Reject(BaseModel):
 
 
 PlayerAction = Annotated[
-    Union[Move, Look, Take, Drop, Use, Equip, Unequip, Attack, Talk, Give, Upgrade, Say, Revive, Respawn, Invite, Join, LeaveParty,
+    Union[Move, Look, Take, Drop, Use, Equip, Unequip, Attack, Talk, Give, Upgrade, Say, Revive, Respawn, Stand, Invite, Join, LeaveParty,
           Follow, Unfollow, Challenge, AcceptDuel, DeclineDuel, Flee, Stunt, Struggle, Maneuver, Dodge, Hide, Search,
           Freeform, Reject],
     Field(discriminator="action"),
@@ -398,7 +404,8 @@ class Status(BaseModel):
     since: Optional[str] = None         # 施加时间（ISO），超过 engine.STATUS_MAX 自动解除
 
     def describe(self) -> str:
-        return f"{self.label}，" + ("失去战斗能力" if self.kind == "incapacitated" else "动弹不得")
+        return f"{self.label}，" + {"incapacitated": "失去战斗能力", "restrained": "动弹不得",
+                                     "prone": "倒在地上，还没爬起来"}[self.kind]
 
 
 class Feature(BaseModel):

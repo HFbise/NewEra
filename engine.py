@@ -25,7 +25,7 @@ from schema import (
     ActionResult, Attack, Drop, Equip, Feature, Follow, Freeform, Give, Invite, ItemInstance, Join, LeaveParty, Look,
     Move, Npc, OtherPlayer, Player, PlayerAction, Reject, Revive, Room, RoomExit, RoomView, Say, Status, Struggle,
     Stunt, Take, Talk, Unfollow, Unequip, Use, dir_name, Dispenser, SLOT_CHOICES, SLOT_NAMES, Dodge, Hide, Maneuver, Search, Stealth,
-    AcceptDuel, Challenge, DeclineDuel, Duel, Flee, SKILL_NAMES, Upgrade, Respawn,
+    AcceptDuel, Challenge, DeclineDuel, Duel, Flee, SKILL_NAMES, Upgrade, Respawn, Stand,
 )
 
 
@@ -48,6 +48,9 @@ STATUS_MAX = "3 minutes"                # 负面状态最长多久自动解除�
 # 被束缚时做不了的动作；失去战斗能力时只能挣脱（醒来）
 RESTRAINED_BLOCKED = {"move", "attack", "stunt", "take", "drop", "equip", "unequip", "use", "give", "revive", "hide", "search",
                       "maneuver", "dodge", "flee"}
+# 倒地时做不了的（得先站起来）；吃喝、说话、看、换装备都行
+PRONE_BLOCKED = {"move", "attack", "stunt", "maneuver", "dodge", "flee", "hide", "search", "take", "revive", "respawn"}
+PRONE_HIT_BONUS = 0.20                  # 打倒在地上的目标，近战命中率加这么多
 
 # 敌人发现玩家：进门时几率 DETECT_START，之后玩家每发一条消息掷一次骰，没被发现就涨 DETECT_STEP（躲着不涨）。
 # 被发现了，在场能动的敌人每条消息都打他一下（一句话拆成几个动作也只算一次，太长会被打断，见 INTERRUPT_AFTER）
@@ -856,14 +859,25 @@ def _eat_effect(cur: Cursor, eater: Player, item: ItemInstance, user: Player) ->
         facts.append(f"{eater.name}酒醒了，脑子清楚了")
     elif _prop(item, "alcohol") or "酒" in item.name:
         # 连着喝第几杯：上一杯在 DRINK_WINDOW 里就接着数，否则从 1 开始
+        # 烈酒（props.strength）一杯顶几杯
         cur.execute(f"""update players set drinks = case when last_drink_at > now() - interval '{DRINK_WINDOW}'
-                                                         then drinks + 1 else 1 end, last_drink_at = now()
-                        where id = %s returning drinks""", (eater.id,))
+                                                         then drinks else 0 end + %s, last_drink_at = now()
+                        where id = %s returning drinks""", (_prop(item, "strength") or 1, eater.id))
         n = cur.fetchone()["drinks"]
         if hp > 0 and _roll(min(1.0, DRUNK_CHANCE * 2 ** (n - 1))):
             cur.execute(f"update players set drunk_until = now() + interval '{DRUNK_TIME}' where id = %s", (eater.id,))
             facts.append(f"{eater.name}喝醉了（连着喝了 {n} 杯）：接下来一阵子说话含糊，做什么都不太利索")
     return facts
+
+
+def _subdued(target: Any) -> bool:
+    """被放倒、捆住了，任人摆布（能补刀、能灌药）；只是摔倒在地的还能挣扎，不算"""
+    return target.status is not None and target.status.kind != "prone"
+
+
+def _prone_bonus(target: Any, d: int) -> float:
+    """打倒在地上的（被绊倒的）更容易打中；够不着的还是够不着"""
+    return PRONE_HIT_BONUS if d in MELEE_HIT and target.status and target.status.kind == "prone" else 0.0
 
 
 def _drunk(player: Player) -> float:
@@ -893,7 +907,7 @@ def _feed(cur: Cursor, player: Player, item: ItemInstance, name: str) -> list[st
     target, awake = _room_player(cur, player, name, lock=True)
     if not awake:
         raise ActionError(f"{target.name}睡着了，喂不进去")
-    helpless = target.hp <= 0 or target.status is not None
+    helpless = target.hp <= 0 or _subdued(target)
     mate = bool(player.party_id and player.party_id == target.party_id)
     if (item.harm or item.knockout) and not helpless and not mate:
         # 强行塞嘴里也一样：清醒的人会挣扎吐掉，得先把他放倒、捆住
@@ -1122,6 +1136,8 @@ def _npc_counter(cur: Cursor, player: Player, npc: Npc) -> list[str]:
     """NPC 挨打后反击。身上有负面状态就不还手，按施加时的挣脱难度看这回合能不能恢复"""
     if npc.status:
         st = npc.status
+        if st.kind == "prone":
+            return [f"{npc.name}还倒在地上，没法还手"]
         if _roll(_escape_chance(st.escape, st.attempts)):
             _set_status(cur, "npcs", npc.id, None)
             return [f"{npc.name}摆脱了“{st.label}”的状态，但这回合来不及还手"]
@@ -1279,7 +1295,7 @@ def enemy_turn(conn: Connection, player_id: UUID, actions: list[PlayerAction], r
                 dodge = True
         if not enemies or hid:
             _save_stealth(cur, player, st)
-            return []
+            return _enemies_stand(cur, alive)
         facts = []
         if not st.detected:
             if _roll(st.chance):
@@ -1306,7 +1322,17 @@ def enemy_turn(conn: Connection, player_id: UUID, actions: list[PlayerAction], r
                 if player.hp <= 0:
                     break
         _save_stealth(cur, player, st)
-        return facts
+        return facts + _enemies_stand(cur, alive)
+
+
+def _enemies_stand(cur: Cursor, alive: list[Npc]) -> list[str]:
+    """被绊倒的敌人这条消息没法扑上来，消息结束时自己爬起来"""
+    facts = []
+    for n in alive:
+        if n.status and n.status.kind == "prone":
+            _set_status(cur, "npcs", n.id, None)
+            facts.append(f"{n.name}从地上爬了起来")
+    return facts
 
 
 def do_attack(cur: Cursor, player: Player, view: RoomView, a: Attack) -> list[str]:
@@ -1326,7 +1352,8 @@ def do_attack(cur: Cursor, player: Player, view: RoomView, a: Attack) -> list[st
         if dodged:
             cur.execute("update duels set dodging = array_remove(dodging, %s) where challenger = %s",
                         (target.id, duel["challenger"]))
-        if not _roll(max(0.0, MELEE_HIT.get(d, 0) - (_dodge_bonus(target) if dodged else 0) - _drunk(player))):
+        if not _roll(max(0.0, MELEE_HIT.get(d, 0) - (_dodge_bonus(target) if dodged else 0) - _drunk(player)
+                         + _prone_bonus(target, d))):
             return [f"{player.name}用{how}攻击{target.name}，" + (f"隔着 {distance_word(d)}够不着" if d not in MELEE_HIT
                                                                 else f"隔着 {distance_word(d)}，没打中")]
         dmg = max(1, power - _defense(cur, target))
@@ -1339,7 +1366,7 @@ def do_attack(cur: Cursor, player: Player, view: RoomView, a: Attack) -> list[st
     if npc.template.hostile:
         # 近战按距离算命中；敌人以外的 NPC 就在跟前说话，不算距离
         d = _distance(_stealth(player), npc)
-        if not _roll(max(0.0, MELEE_HIT.get(d, 0) - _drunk(player))):
+        if not _roll(max(0.0, MELEE_HIT.get(d, 0) - _drunk(player) + _prone_bonus(npc, d))):
             return [f"{player.name}用{how}攻击{npc.name}，" + (f"隔着 {distance_word(d)}够不着" if d not in MELEE_HIT
                                                              else f"隔着 {distance_word(d)}，没打中")]
     dmg = max(1, power - npc.template.defense)
@@ -1417,7 +1444,7 @@ def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]
         _consume(cur, material)
         facts.append(f"{material.name}用掉了")
     skill, diff, finisher = a.skill, a.difficulty, False
-    helpless = (target.status is not None) if is_npc else (target.status is not None or target.hp <= 0)
+    helpless = _subdued(target) or (not is_npc and target.hp <= 0)
     # 一击毙命、直接打晕（扭断脖子、一拳打晕）：不借地形、不用药，对方又有防备，这种事不可能成。
     # 对方已经倒下、被放倒、被捆住就照常补刀；敌人还没发现你是偷袭，按隐匿判，难度至少 4，得手就照判的档位来
     # 泼出去、撒出去的东西（酒迷眼、石灰）跟下毒一样是实打实的手段，不算徒手一招制敌
@@ -1508,12 +1535,23 @@ def _push_target(cur: Cursor, player: Player, name: str) -> tuple[Player, bool]:
     return target, mate or target.hp <= 0
 
 
+def do_stand(cur: Cursor, player: Player, view: RoomView, a: Stand) -> list[str]:
+    """倒地后爬起来：不用掷骰，这一下就花在站起来上了"""
+    st = player.status
+    if st is None or st.kind != "prone":
+        raise ActionError(f"{player.name}没有倒在地上" + (f"，而是{st.describe()}" if st else ""))
+    _set_status(cur, "players", player.id, None)
+    return [f"{player.name}从地上爬了起来"]
+
+
 def do_struggle(cur: Cursor, player: Player, view: RoomView, a: Struggle) -> list[str]:
     """挣脱（体操）、醒来（不靠技能）。AI 看玩家怎么做判这次的难度，但不能比施加时判的容易超过一级；
     每失败一次难度降一级"""
     st = player.status
     if st is None:
         raise ActionError(f"{player.name}没有被困住，用不着挣脱")
+    if st.kind == "prone":
+        return do_stand(cur, player, view, Stand(action="stand"))
     diff = max(1, max(a.difficulty, st.escape - 1) - st.attempts)
     ok, rolled = _check(cur, player, view, "acrobatics" if st.kind == "restrained" else None, diff)
     facts = [f"{player.name}尝试：{a.description or '挣脱'}"] + rolled
@@ -1734,7 +1772,7 @@ HANDLERS: dict[str, Callable[..., list[str]]] = {
     "say": do_say, "revive": do_revive, "stunt": do_stunt, "struggle": do_struggle,
     "follow": do_follow, "unfollow": do_unfollow, "invite": do_invite, "join": do_join, "leave_party": do_leave_party,
     "maneuver": do_maneuver, "dodge": do_dodge, "hide": do_hide, "search": do_search, "reject": do_reject,
-    "upgrade": do_upgrade, "respawn": do_respawn, "challenge": do_challenge, "accept_duel": do_accept_duel, "decline_duel": do_decline_duel, "flee": do_flee,
+    "upgrade": do_upgrade, "respawn": do_respawn, "stand": do_stand, "challenge": do_challenge, "accept_duel": do_accept_duel, "decline_duel": do_decline_duel, "flee": do_flee,
 }
 
 
@@ -1750,9 +1788,10 @@ def execute(conn: Connection, view: RoomView, action: PlayerAction) -> ActionRes
                 if player.hp <= 0 and action.action not in DOWNED_ALLOWED:
                     raise ActionError(f"{player.name}已经倒下了，动弹不得，只能等人急救")
                 st = player.status
-                if st and (action.action in RESTRAINED_BLOCKED
+                if st and (st.kind == "restrained" and action.action in RESTRAINED_BLOCKED
+                           or st.kind == "prone" and action.action in PRONE_BLOCKED
                            or st.kind == "incapacitated" and action.action != "struggle"):
-                    raise ActionError(f"{player.name}{st.label}，做不到")
+                    raise ActionError(f"{player.name}{st.label}，" + ("得先站起来" if st.kind == "prone" else "做不到"))
                 facts = HANDLERS[action.action](cur, player, view, action)
             return ActionResult(action=action.action, success=True, facts=facts)
         except ActionError as e:

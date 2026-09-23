@@ -184,6 +184,25 @@ items:
     name: 武器
     description: NPC 现打的武器。
     type: weapon
+  # 麦琪吧台上的酒（她的 sells），人设里常提的那几样
+  dwarf_stout:
+    name: 矮人黑啤
+    description: 盛在厚木杯里的黑啤，泡沫像奶油一样绵密，麦芽的焦香里带点苦，据说是按矮人的老方子酿的。
+    type: consumable
+    heal: 2
+    props: {alcohol: true}
+  elf_mead:
+    name: 精灵蜜酒
+    description: 细颈玻璃瓶里金黄透亮的蜜酒，入口清甜，带着野花和松针的香气，后劲绵长。
+    type: consumable
+    heal: 4
+    props: {alcohol: true, price: 6}
+  dragon_breath:
+    name: 龙息烈酒
+    description: 装在黑陶小盅里的烈酒，点火就着，一口下去喉咙像着了火，胸口却暖得发烫。一杯顶别人的两杯。
+    type: consumable
+    heal: 3
+    props: {alcohol: true, strength: 2, price: 10}   # 喝醉几率按两杯算
   sober_potion:
     name: 解酒药
     description: 麦琪自己熬的醒酒汤，装在小陶瓶里，闻着又苦又冲，一口下去酒意全消。
@@ -222,7 +241,7 @@ npcs:
         misc: {}
       # 玩家闹事时能把人轰出去：从这个出口扔出去。不写就不能轰人
       # 吧台上的货，价钱由 AI 按建议价浮动
-      sells: [sober_potion]
+      sells: [dwarf_stout, elf_mead, dragon_breath, sober_potion]
       eject_to: south
       # 店里有人倒下时扶起来回满血，按倒下的原因说一句（{name} 倒下的人，{by} 打倒他的怪、人或者吃下的东西）
       revive_lines:

@@ -184,7 +184,7 @@ def _call(db, player_id: UUID, kind: str, system: str, user: str, fmt: type[Base
 class AIAction(BaseModel):
     """给 AI 的扁平格式，比嵌套 union 好填；回来再转成 PlayerAction 校验"""
     action: Literal["move", "look", "take", "drop", "use", "equip", "unequip", "attack", "talk", "give", "say",
-                    "upgrade", "respawn", "revive", "invite", "join", "leave_party", "follow", "unfollow", "challenge", "accept_duel",
+                    "upgrade", "respawn", "stand", "revive", "invite", "join", "leave_party", "follow", "unfollow", "challenge", "accept_duel",
                     "decline_duel", "flee", "stunt", "struggle",
                     "maneuver", "dodge", "hide", "search", "freeform", "reject"]
     direction: Optional[str] = None
@@ -230,9 +230,10 @@ INTENT_SYSTEM = """你是文字 MUD 游戏的指令解析器。读玩家的输�
 - talk: target（NPC 的 ref），message（玩家说的话，保留原话）。找 NPC 买东西、问价、砍价、点菜、要东西都是 talk
 - give: item（背包物品的 ref），target（NPC 的 ref；给其他玩家时填"其他玩家"里的名字）。给、递、交、送、塞到他手里是 give：东西到了对方手上，吃不吃是他的事。喂他吃、塞进他嘴里（强行的也算）、给他灌下去是 use 不是 give
 - upgrade: item（背包里武器的 ref），target（会升级武器的铁匠 NPC 的 ref）。找铁匠升级、强化、重新锻打自己的武器；问升级要多少钱也是 upgrade（第一次引擎只开价，再说一次才动手）
+- stand: 不用填字段。自己倒在地上（被绊倒、掀翻）时爬起来、站起来、起身
 - respawn: target 可空（想被抬去的地方名字，不说就是酒馆）。自己倒下了，选择复活、回酒馆、回城
 - say: message（说的话，保留原话），target 可空（对某个玩家说时填"其他玩家"里的名字，对大家说不填）
-- revive: target（"其他玩家"里的名字）。帮倒下的、被捆住的、被打晕的其他玩家都是 revive，不是 freeform 也不是 struggle：急救、包扎、止血、扶起、叫醒、松绑、解开绳子、割断绳子、把人拉出来。用背包里的吃的、药草、酒喂他是 use（target 填他的名字），不是 revive 也不是 stunt。struggle 只用于玩家自己摆脱自己身上的状态
+- revive: target（"其他玩家"里的名字）。帮倒下的、被捆住的、被打晕的其他玩家都是 revive，不是 freeform 也不是 struggle：急救、包扎、止血、扶起、叫醒、松绑、解开绳子、割断绳子、把人拉出来。用背包里的吃的、药草、酒喂他是 use（target 填他的名字），不是 revive 也不是 stunt。struggle 只用于玩家自己摆脱自己身上的状态（倒地的是 stand）
 - invite: target（"其他玩家"里的名字）。邀请对方组队
 - join: target（"邀请你组队的人"里的名字）。接受邀请、加入对方的队伍
 - leave_party: 不用填字段。离开、退出队伍
@@ -251,7 +252,7 @@ INTENT_SYSTEM = """你是文字 MUD 游戏的指令解析器。读玩家的输�
   - push：把对方推、踹、扔、拖进某个出口时填那个出口的英文名，做成了对方就到了那边（只能对其他玩家，队友、倒下的人也行）。门锁着的话同一句里要先 use 钥匙开门，比如"开门把他踹进去"是 use 加 stunt（push 填 down）
   - skill 和 difficulty：必填，用哪个技能、难度几级，规则见下面"技能判定"。伤得越重引擎会自动抬高难度下限，你只管照实判
   - tier：做成时的伤害 none（不伤人，比如捆绑）/ light（轻伤）/ heavy（重伤）/ lethal（足以致命），照实判断，规则会按地形限幅
-  - status：做成时对方陷入的负面状态，不会就不填。incapacitated = 失去战斗能力（砸晕、打昏、呛晕）；restrained = 被束缚（捆住、压住、缠住）
+  - status：做成时对方陷入的负面状态，不会就不填。incapacitated = 失去战斗能力（砸晕、打昏、呛晕）；restrained = 被束缚（捆住、压住、缠住）；prone = 倒地（绊倒、扫腿、掀翻、撞倒、推倒在地，站起来之前不能走也不能打）。玩家说了绊倒、放倒在地这类，就一定要填 prone，不能只写伤害；飞踢加绊倒这种是一个 stunt，tier 按踢的伤害、status 填 prone
   - 捆人、缠住（restrained）必须用"可利用地形"或背包里真有、而且合理能拿来捆人的东西，填上 feature 或 item。你来判断合不合理：绳子、腰带、布条、锁链、藤蔓、皮带、布衣能捆；面包、硬币、钥匙、酒杯这种捆不了。玩家点名了用什么（"用绳子捆"），就得是背包或地形里的那样东西（"井上的麻绳"也算绳子），没有就 reject，不要拿别的东西顶替；只说"把他捆起来"没点名，就从背包、地形里挑一样合理的。环境描述里的东西拿不走，地形和背包里都没有能捆人的东西，就不能捆：输出 reject，reason 写没有能用来捆人的东西
   - status_label：状态的说法，简短，如"被石头砸晕了""被绳子捆住了"。泼酒、撒沙、撒石灰迷眼是短暂的 incapacitated，写"被迷了眼"这类，不要写成晕了，escape 填 1；escape：这个状态挣脱或醒来的难度 1 到 10（松松绕两圈是 1，捆得结结实实是 3，铁链锁住是 5）
 - struggle: description（第三人称简述怎么挣脱的），difficulty（这次挣脱或醒来的难度 1 到 10，看方法合不合理、状态有多严重）。玩家自己带着负面状态时想摆脱它就是 struggle；失去战斗能力时说什么做什么都算 struggle（挣扎着醒来）
@@ -349,7 +350,7 @@ def stealth_text(view: RoomView) -> str:
 JUDGE_WORDS = {
     "容易": "easy", "简单": "easy", "普通": "normal", "一般": "normal", "中等": "normal", "困难": "hard", "难": "hard",
     "无": "none", "无伤": "none", "轻伤": "light", "重伤": "heavy", "致命": "lethal",
-    "失去战斗能力": "incapacitated", "昏迷": "incapacitated", "束缚": "restrained",
+    "失去战斗能力": "incapacitated", "昏迷": "incapacitated", "束缚": "restrained", "倒地": "prone", "摔倒": "prone",
 }
 
 
