@@ -70,9 +70,9 @@ INTERRUPT_AFTER = 2
 # 徒手一击毙命、直接打晕：敌人没发现你时的偷袭成功率；对方有防备就是 0
 ASSASSINATE_CHANCE = 0.10
 
-# 搜索找东西（world.yaml 房间 forage）的默认几率和冷却秒数：每个人找到一次后隔一阵才能再找到
+# 搜索找东西（world.yaml 房间 forage）的默认几率和冷却秒数：默认一搜就有、不冷却，房间里可以单独配
 FORAGE_CHANCE = 1.0
-FORAGE_COOLDOWN = 120
+FORAGE_COOLDOWN = 0
 
 
 class ActionError(Exception):
@@ -249,16 +249,16 @@ def _refresh_room(cur: Cursor, room_id: str) -> None:
 
 
 def _respawn_npcs(cur: Cursor, room_id: str, found: bool = False) -> list[str]:
-    """NPC 死了 respawn_seconds 秒后原地复活，返回复活的名字。
-    有醒着的玩家在场时不凭空冒出来，要有人搜寻（found=True）才找得到；没人在场就悄悄回来"""
+    """NPC 死了 respawn_seconds 秒后，没有醒着的玩家在场就悄悄原地复活；
+    有人搜寻（found=True）就不用等，直接找出来。返回复活的名字"""
     cur.execute(
         f"""update npcs n set alive = true, hp = t.max_hp, died_at = null, status = null
             from npc_templates t
             where t.id = n.template_id and n.room_id = %s and not n.alive
               and t.props ? 'respawn_seconds'
-              and n.died_at < now() - make_interval(secs => (t.props->>'respawn_seconds')::int)
-              and (%s or not exists (select 1 from players p where p.room_id = n.room_id
-                                     and p.last_active_at > now() - interval '{ONLINE_WINDOW}'))
+              and (%s or n.died_at < now() - make_interval(secs => (t.props->>'respawn_seconds')::int)
+                   and not exists (select 1 from players p where p.room_id = n.room_id
+                                   and p.last_active_at > now() - interval '{ONLINE_WINDOW}'))
             returning t.name""",
         (room_id, found),
     )
@@ -840,24 +840,13 @@ def do_hide(cur: Cursor, player: Player, view: RoomView, a: Hide) -> list[str]:
 
 
 def do_search(cur: Cursor, player: Player, view: RoomView, a: Search) -> list[str]:
-    """四处搜寻：该回来的敌人（到了复活时间）被找出来；房间 forage 里的东西（草药）按几率找到，
-    每个人各算各的冷却，不再先到先得"""
+    """四处搜寻：死了的敌人不用等复活时间，直接找出来；房间 forage 里的东西（草药）找到放进背包，
+    有冷却的每个人各算各的，不先到先得"""
     facts = [f"{player.name}尝试：{a.description or '四处搜寻'}"]
     if found := _respawn_npcs(cur, player.room_id, found=True):
         facts.append(f"{player.name}发现了{'、'.join(found)}")
     elif here := [n.name for n in view.npcs if n.template.hostile]:
         facts.append(f"{'、'.join(here)}就在这里")
-    else:
-        # 敌人死了还没到复活时间：说清楚还要等多久，免得玩家以为是运气不好
-        cur.execute(
-            """select t.name, ceil((t.props->>'respawn_seconds')::int
-                                   - extract(epoch from now() - n.died_at))::int as wait
-               from npcs n join npc_templates t on t.id = n.template_id
-               where n.room_id = %s and not n.alive and t.hostile and t.props ? 'respawn_seconds'""",
-            (player.room_id,),
-        )
-        for r in cur.fetchall():
-            facts.append(f"{r['name']}刚被打跑，还没回来（大概还要 {max(1, r['wait'])} 秒）")
     for f in view.room.props.get("forage", []):
         cur.execute("select name from item_templates where id = %s", (f["item"],))
         name = cur.fetchone()["name"]
@@ -868,7 +857,7 @@ def do_search(cur: Cursor, player: Player, view: RoomView, a: Search) -> list[st
         )
         if cur.fetchone():
             facts.append(f"附近能找的{name}刚被{player.name}采过，一时找不到新的")
-        elif _roll(f.get("chance", FORAGE_CHANCE)):
+        elif (chance := f.get("chance", FORAGE_CHANCE)) >= 1 or _roll(chance):
             _give_player_new(cur, player, f["item"])
             cur.execute(
                 """insert into forage_log (player_id, room_id, template_id) values (%s, %s, %s)
