@@ -35,6 +35,8 @@ app.include_router(admin.router)
 
 # 这些动作的回合不调叙事 AI：facts 已经说清楚了，AI 反而容易替别的玩家编动作
 NO_NARRATION = {"say", "follow", "unfollow", "invite", "join", "leave_party"}
+# NPC 对话里这些结果旁人也看得到（交东西、提委托、轰人），跟在对话原文后面
+NPC_OUTCOMES = {"npc_give", "npc_create", "quest", "npc_eject"}
 
 
 class LoginReq(BaseModel):
@@ -330,7 +332,8 @@ def run_turn(req: CommandReq):
         try:
             # NPC 身上有能给的东西、或者能现造东西时，先单独决定给不给，执行完变成 fact，叙事再照着写
             if giveable or creatable:
-                give_id, made, u = ai.decide_give(pool, view, req.text, npc, giveable, creatable, affinity, memory)
+                give_id, made, u = ai.decide_give(pool, view, req.text, npc, giveable, creatable, affinity, memory,
+                                                  recent)
                 add(u)
                 if give_id or made:
                     with pool.connection() as conn:
@@ -362,6 +365,11 @@ def run_turn(req: CommandReq):
             # 叙事判定 NPC 把玩家轰出去：叙事和旁人描述已经写了，这里真的挪人（门外那边的人会看到他被轰出来）
             if out.eject and (kicked := engine.npc_eject(conn, pid, npc)):
                 results.append(kicked)
+            # 跟 NPC 的对话给同房间的人看原文，大家能接着聊，NPC 下回合也能从最近动态里看到别人说了什么
+            if talk and out.npc_reply:
+                observer = "\n".join(
+                    [f"{name}对{npc.name}说：“{talk.message}”", f"{npc.name}：“{out.npc_reply}”"]
+                    + [f for r in results if r.success and r.action in NPC_OUTCOMES for f in r.facts])
         with conn.transaction():
             conn.execute(
                 """insert into events (room_id, player_id, kind, facts, narrative, observer, input, meta)
@@ -393,7 +401,7 @@ def run_turn(req: CommandReq):
     }}
 
 
-def _recent_events(conn, room_id: str, player_id: UUID, limit: int = 5) -> list[str]:
+def _recent_events(conn, room_id: str, player_id: UUID, limit: int = 6) -> list[str]:
     """这个房间最近 10 分钟里别人的动态，给叙事 AI 接上下文"""
     rows = conn.execute(
         """select observer from events
