@@ -4,7 +4,7 @@ start_room: square
 #   房间 items 写成 {item: 物品, respawn: 秒}，被拿走后多久在原处重新出现；只写物品名就是默认 300 秒
 #   出口 relock: 秒，打开后多久自动锁回去
 #   NPC respawn: 秒，死后多久复活；restock: 秒，身上 inventory 给出去后多久补回来（默认 300）
-#   房间 forage: [{item, chance, cooldown}]，"搜索"时按几率找到，每个人找到后隔 cooldown 秒才能再找到（各算各的，不先到先得）
+#   房间 forage: [{item, chance, cooldown}]，"搜索"时按几率找到（chance 1.0 就是一定找到），每个人找到后隔 cooldown 秒才能再找到（各算各的，不先到先得）
 #   房间 dispensers: {key: {name, description, item, unless, where, once}}，武器桶这类取用处：身上有 item 或 unless 里的东西就不能拿；
 #     once: true 是每人一辈子只能拿一次（丢了也不能再拿）；where 是"里"（桶里）或"上"（桌上）
 
@@ -93,7 +93,7 @@ rooms:
     exits:
       north: {to: square}
       south: {to: forest_edge}
-    forage: [{item: herb, chance: 0.6, cooldown: 120}]
+    forage: [{item: herb, chance: 1.0, cooldown: 120}]
 
   forest_edge:
     name: 森林边缘

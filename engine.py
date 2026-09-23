@@ -71,7 +71,7 @@ INTERRUPT_AFTER = 2
 ASSASSINATE_CHANCE = 0.10
 
 # 搜索找东西（world.yaml 房间 forage）的默认几率和冷却秒数：每个人找到一次后隔一阵才能再找到
-FORAGE_CHANCE = 0.6
+FORAGE_CHANCE = 1.0
 FORAGE_COOLDOWN = 120
 
 
@@ -122,7 +122,11 @@ def forage_labels(cur: Cursor, room: Room) -> list[str]:
         return []
     cur.execute("select id, name from item_templates where id = any(%s)", ([f["item"] for f in forage],))
     names = {r["id"]: r["name"] for r in cur.fetchall()}
-    return [f"{names[f['item']]}（搜索，{round(f.get('chance', FORAGE_CHANCE) * 100)}%）" for f in forage]
+    labels = []
+    for f in forage:
+        chance = f.get("chance", FORAGE_CHANCE)
+        labels.append(f"{names[f['item']]}（搜索）" if chance >= 1 else f"{names[f['item']]}（搜索，{round(chance * 100)}%）")
+    return labels
 
 
 def load_dispensers(cur: Cursor, room: Room, player_id: UUID) -> list[Dispenser]:
@@ -843,6 +847,17 @@ def do_search(cur: Cursor, player: Player, view: RoomView, a: Search) -> list[st
         facts.append(f"{player.name}发现了{'、'.join(found)}")
     elif here := [n.name for n in view.npcs if n.template.hostile]:
         facts.append(f"{'、'.join(here)}就在这里")
+    else:
+        # 敌人死了还没到复活时间：说清楚还要等多久，免得玩家以为是运气不好
+        cur.execute(
+            """select t.name, ceil((t.props->>'respawn_seconds')::int
+                                   - extract(epoch from now() - n.died_at))::int as wait
+               from npcs n join npc_templates t on t.id = n.template_id
+               where n.room_id = %s and not n.alive and t.hostile and t.props ? 'respawn_seconds'""",
+            (player.room_id,),
+        )
+        for r in cur.fetchall():
+            facts.append(f"{r['name']}刚被打跑，还没回来（大概还要 {max(1, r['wait'])} 秒）")
     for f in view.room.props.get("forage", []):
         cur.execute("select name from item_templates where id = %s", (f["item"],))
         name = cur.fetchone()["name"]
