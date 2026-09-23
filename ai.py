@@ -652,24 +652,51 @@ ROLEPLAY_SYSTEM = """你在文字 MUD 游戏里扮演一个 NPC，只写她这�
 - 不向他讨要他身上的东西（买卖报价除外），生气、要他赔罪也用嘴说，不索要物品"""
 
 
+# 玩家问这儿能干什么、你是做什么的：NPC 得把能办的事都说到（住店、升级这种不说玩家就不知道）
+ASK_SERVICE_RE = re.compile(r"能干什么|能做什么|能干嘛|干什么的|做什么的|干嘛的|有什么(服务|能|可以|好|卖)|能帮我|提供什么|"
+                            r"这里是|这儿是|这是哪|你是谁|都卖什么|卖些什么|卖什么|介绍|怎么玩|有啥")
+CREATE_WORDS = {"food": "吃的", "drink": "喝的", "misc": "小玩意（绳子、布条这种）", "weapon": "武器"}
+
+
+def npc_services(npc: Npc, sells: Optional[list[dict]] = None) -> list[str]:
+    """NPC 这儿能办的事，按 world.yaml 的 props 列出来"""
+    p = npc.template.props
+    out = []
+    if sells:
+        out.append("卖" + "、".join(s["name"] for s in sells))
+    if kinds := [CREATE_WORDS.get(k, k) for k in p.get("creates", {})]:
+        out.append("按客人要求现做" + "、".join(kinds))
+    if inn := p.get("inn"):
+        out.append(f"住店，一晚 {inn.get('price', 0)} 金币，价钱固定不讲价，睡一觉回满体力、醒酒（他说一句“住店”就能住）")
+    if p.get("upgrades"):
+        out.append("帮人升级武器，每升一级更锋利，但级数越高越容易在淬火时碎掉")
+    return out
+
+
 def npc_line(db, view: RoomView, text: str, results: list[ActionResult], npc: Npc, affinity: int, memory: str,
              recent: Optional[list[str]] = None, quests: Optional[list[tuple[str, dict]]] = None,
              sells: Optional[list[dict]] = None, made_before: Optional[list[dict]] = None) -> Optional[str]:
     """NPC 这回合说的话，单独演。失败返回 None（叙事自己写台词）"""
+    services = npc_services(npc, sells)
+    # 第一次见面、或者问起能干什么：把能办的事介绍一遍
+    intro = bool(services) and (not memory or bool(ASK_SERVICE_RE.search(text)))
     this_turn = "\n".join("；".join(EFFECT_RE.sub("", f) for f in r.facts) for r in results if r.success) or "没什么特别的"
     goods = "、".join([f"{s['name']}（建议价 {s['base_price']} 金币）" for s in sells or []]
                      + [g["name"] for g in made_before or []]) or "无"
     tasks = "；".join(f"{q['hook']}（{QUEST_STAGES[st]}）" if st != "closed" else f"{q['after']}"
                      for st, q in quests or []) or "没有"
-    user = (f"<npc>\n名字：{npc.name}\n外表：{npc.template.description}\n人设：{npc.template.persona}\n"
+    user = (f"<npc>\n名字：{npc.name}\n所在的地方：{view.room.name}\n外表：{npc.template.description}\n"
+            f"人设：{npc.template.persona}\n"
             f"对{view.player.name}的好感：{affinity}（-100 到 100）\n对他的记忆：\n{memory or '第一次见面'}\n"
             f"你卖的货、做过的东西：{goods}\n委托：{tasks}\n"
-            + (f"住店：一晚 {npc.template.props['inn'].get('price', 0)} 金币，价钱固定不讲价（他说一句“住店”就能住）\n"
-               if npc.template.props.get("inn") else "")
+            + (f"你这儿能办的事：{'；'.join(services)}\n" if services else "")
             + "</npc>\n\n"
             + ("<recent>\n" + "\n".join(recent) + "\n</recent>\n\n" if recent else "")
             + f"<this_turn>\n{this_turn}\n</this_turn>\n\n<player>{view.player.name}</player>\n"
-            f"<player_input>\n{text}\n</player_input>")
+            f"<player_input>\n{text}\n</player_input>"
+            + (f"\n\n<important>{'他第一次来你这儿' if not memory else '他在问你这儿能干什么'}："
+               "用你自己的话、按人设把“你这儿能办的事”都带到（别念清单，可以挑重点、顺口带过），"
+               "让他知道在你这儿能做什么</important>" if intro else ""))
     trading = any(r.success and r.action in TRADE_ACTIONS for r in results)
     rewards = [m[1] for r in results if r.success and r.action == "quest"
                for f in r.facts if (m := re.search(r"把(.+?)交给了", f))]
@@ -677,6 +704,7 @@ def npc_line(db, view: RoomView, text: str, results: list[ActionResult], npc: Np
 
     def check(out: NpcLine, last: bool) -> NpcLine:
         out.line = out.line.strip().strip("“”\"'").strip()
+        out.line = re.sub(r"'([^'\n]+)'", r"「\1」", out.line)      # 台词里的英文单引号：叙事会换引号，先统一掉
         if not out.line:
             raise ValueError("台词是空的")
         if (trading or PRICE_RE.search(out.line)) and STAT_RE.search(out.line):
@@ -685,6 +713,12 @@ def npc_line(db, view: RoomView, text: str, results: list[ActionResult], npc: Np
             out.line = _tidy(STAT_RE.sub("", out.line))
         if not last and rewards and re.search(r"已经在你|不是已经|早就有|已经拿到", out.line):
             raise ValueError("奖励是这回合刚给的，不能说他早就有了")
+        if not last and intro:
+            missing = [w for w, ok in (("住店", not npc.template.props.get("inn") or re.search(r"住|房|过夜|睡", out.line)),
+                                       ("升级武器", not npc.template.props.get("upgrades") or re.search(r"升级|强化|锻|打磨", out.line)))
+                       if not ok]
+            if missing:
+                raise ValueError(f"他{'第一次来' if not memory else '在问你这儿能干什么'}，要让他知道能{'、'.join(missing)}")
         if not last and _tip_pending(results) and (TOOK_MONEY_RE.search(out.line) or not re.search(r"[？?]", out.line)):
             raise ValueError("他说要白给你钱，你还没收：这回合问他一句是不是真要给你，不能说已经收下了")
         if not last and not trading and CLAW_RE.search(out.line) and any(n in out.line for n in owned):
@@ -1052,7 +1086,8 @@ def narrate(db, view: RoomView, text: str, results: list[ActionResult],
         # 台词是单独演好的：叙事得原样用上，没写进去就重写一次，还没写就补在末尾
         if npc and line:
             out.npc_reply = line
-            if line.strip("“”\"'") not in out.narrative:
+            bare = lambda s: re.sub(r"[“”\"'「」‘’\s]", "", s)       # 台词里的小引号叙事常换成别的，比的时候不算
+            if bare(line) not in bare(out.narrative):
                 if not last:
                     raise ValueError(f"{npc.name}的台词要一字不改地写进叙事：{line}")
                 out.narrative += f"{npc.name}说：“{line}”"
