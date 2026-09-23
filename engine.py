@@ -1686,8 +1686,10 @@ def do_talk(cur: Cursor, player: Player, view: RoomView, a: Talk) -> list[str]:
     if d := next((d for d in view.dispensers if d.id == view.resolve(a.target)), None):
         return [f"{player.name}对{d.container}说：“{a.message}”", f"{d.container}只是个物件，不会回应"]
     npc = _room_npc(cur, view, player, a.target)
-    # AI 解析偶尔把"对麦琪 来杯酒"整句当成说的话，去掉开头的称呼
-    message = re.sub(rf"^(对|跟|和|向)?{re.escape(npc.name)}[\s，,：:]*", "", a.message).strip() or a.message
+    # AI 解析偶尔把"对麦琪 来杯酒"整句当成说的话：只去掉"对麦琪"这种指令开头；"麦琪大人""麦琪，救我"是喊人，留着。
+    # 外面多包的一层引号（玩家自己打了引号）也去掉
+    message = re.sub(rf"^(对|跟|和|向){re.escape(npc.name)}(说|讲|问)?[\s，,：:]*", "", a.message).strip() or a.message
+    message = message.strip("\"“”'‘’「」").strip() or message
     return [f"{player.name}对{npc.name}说：“{message}”"]
 
 
