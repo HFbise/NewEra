@@ -424,7 +424,7 @@ def do_look(cur: Cursor, player: Player, view: RoomView, a: Look) -> list[str]:
     items = load_items(cur, "i.id = %s and (i.room_id = %s or i.player_id = %s)",
                        (uid, player.room_id, player.id))
     if items:
-        return [f"{items[0].name}：{items[0].template.description}"]
+        return [f"{items[0].name}：{items[0].description}"]
     npcs = load_npcs(cur, "n.id = %s and n.room_id = %s and n.alive", (uid, player.room_id))
     if npcs:
         n = npcs[0]
@@ -891,6 +891,10 @@ def execute_all(conn: Connection, view: RoomView, actions: list[PlayerAction]) -
 # ============ NPC 给予（对话步骤调用） ============
 
 def _give_rule_ok(cur: Cursor, npc: Npc, player: Player, item: ItemInstance) -> bool:
+    # 玩家身上已经有同样的东西就不再给（钥匙这类任务物品，不然每次聊天都塞一把）
+    cur.execute("select 1 from item_instances where player_id = %s and template_id = %s", (player.id, item.template.id))
+    if cur.fetchone():
+        return False
     rule: Any = npc.template.props.get("gives", {}).get(item.template.id)
     if rule == "ai":
         return True
@@ -933,6 +937,134 @@ def npc_give(conn: Connection, player_id: UUID, npc_id: UUID, item_id: UUID) -> 
                             facts=[f"{npc.name}把{_label(items[0])}交给了{player.name}"])
     except ActionError as e:
         return ActionResult(action="npc_give", success=False, facts=[str(e)])
+
+
+# ============ 任务（对话步骤调用） ============
+# 任务定义在 world.yaml 的 quests，进度按玩家记在 player_quests：没记录 = 没接，offered = NPC 提过，
+# rewarded = 了结。做没做完看玩家 flags 里有没有 done_flag。跟发布任务的 NPC 说话时推进
+
+def quest_turn(conn: Connection, player_id: UUID, npc_id: UUID) -> tuple[list[ActionResult], list[tuple[str, dict]]]:
+    """跟 NPC 说话时处理这个 NPC 发布的任务：做完了就自动发奖励，没接过的记成已提起。
+    返回 (奖励的执行结果, 给叙事的任务情况 [(new|active|done|closed, 任务)])"""
+    results, context = [], []
+    with conn.transaction():
+        cur = _cursor(conn)
+        player = load_player(cur, player_id, lock=True)
+        npcs = load_npcs(cur, "n.id = %s", (npc_id,))
+        if not npcs:
+            return results, context
+        npc = npcs[0]
+        cur.execute(
+            """select q.*, pq.status from quests q
+               left join player_quests pq on pq.quest_id = q.id and pq.player_id = %s
+               where q.giver = %s order by q.id""",
+            (player_id, npc.template.id),
+        )
+        for q in cur.fetchall():
+            done = bool(player.flags.get(q["done_flag"]))
+            if q["status"] == "rewarded":
+                context.append(("closed", q))
+            elif done:
+                # 做完了：奖励直接给（身上已经有就不重复给），不用玩家开口要
+                facts = []
+                if q["reward_item"]:
+                    cur.execute("select 1 from item_instances where player_id = %s and template_id = %s",
+                                (player_id, q["reward_item"]))
+                    if not cur.fetchone():
+                        cur.execute("insert into item_instances (template_id, player_id) values (%s, %s)",
+                                    (q["reward_item"], player_id))
+                        cur.execute("select name from item_templates where id = %s", (q["reward_item"],))
+                        facts.append(f"{npc.name}把{cur.fetchone()['name']}交给了{player.name}（任务奖励）")
+                results.append(ActionResult(action="quest", success=True,
+                                            facts=[f"{player.name}完成了{npc.name}的委托：{q['goal']}"] + facts))
+                _set_quest(cur, player_id, q["id"], "rewarded")
+                context.append(("done", q))
+            elif q["status"] == "offered":
+                context.append(("active", q))
+            else:
+                # 这次对话 NPC 提起委托：写成 fact，叙事一定会写到，玩家界面上也能看到这条
+                _set_quest(cur, player_id, q["id"], "offered")
+                results.append(ActionResult(action="quest", success=True,
+                                            facts=[f"{npc.name}有件事想托{player.name}：{q['goal']}"]))
+                context.append(("new", q))
+    return results, context
+
+
+def _set_quest(cur: Cursor, player_id: UUID, quest_id: str, status: str) -> None:
+    cur.execute(
+        """insert into player_quests (player_id, quest_id, status) values (%s, %s, %s)
+           on conflict (player_id, quest_id) do update set status = excluded.status, updated_at = now()""",
+        (player_id, quest_id, status),
+    )
+
+
+# ============ NPC 现造东西、轰人（对话步骤调用） ============
+
+MADE_TEMPLATES = {"food": "made_food", "drink": "made_drink", "misc": "made_misc"}
+CREATE_COOLDOWN = "3 minutes"           # 同一个 NPC 给同一个玩家现造东西的间隔
+
+
+def creatable_kinds(conn: Connection, player_id: UUID, npc: Npc) -> list[str]:
+    """NPC 现在能给这个玩家造哪些东西：world.yaml 里 creates 配的，冷却中就是空"""
+    kinds = [k for k in npc.template.props.get("creates", []) if k in MADE_TEMPLATES]
+    if not kinds:
+        return []
+    with conn.transaction():
+        cur = _cursor(conn)
+        cur.execute(
+            f"""select 1 from player_npc_relations where player_id = %s and npc_template = %s
+                and last_created_at > now() - interval '{CREATE_COOLDOWN}'""",
+            (player_id, npc.template.id),
+        )
+        return [] if cur.fetchone() else kinds
+
+
+def npc_create(conn: Connection, player_id: UUID, npc: Npc, kind: str, name: str, description: str) -> ActionResult:
+    """NPC 现造一件东西给玩家。种类、冷却都在这里再查一遍，名字描述由 AI 起、这里截长度"""
+    try:
+        with conn.transaction():
+            cur = _cursor(conn)
+            player = load_player(cur, player_id, lock=True)
+            if kind not in npc.template.props.get("creates", []) or kind not in MADE_TEMPLATES:
+                raise ActionError(f"{npc.name}给不了这种东西")
+            cur.execute(
+                f"""insert into player_npc_relations (player_id, npc_template, last_created_at) values (%s, %s, now())
+                    on conflict (player_id, npc_template) do update set last_created_at = now()
+                    where player_npc_relations.last_created_at is null
+                       or player_npc_relations.last_created_at < now() - interval '{CREATE_COOLDOWN}'
+                    returning 1""",
+                (player_id, npc.template.id),
+            )
+            if not cur.fetchone():
+                raise ActionError(f"{npc.name}刚给过东西，过一会儿再说")
+            name = name.strip()[:12] or "小玩意"
+            cur.execute("insert into item_instances (template_id, player_id, props) values (%s, %s, %s)",
+                        (MADE_TEMPLATES[kind], player_id, Jsonb({"name": name, "description": description.strip()[:120]})))
+        return ActionResult(action="npc_create", success=True, facts=[f"{npc.name}把{name}交给了{player.name}"])
+    except ActionError as e:
+        return ActionResult(action="npc_create", success=False, facts=[str(e)])
+
+
+def can_eject(npc: Npc) -> bool:
+    """world.yaml 里配了 eject_to 的 NPC 能把闹事的玩家轰出去"""
+    return bool(npc.template.props.get("eject_to"))
+
+
+def npc_eject(conn: Connection, player_id: UUID, npc: Npc) -> Optional[ActionResult]:
+    """把玩家从 NPC 所在房间的 eject_to 出口轰出去（叙事 AI 判定玩家闹事时调用）"""
+    direction = npc.template.props.get("eject_to")
+    with conn.transaction():
+        cur = _cursor(conn)
+        player = load_player(cur, player_id, lock=True)
+        ex = _find_exit(cur, npc.room_id, direction) if direction else None
+        if ex is None or player.room_id != npc.room_id:
+            return None
+        cur.execute("update players set room_id = %s, following = null, updated_at = now() where id = %s",
+                    (ex["to_room"], player_id))
+        room = load_room(cur, ex["to_room"])
+        cur.execute("insert into events (room_id, player_id, kind, observer) values (%s, %s, 'ejected', %s)",
+                    (ex["to_room"], player_id, f"{player.name}被{npc.name}从{load_room(cur, npc.room_id).name}轰了出来。"))
+    return ActionResult(action="npc_eject", success=True, facts=[f"{npc.name}把{player.name}轰出了门，{player.name}来到了{room.name}"])
 
 
 # ============ 好感度（对话步骤调用） ============

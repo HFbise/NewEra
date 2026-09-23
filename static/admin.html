@@ -149,6 +149,10 @@ async function loadWorld() {
   const list = (label, arr) => arr.length ? `<div class="row"><span class="label">${label}</span>${arr.join("、")}</div>` : "";
   $("#main").innerHTML = `
     <div class="toolbar">
+      <button class="act" id="sync">只同步设定</button>
+      <span class="dim">改了 world.yaml 里的人设、描述后点这个，世界状态不动</span>
+    </div>
+    <div class="toolbar">
       <button class="act danger" id="reset">重置世界</button>
       <span class="dim">按 world.yaml 恢复 NPC、地上物品、门锁和地形；玩家的位置、背包、标记、NPC 记忆都不动</span>
     </div>
@@ -165,6 +169,10 @@ async function loadWorld() {
         ${list("地形", r.features.map(f => `${esc(f.name)} <span class="dim">${TIERS[f.max_tier] || f.max_tier} · 剩 ${f.uses_left}/${f.max_uses}</span>`))}
       </div>`).join("")}
     </div>`;
+  $("#sync").onclick = async () => {
+    try { await api("/sync", {}); $("#updated").textContent = "设定已同步 " + new Date().toLocaleTimeString(); }
+    catch (err) { alert(err.message); }
+  };
   $("#reset").onclick = async () => {
     if (!confirm("确定重置整个世界？所有房间都会收到一条系统提示。")) return;
     await api("/reset", {});

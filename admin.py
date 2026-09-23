@@ -79,9 +79,9 @@ def world():
         rooms = _rows(conn, "select id, name from rooms order by id")
         npcs = _rows(conn, """select n.room_id, t.name, n.hp, t.max_hp, n.alive, n.died_at, n.status
                               from npcs n join npc_templates t on t.id = n.template_id order by t.name""")
-        ground = _rows(conn, """select i.room_id, t.name, i.quantity from item_instances i
+        ground = _rows(conn, """select i.room_id, coalesce(i.props->>'name', t.name) as name, i.quantity from item_instances i
                                 join item_templates t on t.id = i.template_id where i.room_id is not null order by t.name""")
-        carried = _rows(conn, """select n.room_id, nt.name as npc, t.name, i.quantity from item_instances i
+        carried = _rows(conn, """select n.room_id, nt.name as npc, coalesce(i.props->>'name', t.name) as name, i.quantity from item_instances i
                                  join item_templates t on t.id = i.template_id join npcs n on n.id = i.npc_id
                                  join npc_templates nt on nt.id = n.template_id order by t.name""")
         exits = _rows(conn, """select e.room_id, e.direction, r.name as to_name, e.locked, e.key_item
@@ -110,6 +110,17 @@ def reset():
     return {"ok": True}
 
 
+@protected.post("/sync")
+def sync():
+    """只把 world.yaml 里的设定（房间描述、物品说明、NPC 人设、出口、地形）同步进库，世界状态不动。
+    改了人设点这个；新加的 NPC 和房间物品要重置世界才会出现"""
+    with open(WORLD_FILE, encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    with pool.connection() as conn:
+        seeding.sync(conn, data)
+    return {"ok": True}
+
+
 # ============ 玩家 ============
 
 @protected.get("/players")
@@ -121,7 +132,7 @@ def players():
                    coalesce(p.last_active_at > now() - interval '{engine.ONLINE_WINDOW}', false) as awake
             from players p join rooms r on r.id = p.room_id left join players f on f.id = p.following
             order by p.last_active_at desc nulls last, p.name""")
-        items = _rows(conn, """select i.player_id, t.name, i.quantity, i.equipped_slot from item_instances i
+        items = _rows(conn, """select i.player_id, coalesce(i.props->>'name', t.name) as name, i.quantity, i.equipped_slot from item_instances i
                                join item_templates t on t.id = i.template_id where i.player_id is not null order by t.name""")
     for p in rows:
         p["inventory"] = [i for i in items if i["player_id"] == p["id"]]

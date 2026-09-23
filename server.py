@@ -296,20 +296,29 @@ def run_turn(req: CommandReq):
     # 2. 规则引擎执行。解析期间别人可能动了东西，引擎按 ref 重新查库加锁校验，不会用旧状态
     yield {"stage": "execute"}
     use_ai = ai.enabled() and not all(a.action in NO_NARRATION for a in actions)
-    npc_id = npc = None
-    giveable, affinity, memory, recent = [], 0, "", []
+    npc_id = npc = eject_to = None
+    giveable, creatable, quests, affinity, memory, recent = [], [], [], 0, "", []
     with pool.connection() as conn:
         results = engine.execute_all(conn, view, actions)
-        now_view = engine.load_view(conn, pid)       # 执行后的房间：移动之后要写新地方
         talk = next((a for a, r in zip(actions, results) if a.action == "talk" and r.success), None)
+        npc_id = view.resolve(talk.target) if talk else None
+        npc = _load_npc(conn, npc_id) if npc_id else None
+        if npc:
+            # 跟发布任务的 NPC 说话：做完的委托自动发奖励（有没有 AI 都一样），没接过的这次提起
+            quest_results, quests = engine.quest_turn(conn, pid, npc_id)
+            results += quest_results
+        now_view = engine.load_view(conn, pid)       # 执行后的房间：移动之后要写新地方
         if use_ai:
             # 叙事要用的东西一次查好，后面调 AI 时不占连接
-            npc_id = view.resolve(talk.target) if talk else None
-            npc = _load_npc(conn, npc_id) if npc_id else None
             if npc:
                 giveable = engine.giveable_items(conn, pid, npc_id)
+                creatable = engine.creatable_kinds(conn, pid, npc)
                 affinity = engine.get_affinity(conn, pid, npc_id)
                 memory = engine.get_npc_memory(conn, pid, npc_id)
+                if engine.can_eject(npc):
+                    ex = engine._find_exit(engine._cursor(conn), npc.room_id, npc.template.props["eject_to"])
+                    eject_to = engine.load_room(engine._cursor(conn), ex["to_room"]).name if ex else None
+                    conn.commit()
             recent = _recent_events(conn, now_view.room.id, pid)
         elif not ai.enabled() and talk:
             results += placeholder_dialogue(conn, view, talk.target)
@@ -319,14 +328,17 @@ def run_turn(req: CommandReq):
     if use_ai:
         yield {"stage": "narrate"}
         try:
-            # NPC 身上有能给的东西时，先单独决定给不给，执行完变成 fact，叙事再照着写
-            if giveable:
-                give_id, u = ai.decide_give(pool, view, req.text, npc, giveable, affinity, memory)
+            # NPC 身上有能给的东西、或者能现造东西时，先单独决定给不给，执行完变成 fact，叙事再照着写
+            if giveable or creatable:
+                give_id, made, u = ai.decide_give(pool, view, req.text, npc, giveable, creatable, affinity, memory)
                 add(u)
-                if give_id:
+                if give_id or made:
                     with pool.connection() as conn:
-                        results.append(engine.npc_give(conn, pid, npc_id, give_id))
-            out, u = ai.narrate(pool, now_view, req.text, results, npc, affinity, memory, recent)
+                        results.append(engine.npc_give(conn, pid, npc_id, give_id) if give_id else
+                                       engine.npc_create(conn, pid, npc, made.kind, made.name, made.description))
+                        now_view = engine.load_view(conn, pid)   # 叙事要看到新拿到的东西
+            out, u = ai.narrate(pool, now_view, req.text, results, npc, affinity, memory, recent,
+                                quests, eject_to)
             add(u)
             if out:
                 narrative, observer = out.narrative, out.observer or None
@@ -347,6 +359,9 @@ def run_turn(req: CommandReq):
                 results.append(engine.adjust_affinity(conn, pid, npc_id, out.affinity_delta))
             if out.npc_memory:
                 engine.set_npc_memory(conn, pid, npc_id, out.npc_memory)
+            # 叙事判定 NPC 把玩家轰出去：叙事和旁人描述已经写了，这里真的挪人（门外那边的人会看到他被轰出来）
+            if out.eject and (kicked := engine.npc_eject(conn, pid, npc)):
+                results.append(kicked)
         with conn.transaction():
             conn.execute(
                 """insert into events (room_id, player_id, kind, facts, narrative, observer, input, meta)

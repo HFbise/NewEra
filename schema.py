@@ -217,11 +217,15 @@ class ItemInstance(BaseModel):
     player_id: Optional[UUID] = None
     npc_id: Optional[UUID] = None
     equipped_slot: Optional[Slot] = None
-    props: dict[str, Any] = {}
+    props: dict[str, Any] = {}          # NPC 现造的东西（酒、地图）把名字和描述存在这里，覆盖模板的
 
     @property
     def name(self) -> str:
-        return self.template.name
+        return self.props.get("name") or self.template.name
+
+    @property
+    def description(self) -> str:
+        return self.props.get("description") or self.template.description
 
 
 class Npc(BaseModel):

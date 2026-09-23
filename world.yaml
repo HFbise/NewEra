@@ -34,7 +34,7 @@ rooms:
       四五张粗木桌，长凳坐得发亮，一张桌腿下垫着折起来的皮子防晃。
       墙上挂着一个落满灰的野猪头标本，一只獠牙断了一截。
       地窖门是厚木板钉的，门上一把黑铁大锁。
-      没有别的客人，只有壁炉噼啪声和老汉斯擦杯子的声音。
+      没有别的客人，只有壁炉噼啪声和麦琪擦杯子的声音。
     exits:
       south: {to: square}
       down: {to: cellar, locked: true, key: cellar_key, relock: 120}
@@ -122,12 +122,30 @@ items:
     description: 刻着看不懂的符文，在昏暗处微微发着蓝光。
     type: armor
     defense: 2
+  # NPC 现造东西用的通用模板（NPC 的 creates 配置），名字和描述由 AI 起，存在物品实例上
+  made_food:
+    name: 食物
+    description: NPC 做的吃的。
+    type: consumable
+    stackable: false
+    heal: 2
+  made_drink:
+    name: 酒水
+    description: NPC 调的喝的。
+    type: consumable
+    stackable: false
+    heal: 2
+  made_misc:
+    name: 杂物
+    description: NPC 给的小东西，比如地图、字条、信物。
+    type: misc
 
 npcs:
   innkeeper:
-    name: 老汉斯
-    description: 酒馆老板，胖胖的中年人，总在擦同一个杯子。
-    persona: 热情但爱打听八卦，对地窖的事讳莫如深，除非客人帮他解决森林里的哥布林。
+    name: 麦琪
+    # description 是别人一眼能看到的外表；persona 是性格、来历、说话方式，只给 AI 看
+    description: 酒馆老板娘兼调酒师，看上去像个十五六岁、一米四出头的纤细金发少女。一头凌乱的金色卷发随手扎在脑后，湛蓝的眼睛总带着三分酒意和看戏的神情，嘴角挂着看透一切的戏谑微笑。个子太小，在吧台后要踩着一个垫脚木箱。穿粗布衬衫、皮胸衣和牛皮围裙，腰间挂着沉甸甸的铁钥匙串，手里永远端着一只盛满矮人黑啤的雕花锡杯。吧台下藏着一根带钢环的橡木短棍、一柄切肉刀和一把上了弦的轻弩。
+    persona: 外表精致娇小，骨子里是刀口饮血过的退役雇佣兵，如今是边境的情报贩子，对自己的地盘有绝对的掌控欲。千杯不醉，常年微醺，反而直觉毒辣，闻一闻就知道客人刚从哪个地牢出来（哥布林的腐臭、酸液的味道）。嗜酒如命，说话爱拿矮人黑啤、精灵蜜酒、龙息烈酒和地牢怪物打比方。现实又贪财：打听消息先点三杯最贵的烈酒，没钱的菜鸟也可以替她干活来换。嘴硬心软，嘴上骂菜鸟冒险者是“去送死的笨蛋”，却常在人出发前往酒里偷偷加解毒草药，或者甩给对方一张标着陷阱的破地图。有人挑衅骚扰，她会笑得最甜、说得最狠，忍无可忍就抄起橡木短棍把人轰出酒馆。爱叫玩家“菜鸟”“铁罐头骑士”“尖耳朵”，说话慵懒轻快，带着酒馆的粗犷和风趣，习惯边晃酒杯边抿一口。
     inventory: [cellar_key]
     restock: 60
     props:
@@ -135,7 +153,12 @@ npcs:
       #   ai                                  AI 看人设自己决定
       #   {requires: 标记, min_affinity: 数值}  两个条件可以只写一个，都写就要同时满足
       gives:
-        cellar_key: {requires: goblin_slain}
+        cellar_key: {requires: goblin_slain}   # 任务奖励给过、玩家弄丢了还能再要
+      # 能现造什么给玩家：food 食物 / drink 酒水（吃了回 2 HP）/ misc 杂物（地图、字条，没效果），
+      # 同一个玩家 3 分钟最多一件。不写就不能造
+      creates: [food, drink, misc]
+      # 玩家闹事时能把人轰出去：从这个出口扔出去。不写就不能轰人
+      eject_to: south
   smith:
     name: 铁匠莉娜
     description: 手臂粗壮的女铁匠，说话简短。
@@ -149,3 +172,20 @@ npcs:
     stats: {hp: 8, max_hp: 8, attack: 3, defense: 1}
     props:
       on_death: {set_flag: goblin_slain}   # 被击杀时给击杀者设标记
+
+# 任务：NPC 按每个玩家的进度自己提、自己跟进，人设里不用写。
+#   giver    发布任务的 NPC
+#   hook     给 AI 的引子：NPC 为什么要找人帮忙，第一次聊天时 NPC 会主动提
+#   goal     要玩家做什么
+#   done     玩家身上有这个标记就算做完了（标记来自 NPC 的 on_death.set_flag 等）
+#   reward   做完后玩家跟发布者说话时，自动交给玩家的东西（不写就只有口头感谢）
+#   after    了结后给 AI 的一句话，NPC 就不会再反复提
+quests:
+  goblin_thief:
+    name: 偷酒的哥布林
+    giver: innkeeper
+    hook: 森林边缘那只哥布林最近老来地窖偷酒桶，她想找个人去收拾掉它；谁办成了，她就把地窖钥匙交给谁
+    goal: 去森林边缘把那只哥布林解决掉
+    done: goblin_slain
+    reward: cellar_key
+    after: 这个人替你收拾了偷酒的哥布林，你已经把地窖钥匙给了他

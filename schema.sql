@@ -127,6 +127,7 @@ create table player_npc_relations (
   npc_template text not null references npc_templates(id) on delete cascade,
   affinity     int not null default 0 check (affinity between -100 and 100),  -- 好感度
   memory       text not null default '',        -- NPC 对这个玩家的记忆摘要，对话时由 AI 更新，限 150 字
+  last_created_at timestamptz,                   -- NPC 上次给这个玩家现造东西的时间，冷却用（engine.CREATE_COOLDOWN）
   primary key (player_id, npc_template)
 );
 
@@ -156,6 +157,28 @@ create table events (
 
 create index on events (room_id, created_at desc);
 create index on events (room_id, id);
+
+-- 任务：world.yaml 的 quests 段，seed/sync 导入。NPC 按玩家的进度主动提起、提醒、发奖励
+create table quests (
+  id          text primary key,
+  giver       text not null references npc_templates(id) on delete cascade,  -- 发布任务的 NPC 模板
+  name        text not null,
+  hook        text not null,                     -- 给 AI：NPC 怎么提起这件事
+  goal        text not null,                     -- 要玩家做什么
+  done_flag   text not null,                     -- 玩家有这个标记就算完成
+  reward_item text references item_templates(id),  -- 完成后跟发布者说话自动给的东西
+  after       text not null default ''           -- 了结后给 AI 的一句话
+);
+
+-- 玩家的任务进度。没有记录 = 还没接；offered = NPC 提过了；rewarded = 奖励给了，了结。
+-- 做没做完不存，看玩家的 flags 里有没有 done_flag
+create table player_quests (
+  player_id   uuid not null references players(id) on delete cascade,
+  quest_id    text not null references quests(id) on delete cascade,
+  status      text not null check (status in ('offered', 'rewarded')),
+  updated_at  timestamptz not null default now(),
+  primary key (player_id, quest_id)
+);
 
 -- 每个玩家的聊天框记录：刷新页面、重新登录后拉回来显示
 -- turn = 自己的一回合（输入、解析、facts、叙事），event = 看到的别人的动态（同一条 event 只记一次）
@@ -217,6 +240,8 @@ alter table spawns         enable row level security;
 alter table party_invites  enable row level security;
 alter table room_features  enable row level security;
 alter table player_log     enable row level security;
+alter table quests         enable row level security;
+alter table player_quests  enable row level security;
 
 create policy "read static" on rooms          for select to authenticated using (true);
 create policy "read static" on room_exits     for select to authenticated using (true);
