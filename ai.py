@@ -277,7 +277,8 @@ def room_context(view: RoomView) -> str:
     npcs = "、".join(f"{by_id[n.id]} {n.name}" + (f"（{n.status.describe()}）" if n.status else "")
                     for n in view.npcs) or "无"
     features = "、".join(f"{by_id[f.id]} {f.name}" for f in view.features) or "无"
-    dispensers = "、".join(f"{by_id[d.id]} {d.container}（物件，不会说话；能拿一件{d.item_name}）"
+    dispensers = "、".join(f"{by_id[d.id]} {d.container}（物件，不会说话"
+                           + (f"；能拿一件{d.item_name}）" if d.available else f"；{d.item_name}已经拿过了）")
                            for d in view.dispensers) or "无"
     inv = "、".join(f"{by_id[i.id]} {i.name}" + ("（已装备）" if i.equipped_slot else "")
                    for i in view.inventory) or "无"
@@ -593,11 +594,13 @@ def narrate(db, view: RoomView, text: str, results: list[ActionResult],
     for r in results:
         if r.action == "look" and r.success:
             for f in r.facts:
-                for prefix in ("地上有：", "可以取用：", "这里有：", "其他玩家："):
+                for prefix in ("地上有：", "这里有：", "其他玩家："):
                     if f.startswith(prefix):
                         must += [re.sub(r"（.*?）| x\d+$", "", x) for x in f[len(prefix):].split("、")]
                 if f.startswith("出口："):
                     exits += re.findall(r"(\S)（通往(.+?)(，门锁着)?）", f)
+    # 武器桶、桌子这类物件环境细节里写着，模型常换个说法（"旧木桌"），不强制点名
+    must = [m for m in must if m not in {d.container for d in view.dispensers}]
 
     # facts 里玩家名字换成"你"，免得模型把"烈日""寒风"这种名字当成环境描写。
     # 名字是别的东西的一部分时（叫"汉斯"的遇上"老汉斯"，叫"寒风"的遇上玩家"寒风测试"）不换，免得把别的词换坏

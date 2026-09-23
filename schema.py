@@ -205,10 +205,16 @@ class Dispenser(BaseModel):
     item: str                           # 物品模板 id
     item_name: str
     unless: list[str] = []
+    where: str = "里"                   # 东西放在"桶里""桌上"
+    available: bool = True              # 这个玩家还能不能拿（身上已经有了就只看得到桶、桌子本身）
 
     @property
     def name(self) -> str:
         return self.container
+
+    @property
+    def take_label(self) -> str:
+        return f"{self.container}{self.where}的{self.item_name}"
 
 
 # 出口方向：数据库和动作里用英文 key，显示时翻成中文

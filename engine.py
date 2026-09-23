@@ -122,15 +122,20 @@ def forage_labels(cur: Cursor, room: Room) -> list[str]:
     return [f"{names[f['item']]}（搜索，{round(f.get('chance', FORAGE_CHANCE) * 100)}%）" for f in forage]
 
 
-def load_dispensers(cur: Cursor, room: Room) -> list[Dispenser]:
-    """房间里的取用处（武器桶这类），id 按房间和 key 算，每次都一样"""
+def load_dispensers(cur: Cursor, room: Room, player_id: UUID) -> list[Dispenser]:
+    """房间里的取用处（武器桶、摆着护符的桌子），id 按房间和 key 算，每次都一样。
+    available 按这个玩家算：身上已经有了（或有 unless 里的东西）就拿不了，只显示桶、桌子本身"""
     cfg = room.props.get("dispensers", {})
     if not cfg:
         return []
     cur.execute("select id, name from item_templates where id = any(%s)", ([d["item"] for d in cfg.values()],))
     names = {r["id"]: r["name"] for r in cur.fetchall()}
+    cur.execute("select distinct template_id from item_instances where player_id = %s", (player_id,))
+    owned = {r["template_id"] for r in cur.fetchall()}
     return [Dispenser(id=uuid5(NAMESPACE_URL, f"newera:dispenser:{room.id}:{key}"), container=d["name"],
-                      description=d.get("description", ""), item=d["item"], item_name=names[d["item"]], unless=d.get("unless", []))
+                      description=d.get("description", ""), item=d["item"], item_name=names[d["item"]],
+                      unless=d.get("unless", []), where=d.get("where", "里"),
+                      available=not owned & {d["item"], *d.get("unless", [])})
             for key, d in cfg.items()]
 
 
@@ -295,7 +300,7 @@ def load_view(conn: Connection, player_id: UUID) -> RoomView:
             party=party,
             invites=invites,
             features=features,
-            dispensers=load_dispensers(cur, room),
+            dispensers=load_dispensers(cur, room, player.id),
             forage=forage_labels(cur, room),
             following=following,
         )
@@ -450,7 +455,8 @@ def do_look(cur: Cursor, player: Player, view: RoomView, a: Look) -> list[str]:
         if ground:
             facts.append("地上有：" + "、".join(ground))
         npcs = load_npcs(cur, "n.room_id = %s and n.alive", (player.room_id,))
-        here = [n.name + (f"（{n.status.describe()}）" if n.status else "") for n in npcs]             + [f"{d.container}（{d.item_name}，每人一件）" for d in view.dispensers]
+        here = [n.name + (f"（{n.status.describe()}）" if n.status else "") for n in npcs]             + [f"{d.container}（{d.where}面有{d.item_name}，每人一件）" if d.available else d.container
+               for d in view.dispensers]
         if here:
             facts.append("这里有：" + "、".join(here))
         cur.execute(
@@ -485,7 +491,7 @@ def do_look(cur: Cursor, player: Player, view: RoomView, a: Look) -> list[str]:
 
     uid = _resolve(view, a.target)
     if d := next((d for d in view.dispensers if d.id == uid), None):
-        return [f"{d.container}：{d.description}".rstrip("："), f"{d.container}里有{d.item_name}，每人能拿一件"]
+        return [f"{d.container}：{d.description}".rstrip("：")]             + ([f"{d.container}{d.where}有{d.item_name}，每人能拿一件"] if d.available else [])
     items = load_items(cur, "i.id = %s and (i.room_id = %s or i.player_id = %s)",
                        (uid, player.room_id, player.id))
     if items:
@@ -523,9 +529,9 @@ def _take_from(cur: Cursor, player: Player, d: Dispenser) -> list[str]:
         (player.id, [d.item] + d.unless),
     )
     if row := cur.fetchone():
-        raise ActionError(f"{player.name}身上已经有{row['name']}了，{d.container}里的留给别人")
+        raise ActionError(f"{player.name}身上已经有{row['name']}了，{d.container}{d.where}的留给别人")
     _give_player_new(cur, player, d.item)
-    return [f"{player.name}从{d.container}里拿了一件{d.item_name}"]
+    return [f"{player.name}从{d.container}{d.where}拿了一件{d.item_name}"]
 
 
 def do_take(cur: Cursor, player: Player, view: RoomView, a: Take) -> list[str]:
