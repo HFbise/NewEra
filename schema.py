@@ -200,14 +200,15 @@ class Room(BaseModel):
 class Dispenser(BaseModel):
     """取用处：酒馆的武器桶这类，每人能拿一件，身上已经有 unless 里的东西就不能再拿。配在 world.yaml 房间的 dispensers 里"""
     id: UUID                            # 按房间和 key 算出来的固定 id，只用来分配短编号
-    container: str                      # "武器桶"
+    container: str                      # "武器桶"，在房间里跟 NPC 列在一起，但不会说话
+    description: str = ""
     item: str                           # 物品模板 id
     item_name: str
     unless: list[str] = []
 
     @property
     def name(self) -> str:
-        return f"{self.container}里的{self.item_name}"
+        return self.container
 
 
 # 出口方向：数据库和动作里用英文 key，显示时翻成中文

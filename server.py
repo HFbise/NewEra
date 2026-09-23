@@ -106,11 +106,13 @@ def state(conn, view: RoomView, after: Optional[int] = None) -> dict:
         "exits": [{"direction": e.direction, "label": dir_name(e.direction), "to": room_names[e.to_room],
                    "locked": e.locked} for e in view.exits],
         "items": [{"ref": by_id[i.id], "name": i.name, "quantity": i.quantity} for i in view.items]
-                 + [{"ref": by_id[d.id], "name": d.name, "quantity": 1} for d in view.dispensers]
                  # 搜索能找到的：点一下填"搜索"
                  + [{"ref": "", "name": n, "quantity": 1, "fill": "搜索"} for n in view.forage],
         "npcs": [{"ref": by_id[n.id], "name": n.name, "hp": n.hp, "max_hp": n.template.max_hp,
-                  "status": n.status and n.status.label} for n in view.npcs],
+                  "status": n.status and n.status.label} for n in view.npcs]
+                # 武器桶这类物件跟 NPC 列在一起，点一下填"拿…"
+                + [{"ref": by_id[d.id], "name": d.container, "status": f"{d.item_name}，每人一件",
+                    "fill": f"拿{d.container}里的{d.item_name}"} for d in view.dispensers],
         "inventory": [{"ref": by_id[i.id], "name": i.name, "quantity": i.quantity,
                        "equipped": i.equipped_slot} for i in view.inventory],
         "others": others,

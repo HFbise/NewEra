@@ -130,7 +130,7 @@ def load_dispensers(cur: Cursor, room: Room) -> list[Dispenser]:
     cur.execute("select id, name from item_templates where id = any(%s)", ([d["item"] for d in cfg.values()],))
     names = {r["id"]: r["name"] for r in cur.fetchall()}
     return [Dispenser(id=uuid5(NAMESPACE_URL, f"newera:dispenser:{room.id}:{key}"), container=d["name"],
-                      item=d["item"], item_name=names[d["item"]], unless=d.get("unless", []))
+                      description=d.get("description", ""), item=d["item"], item_name=names[d["item"]], unless=d.get("unless", []))
             for key, d in cfg.items()]
 
 
@@ -449,12 +449,10 @@ def do_look(cur: Cursor, player: Player, view: RoomView, a: Look) -> list[str]:
         ground = [_label(i) for i in items] + view.forage
         if ground:
             facts.append("地上有：" + "、".join(ground))
-        if view.dispensers:
-            facts.append("可以取用：" + "、".join(f"{d.container}（{d.item_name}，每人一件）" for d in view.dispensers))
         npcs = load_npcs(cur, "n.room_id = %s and n.alive", (player.room_id,))
-        if npcs:
-            facts.append("这里有：" + "、".join(n.name + (f"（{n.status.describe()}）" if n.status else "")
-                                            for n in npcs))
+        here = [n.name + (f"（{n.status.describe()}）" if n.status else "") for n in npcs]             + [f"{d.container}（{d.item_name}，每人一件）" for d in view.dispensers]
+        if here:
+            facts.append("这里有：" + "、".join(here))
         cur.execute(
             f"""select name, hp, status, coalesce(last_active_at > now() - interval '{ONLINE_WINDOW}', false) as awake
                 from players where room_id = %s and id <> %s order by name""",
@@ -486,6 +484,8 @@ def do_look(cur: Cursor, player: Player, view: RoomView, a: Look) -> list[str]:
         return facts
 
     uid = _resolve(view, a.target)
+    if d := next((d for d in view.dispensers if d.id == uid), None):
+        return [f"{d.container}：{d.description}".rstrip("："), f"{d.container}里有{d.item_name}，每人能拿一件"]
     items = load_items(cur, "i.id = %s and (i.room_id = %s or i.player_id = %s)",
                        (uid, player.room_id, player.id))
     if items:
@@ -1098,6 +1098,9 @@ def do_leave_party(cur: Cursor, player: Player, view: RoomView, a: LeaveParty) -
 
 def do_talk(cur: Cursor, player: Player, view: RoomView, a: Talk) -> list[str]:
     # 这里只校验对象在场，NPC 怎么回、给不给东西由对话步骤决定（见 giveable_items / npc_give）
+    # 武器桶这类物件跟 NPC 列在一起，但不会说话，叙事按它的描述写
+    if d := next((d for d in view.dispensers if d.id == view.resolve(a.target)), None):
+        return [f"{player.name}对{d.container}说：“{a.message}”", f"{d.container}只是个物件，不会回应"]
     npc = _room_npc(cur, view, player, a.target)
     # AI 解析偶尔把"对麦琪 来杯酒"整句当成说的话，去掉开头的称呼
     message = re.sub(rf"^(对|跟|和|向)?{re.escape(npc.name)}[\s，,：:]*", "", a.message).strip() or a.message

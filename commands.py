@@ -55,6 +55,11 @@ def _find(view: RoomView, text: str, where: str = "all") -> str:
             for obj in pool:
                 if match(obj.name):
                     return by_id[obj.id]
+    # 拿武器桶里的东西："拿短剑""拿武器桶里的生锈的短剑"
+    if where == "room":
+        for d in view.dispensers:
+            if text in d.item_name or d.container in text and d.item_name in text:
+                return by_id[d.id]
     raise _Unsure(text)
 
 

@@ -277,7 +277,8 @@ def room_context(view: RoomView) -> str:
     npcs = "、".join(f"{by_id[n.id]} {n.name}" + (f"（{n.status.describe()}）" if n.status else "")
                     for n in view.npcs) or "无"
     features = "、".join(f"{by_id[f.id]} {f.name}" for f in view.features) or "无"
-    dispensers = "、".join(f"{by_id[d.id]} {d.container}（能拿一件{d.item_name}）" for d in view.dispensers) or "无"
+    dispensers = "、".join(f"{by_id[d.id]} {d.container}（物件，不会说话；能拿一件{d.item_name}）"
+                           for d in view.dispensers) or "无"
     inv = "、".join(f"{by_id[i.id]} {i.name}" + ("（已装备）" if i.equipped_slot else "")
                    for i in view.inventory) or "无"
     players = "、".join(p.name + ("（倒下了）" if p.downed else f"（{p.status.describe()}）" if p.status

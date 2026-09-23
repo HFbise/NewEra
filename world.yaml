@@ -43,7 +43,11 @@ rooms:
       down: {to: cellar, locked: true, key: cellar_key, relock: 120}
     npcs: [innkeeper]
     dispensers:
-      weapon_barrel: {name: 武器桶, item: rusty_sword, unless: [shiny_sword]}
+      weapon_barrel:
+        name: 武器桶
+        description: 门边一只箍着铁圈的旧木桶，插着几把生锈的短剑，都是被麦琪轰出去的闹事者落下的。桶上用粉笔写着"缺家伙的拿一把，别贪"。
+        item: rusty_sword
+        unless: [shiny_sword]
     features:
       spit: {name: 壁炉上的铁叉, max_tier: heavy, uses: 1, respawn: 120}
 
