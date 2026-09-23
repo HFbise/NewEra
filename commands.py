@@ -98,6 +98,26 @@ def parse_one(view: RoomView, text: str) -> dict:
         return {"action": "freeform", "description": text.strip()}
 
 
+NUM = r"\d+|[零一二两三四五六七八九十百]+"
+CN_DIGITS = {"零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
+
+
+def cn_number(s: str) -> int:
+    """"5""两""十二""三十五""一百二十" → 整数，认不出就是 0"""
+    if s.isdigit():
+        return int(s)
+    total, cur = 0, 0
+    for ch in s:
+        if ch in CN_DIGITS:
+            cur = CN_DIGITS[ch]
+        elif ch in "十百":
+            total += (cur or 1) * (10 if ch == "十" else 100)
+            cur = 0
+        else:
+            return 0
+    return total + cur
+
+
 REST_TALK_RE = re.compile(r"开.{0,2}房|住店|住一晚|投宿|睡一觉|过夜")
 
 
@@ -233,6 +253,14 @@ def _parse_one(view: RoomView, t: str) -> dict:
         return {"action": "use", "item": _find(view, m[1], "inv"), "target": _player_or_unsure(view, m[2])}
     if m := re.fullmatch(r"喂\s*(.+?)\s*(?:吃|喝)\s*(?:了|下|点)?\s*(.+)", t):
         return {"action": "use", "item": _find(view, m[2], "inv"), "target": _player_or_unsure(view, m[1])}
+
+    # 给钱："给麦琪两金币""把 5 金币给寒风""付麦琪5个金币"
+    if m := (re.fullmatch(rf"(?:给|付给?|塞给)\s*(.+?)\s*({NUM})\s*(?:个|枚)?\s*(?:金币|金|块钱|块)", t)
+             or re.fullmatch(rf"把\s*({NUM})\s*(?:个|枚)?\s*(?:金币|金)\s*(?:给|付给|塞给|交给)\s*(.+)", t)):
+        who, num = (m[1], m[2]) if not re.fullmatch(NUM, m[1]) else (m[2], m[1])
+        if (amount := cn_number(num)) and amount > 0:
+            name = next((p.name for p in view.others if p.name == who.strip()), None)
+            return {"action": "pay", "target": name or _find(view, who, "npc"), "amount": amount}
 
     # 给东西：对方是玩家就填名字，是 NPC 就填 ref
     if m := (re.fullmatch(r"把\s*(.+?)\s*(?:给|交给|递给)\s*(.+)", t)

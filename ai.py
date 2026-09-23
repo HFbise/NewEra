@@ -202,7 +202,7 @@ def _call(db, player_id: UUID, kind: str, system: str, user: str, fmt: type[Base
 
 class AIAction(BaseModel):
     """给 AI 的扁平格式，比嵌套 union 好填；回来再转成 PlayerAction 校验"""
-    action: Literal["move", "look", "take", "drop", "use", "equip", "unequip", "attack", "talk", "give", "say",
+    action: Literal["move", "look", "take", "drop", "use", "equip", "unequip", "attack", "talk", "give", "pay", "say",
                     "upgrade", "respawn", "stand", "rest", "revive", "invite", "join", "leave_party", "follow", "unfollow", "challenge", "accept_duel",
                     "decline_duel", "flee", "stunt", "struggle",
                     "maneuver", "dodge", "hide", "search", "freeform", "reject"]
@@ -223,6 +223,7 @@ class AIAction(BaseModel):
     push: Optional[str] = None
     slot: Optional[str] = None
     knockback: Optional[int] = None
+    amount: Optional[int] = None         # pay 给多少金币
     steps: Optional[int] = None
     consume: Optional[bool] = None
 
@@ -249,6 +250,7 @@ INTENT_SYSTEM = """你是文字 MUD 游戏的指令解析器。读玩家的输�
 - talk: target（NPC 的 ref），message（玩家说的话，保留原话）。找 NPC 买东西、问价、砍价、点菜、要东西都是 talk
 - give: item（背包物品的 ref），target（NPC 的 ref；给其他玩家时填"其他玩家"里的名字）。给、递、交、送、塞到他手里是 give：东西到了对方手上，吃不吃是他的事。喂他吃、塞进他嘴里（强行的也算）、给他灌下去是 use 不是 give
 - upgrade: item（背包里武器的 ref），target（会升级武器的铁匠 NPC 的 ref）。找铁匠升级、强化、重新锻打自己的武器；问升级要多少钱也是 upgrade（第一次引擎只开价，再说一次才动手）
+- pay: target（NPC 的 ref；给其他玩家时填名字），amount（金币数，整数）。给钱、付钱、塞钱、打赏都是 pay，金币不是背包物品，不要用 give
 - rest: 不用填字段。在酒馆这种能住的地方住店、开房、要间房睡一觉（跟老板说"我要住店"也是 rest）
 - stand: 不用填字段。自己倒在地上（被绊倒、掀翻）时爬起来、站起来、起身
 - respawn: target 可空（想被抬去的地方名字，不说就是酒馆）。自己倒下了，选择复活、回酒馆、回城
@@ -524,7 +526,14 @@ DEAL_RE = re.compile(r"成交|就它了|就要|给我来|来一|来杯|来瓶|�
 # 物品效果的说明（"（回 1 点血）""（伤害 4）"），叙事不该念给玩家听；台词里念了游戏数值的那一句去掉
 EFFECT_RE = re.compile(r"（[^（）]*(?:点血|伤害|防御|有毒|药倒|没什么效果)[^（）]*）")
 STAT_RE = re.compile(r"[^，。！？,.!?“”'‘’]*(?:回|恢复|加|掉)\s*[0-9一二三四五六七八九十两]+\s*点(?:血|HP|生命)[^，。！？,.!?“”'‘’]*[，,]?")
-TRADE_ACTIONS = {"quote", "npc_sell", "npc_create", "npc_give"}
+TRADE_ACTIONS = {"quote", "npc_sell", "npc_create", "npc_give", "pay"}
+# 玩家说要白给 NPC 钱、NPC 还没收（engine._tip）：这回合只能问一句"真要给我？"，不能写成已经收下
+TIP_PENDING = "还没收"
+TOOK_MONEY_RE = re.compile(r"接过|收下|收了|收进|收着|塞进|揣进|放进.{0,4}(口袋|钱袋|腰包)|我收")
+
+
+def _tip_pending(results: list[ActionResult]) -> bool:
+    return any(r.success and r.action == "pay" and TIP_PENDING in "".join(r.facts) for r in results)
 
 def _tidy(text: str) -> str:
     """删掉半句之后收拾标点：连在一起的逗号、逗号接句末标点、开头的逗号"""
@@ -676,6 +685,8 @@ def npc_line(db, view: RoomView, text: str, results: list[ActionResult], npc: Np
             out.line = _tidy(STAT_RE.sub("", out.line))
         if not last and rewards and re.search(r"已经在你|不是已经|早就有|已经拿到", out.line):
             raise ValueError("奖励是这回合刚给的，不能说他早就有了")
+        if not last and _tip_pending(results) and (TOOK_MONEY_RE.search(out.line) or not re.search(r"[？?]", out.line)):
+            raise ValueError("他说要白给你钱，你还没收：这回合问他一句是不是真要给你，不能说已经收下了")
         if not last and not trading and CLAW_RE.search(out.line) and any(n in out.line for n in owned):
             raise ValueError("向他讨要他身上的东西（比如办委托拿到的奖励），这些已经归他了，别要回来")
         return out
@@ -1062,7 +1073,9 @@ def narrate(db, view: RoomView, text: str, results: list[ActionResult],
                 out.narrative = out.narrative.rstrip() + f"“{out.npc_reply}”"
             # 嘴上报了价却没填 npc_offer：台词里有"X 金币"，又只提到一件货，就当报价
             if goods and not out.npc_offer and (m := PRICE_RE.search(out.npc_reply)):
-                named = {g for g in goods if any(g in t or g[-1] in t for t in (out.npc_reply, player_said))}
+                # 全名说出来的优先（"精灵蜜酒多少钱"），不然酒名都以"酒"结尾，个个都算提到了
+                named = ({g for g in goods if any(g in t for t in (out.npc_reply, player_said))}
+                         or {g for g in goods if any(g[-1] in t for t in (out.npc_reply, player_said))})
                 if len(named) == 1:
                     out.npc_offer = Offer(item=named.pop(), price=_cn_int(m[1]))
         # NPC 报价、卖东西时念了回几点血这种数值：重写一次，还念就把那一句删掉（平时聊天给建议可以说）
@@ -1077,8 +1090,11 @@ def narrate(db, view: RoomView, text: str, results: list[ActionResult],
             out.npc_reply = cleaned
         # 叙事里 NPC 递了东西：认出是卖货清单或做过的货里哪一样，引擎照做；这回合已经交付过就不再给。
         # 清单外的东西不能给：重写一次，还给就当没给（叙事里多一句空话，东西不进背包）
+        if not last and _tip_pending(results) and TOOK_MONEY_RE.search(out.narrative):
+            raise ValueError("他要白给的钱NPC还没收（等他确认），不能写接过、收下、塞进口袋；钱还在他手上")
         handed = out.npc_handed
-        if handed and (not npc or any(r.success and r.action.startswith("npc_") for r in results)
+        if handed and (not npc or any(r.success and (r.action.startswith("npc_") or r.action in ("pay", "upgrade", "rest"))
+                                      for r in results)
                        or any(handed.item.strip() in f for r in results if r.action == "quest" for f in r.facts)):
             out.npc_handed = handed = None      # 这回合已经交付过，或者填的是委托奖励（已经给了）
         if handed:

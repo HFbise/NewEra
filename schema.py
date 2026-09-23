@@ -85,6 +85,14 @@ class Respawn(BaseModel):
     target: Optional[str] = None        # 想去哪（地方名字的一部分），不填就是酒馆
 
 
+class Pay(BaseModel):
+    """给钱。给 NPC：刚报过价（货、住店、升级）就按报价成交，多给的算小费；没在做买卖就是白给，
+    NPC 先问一句"真要给我？"，玩家确认了才收。给同房间的玩家直接到他手上"""
+    action: Literal["pay"]
+    target: str                         # NPC 的 ref，或者同房间玩家的名字
+    amount: int = Field(gt=0)
+
+
 class Rest(BaseModel):
     """住店：在有店家的地方付钱睡一觉，回满血、醒酒"""
     action: Literal["rest"]
@@ -245,7 +253,7 @@ class Reject(BaseModel):
 
 
 PlayerAction = Annotated[
-    Union[Move, Look, Take, Drop, Use, Equip, Unequip, Attack, Talk, Give, Upgrade, Say, Revive, Respawn, Stand, Rest, Invite, Join, LeaveParty,
+    Union[Move, Look, Take, Drop, Use, Equip, Unequip, Attack, Talk, Give, Pay, Upgrade, Say, Revive, Respawn, Stand, Rest, Invite, Join, LeaveParty,
           Follow, Unfollow, Challenge, AcceptDuel, DeclineDuel, Flee, Stunt, Struggle, Maneuver, Dodge, Hide, Search,
           Freeform, Reject],
     Field(discriminator="action"),

@@ -21,11 +21,12 @@ from psycopg import errors as pg_errors
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+from commands import REST_TALK_RE
 from schema import (
     ActionResult, Attack, Drop, Equip, Feature, Follow, Freeform, Give, Invite, ItemInstance, Join, LeaveParty, Look,
     Move, Npc, OtherPlayer, Player, PlayerAction, Reject, Revive, Room, RoomExit, RoomView, Say, Status, Struggle,
     Stunt, Take, Talk, Unfollow, Unequip, Use, dir_name, Dispenser, SLOT_CHOICES, SLOT_NAMES, Dodge, Hide, Maneuver, Search, Stealth,
-    AcceptDuel, Challenge, DeclineDuel, Duel, Flee, SKILL_NAMES, Upgrade, Respawn, Stand, Rest,
+    AcceptDuel, Challenge, DeclineDuel, Duel, Flee, SKILL_NAMES, Upgrade, Respawn, Stand, Rest, Pay,
 )
 
 
@@ -1690,7 +1691,75 @@ def do_talk(cur: Cursor, player: Player, view: RoomView, a: Talk) -> list[str]:
     # 外面多包的一层引号（玩家自己打了引号）也去掉
     message = re.sub(rf"^(对|跟|和|向){re.escape(npc.name)}(说|讲|问)?[\s，,：:]*", "", a.message).strip() or a.message
     message = message.strip("\"“”'‘’「」").strip() or message
-    return [f"{player.name}对{npc.name}说：“{message}”"]
+    facts = [f"{player.name}对{npc.name}说：“{message}”"]
+    offers = _offers(cur, player.id, npc)
+    # 刚说要白给她钱、她问了"真要给我？"，这句回"是""给你"就给
+    if (tip := offers.get("tip")) and TIP_CONFIRM_RE.search(message) and not re.search(r"不|算了|别", message[:4]):
+        if tip["price"] > player.gold:
+            return facts + [f"{player.name}身上只有 {player.gold} 金币，给不出 {tip['price']}"]
+        return facts + _tip(cur, player, npc, tip["price"], tip)
+    # 问住店（"住店多少钱"）：记一笔住店的报价，接着给钱就是付房钱
+    if (inn := npc.template.props.get("inn")) and REST_TALK_RE.search(message):
+        _put_offer(cur, player.id, npc, "inn", inn.get("price", 0))
+    return facts
+
+
+TIP_CONFIRM_RE = re.compile(r"^(是|对|嗯|确认|真的|真给|给你|收下|拿着|收着|当然|没错|给|要)")
+
+
+def do_pay(cur: Cursor, player: Player, view: RoomView, a: Pay) -> list[str]:
+    if a.amount > player.gold:
+        raise ActionError(f"{player.name}身上只有 {player.gold} 金币，不够 {a.amount}")
+    if a.target not in view.refs:
+        other, _ = _room_player(cur, player, a.target, lock=True)
+        cur.execute("update players set gold = gold - %s where id = %s", (a.amount, player.id))
+        cur.execute("update players set gold = gold + %s where id = %s", (a.amount, other.id))
+        return [f"{player.name}给了{other.name} {a.amount} 金币"]
+    npc = _room_npc(cur, view, player, a.target)
+    offers = _offers(cur, player.id, npc)
+    deals = {k: v for k, v in offers.items() if k != "tip"}
+    if deals:
+        # 刚谈过买卖：付的就是最近那笔的钱
+        key, offer = max(deals.items(), key=lambda kv: kv[1].get("at", 0))
+        price = offer["price"]
+        if a.amount < price:
+            raise ActionError(f"{npc.name}要的是 {price} 金币，{player.name}只给了 {a.amount}")
+        facts = _close_deal(cur, player, view, npc, key)
+        if extra := a.amount - price:
+            player = load_player(cur, player.id, lock=True)
+            facts += [f"多给的 {extra} 金币{npc.name}当小费收下了"] + _pay(cur, player, extra, npc)
+        return facts
+    return _tip(cur, player, npc, a.amount, offers.get("tip"))
+
+
+def _close_deal(cur: Cursor, player: Player, view: RoomView, npc: Npc, key: str) -> list[str]:
+    """付钱成交一笔报过价的买卖：住店、升级、墙上的货、现做的东西"""
+    if key == "inn":
+        cur.execute("update player_npc_relations set offers = offers - 'inn' where player_id = %s and npc_template = %s",
+                    (player.id, npc.template.id))
+        return do_rest(cur, player, view, Rest(action="rest"))
+    if key.startswith("upgrade:"):
+        ref = next((r for r, uid in view.refs.items() if str(uid) == key[8:]), None)
+        if ref is None:
+            raise ActionError("要升级的武器不在身上了")
+        return do_upgrade(cur, player, view, Upgrade(action="upgrade", item=ref, target=next(
+            r for r, uid in view.refs.items() if uid == npc.id)))
+    r = (npc_buy_made if key.startswith("made:") else npc_sell)(cur.connection, player.id, npc, key)
+    if not r.success:
+        raise ActionError(r.facts[0])
+    return r.facts
+
+
+def _tip(cur: Cursor, player: Player, npc: Npc, amount: int, pending: Optional[dict]) -> list[str]:
+    """没在做买卖就给钱：第一次 NPC 只问一句，同样的数目再给一次（或者回一句"是""给你"）才收"""
+    if pending is None or pending["price"] != amount:
+        _put_offer(cur, player.id, npc, "tip", amount)
+        return [f"{player.name}想白给{npc.name} {amount} 金币（不是买东西），{npc.name}还没收",
+                f"{npc.name}要先问一句是不是真要给她，{player.name}确认了才收"]
+    cur.execute("update player_npc_relations set offers = offers - 'tip' where player_id = %s and npc_template = %s",
+                (player.id, npc.template.id))
+    return ([f"{player.name}把 {amount} 金币塞给了{npc.name}，{npc.name}收下了（白给的心意，不是买东西，她不用拿东西给他）"]
+            + _pay(cur, player, amount, npc))
 
 
 def do_give(cur: Cursor, player: Player, view: RoomView, a: Give) -> list[str]:
@@ -1809,7 +1878,7 @@ HANDLERS: dict[str, Callable[..., list[str]]] = {
     "say": do_say, "revive": do_revive, "stunt": do_stunt, "struggle": do_struggle,
     "follow": do_follow, "unfollow": do_unfollow, "invite": do_invite, "join": do_join, "leave_party": do_leave_party,
     "maneuver": do_maneuver, "dodge": do_dodge, "hide": do_hide, "search": do_search, "reject": do_reject,
-    "upgrade": do_upgrade, "respawn": do_respawn, "stand": do_stand, "rest": do_rest, "challenge": do_challenge, "accept_duel": do_accept_duel, "decline_duel": do_decline_duel, "flee": do_flee,
+    "upgrade": do_upgrade, "pay": do_pay, "respawn": do_respawn, "stand": do_stand, "rest": do_rest, "challenge": do_challenge, "accept_duel": do_accept_duel, "decline_duel": do_decline_duel, "flee": do_flee,
 }
 
 
