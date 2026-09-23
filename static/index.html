@@ -392,6 +392,13 @@ $("#side").onclick = e => {
 
 if (playerId) { $("#login").style.display = "none"; enter(); }
 setInterval(refresh, 3000);   // 没有 WebSocket，先轮询看其他玩家的变化
+
+// 关页面、关浏览器、跳走时让角色立刻睡着，不用等心跳超时。sendBeacon 在页面关掉时也能发出去。
+// 刷新也会触发，新页面第一次心跳会把人叫醒；切标签页、手机切后台不算退出，不触发
+addEventListener("pagehide", () => {
+  if (playerId) navigator.sendBeacon("/api/logout",
+    new Blob([JSON.stringify({ player_id: playerId })], { type: "application/json" }));
+});
 </script>
 </body>
 </html>
