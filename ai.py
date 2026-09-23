@@ -11,6 +11,7 @@ import json
 import os
 import re
 import time
+from difflib import SequenceMatcher
 from typing import Literal, Optional, Union
 from uuid import UUID
 
@@ -169,15 +170,21 @@ def _call(db, player_id: UUID, kind: str, system: str, user: str, fmt: type[Base
     check(out, last) 可以抛 ValueError 要求重来，last=True 表示没有重试机会了，应该尽量兜底"""
     generate = {"zhipu": _generate_zhipu, "gemini": _generate_gemini, "claude": _generate_claude}[provider()]
     usage_total = {"input": 0, "output": 0}
+    feedback = ""
     for attempt in range(2):
-        out, usage, mdl, latency = _generate_with_fallback(db, player_id, kind, generate, system, user,
+        # 重来时告诉模型上一版为什么没通过，不然它多半原样再写一遍
+        out, usage, mdl, latency = _generate_with_fallback(db, player_id, kind, generate, system, user + feedback,
                                                            fmt, max_tokens, prefer)
         usage_total["input"] += usage.input
         usage_total["output"] += usage.output
         try:
             result = check(out, attempt == 1) if (out is not None and check) else out
-        except (ValidationError, ValueError):
+        except ValidationError:
             result = None
+        except ValueError as e:
+            result = None
+            if str(e) and out is not None:
+                feedback = f"\n\n<retry>你上一版没通过检查：{e}。这次改正，别再犯。</retry>"
         _log(db, player_id, kind, mdl, usage, latency, result is not None)
         if result is not None:
             return result, usage_total
@@ -512,6 +519,13 @@ EFFECT_RE = re.compile(r"（[^（）]*(?:点血|伤害|防御|有毒|药倒|没�
 STAT_RE = re.compile(r"[^，。！？,.!?“”'‘’]*(?:回|恢复|加|掉)\s*[0-9一二三四五六七八九十两]+\s*点(?:血|HP|生命)[^，。！？,.!?“”'‘’]*[，,]?")
 TRADE_ACTIONS = {"quote", "npc_sell", "npc_create", "npc_give"}
 
+COPY_RUN = 12                           # 跟以前说过的话连续这么多字一样，就算照抄
+
+
+def _copies(reply: str, said: list[str]) -> bool:
+    return any(SequenceMatcher(None, reply, old, autojunk=False).find_longest_match().size >= COPY_RUN for old in said)
+
+
 def _tidy(text: str) -> str:
     """删掉半句之后收拾标点：连在一起的逗号、逗号接句末标点、开头的逗号"""
     text = re.sub(r"[，,]+(?=[。！？!?…”’'])", "", text)
@@ -577,6 +591,7 @@ observer（给同房间其他人看）：
 NPC 对话（只有 facts 里有对话时才用）：
 - NPC 按 <npc> 里的人设说话，要回应玩家说的内容，把 NPC 的台词写进叙事
 - 不要重复你在记忆里说过的原话，就算他问了一样的问题，也换个说法、接着最新的情况说
+- 话题也别老重复：最近几条记录里你已经提过的东西（某种酒、某个比方、某件旧事），这次就别再提，除非他主动问起；人设里列了好几样的（酒、比方），轮着用
 - 语气跟着 <npc> 里的好感度走：-30 以下嫌弃、刻薄、爱搭不理；-30 到 10 是人设的本色；10 到 50 嘴上照旧，但话里明显更关照、更愿意多说；50 以上是老交情，一定要流露出关心（嘴硬的人设也要露馅），不能只是冷冰冰地挖苦。人设里的口头禅、称呼可以用，但别每次都原样重复同一句，换着花样说
 - 物品交付以 facts 为准：facts 里有"把某物交给了""卖给了"就照写。facts 里没有交付时，只有"你卖的货""你以前做过、随时能再做的"里的东西，NPC 才能在这回合递给他，而且必须填 npc_handed（引擎会真的给他、按规矩收钱）；清单外的东西绝对不能写 NPC 给了、递了、塞了，也不要暗示马上会给。玩家要的东西 facts 里既没交付也没开价，NPC 就按人设说没有、不卖或者做不了（货架上、"你卖的货"里有的除外，那些可以报价），不能写拿出来、取出来
 - 玩家要的东西如果 <player> 里"身上带着"已经有了，NPC 就提醒他已经有了（"钥匙不是已经在你手上了吗"）。但 facts 里这回合刚交给他的东西也会出现在"身上带着"里，那是刚给的，不是他原来就有的
@@ -1000,6 +1015,9 @@ def narrate(db, view: RoomView, text: str, results: list[ActionResult],
                       for r in results)
         if npc and charged and not last and re.search(r"请你|送你|白送|免费|不要钱|不收钱|算我的", out.narrative):
             raise ValueError("这回合收了钱，不能写成请客白送")
+        # 照抄自己以前说过的话（记忆里"你回：……"）：连续 COPY_RUN 个字一样就重写一次
+        if npc and out.npc_reply and not last and _copies(out.npc_reply, re.findall(r"你回：“(.+?)”", memory or "")):
+            raise ValueError("照抄了自己以前说过的话")
         # 报价只干巴巴一句"黑啤，1 金币"：让它重写一次，带上闲聊
         if (npc and out.npc_reply and not last and len(PRICE_RE.sub("", out.npc_reply)) < 16
                 and any(r.success and r.action in TRADE_ACTIONS for r in results)):

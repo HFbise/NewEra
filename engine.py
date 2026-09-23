@@ -2389,6 +2389,14 @@ def ago(when: datetime) -> str:
     return "昨天" if days == 1 else f"{days} 天前" if days < 14 else f"{days // 7} 周前"
 
 
+NPC_REPLY_SHOWN = 12                    # 给叙事看的记录里，NPC 自己以前的回话只留开头这么多字，免得它整句照抄
+
+
+def _clip_replies(entry: str) -> str:
+    """NPC 自己说过的话只留个开头（"你回：“哟，杂鱼，这就……”"），玩家说的话完整留着。完整记录在库里不动"""
+    return re.sub(r"你回：“([^”]{%d})[^”]+”" % NPC_REPLY_SHOWN, r"你回：“\1……”", entry)
+
+
 def _bigrams(text: str, skip: set[str]) -> set[str]:
     """中文按两个字一组切（没有分词器，够用来找相关的旧记录）；含虚词的组不要"""
     chars = [c for c in text if "\u4e00" <= c <= "\u9fff" or c.isalnum()]
@@ -2413,7 +2421,7 @@ def get_npc_memory(conn: Connection, player_id: UUID, npc_id: UUID, query: str =
             (player_id, npc_id, NPC_LOG_RECENT),
         )
         recent = cur.fetchall()
-        log = [f"[{ago(r['created_at'])}] {r['entry']}" for r in recent]
+        log = [f"[{ago(r['created_at'])}] {_clip_replies(r['entry'])}" for r in recent]
         # 翻旧账：更早的记录里跟这句话重合最多的几条（两人的名字每条都有，不算）
         related = []
         if query and recent:
@@ -2427,7 +2435,7 @@ def get_npc_memory(conn: Connection, player_id: UUID, npc_id: UUID, query: str =
                    where l.player_id = %s and n.id = %s and l.id < %s order by l.id""",
                 (player_id, npc_id, recent[0]["id"]))
             scored = [(len(words & _bigrams(r["entry"], skip)), r) for r in cur.fetchall()] if words else []
-            related = [f"[{ago(r['created_at'])}] {r['entry']}"
+            related = [f"[{ago(r['created_at'])}] {_clip_replies(r['entry'])}"
                        for n, r in sorted(scored, key=lambda x: -x[0])[:NPC_LOG_RELATED] if n >= 2]
     summary = row["memory"] if row and row["memory"] else ""
     if not log:
