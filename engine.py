@@ -1471,6 +1471,8 @@ def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]
                 diff = max(diff, PRONE_DECISIVE_DIFFICULTY)
                 facts.append(f"{target.name}倒在地上，正好趁机下狠手")
                 tier, finisher = a.tier if is_npc else _lower(a.tier, TIERS), is_npc
+            elif not sneak and a.status != "incapacitated":
+                tier = _cap(tier, "heavy", TIERS)   # 对有防备的"一剑刺穿"只是描写，按重伤以下算，不是一击毙命
             elif not sneak:
                 facts.append(f"{target.name}有防备，想这样一下制住{'它' if is_npc else '他'}根本不可能")
                 return facts + (_npc_counter(cur, player, target) if is_npc else [])
