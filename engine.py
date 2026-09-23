@@ -326,16 +326,24 @@ def _affinity(cur: Cursor, player: Player, npc: Npc) -> int:
 # 签名统一: (cur, player, view, action) -> facts
 
 def do_move(cur: Cursor, player: Player, view: RoomView, a: Move) -> list[str]:
-    ex = _find_exit(cur, player.room_id, a.direction)
+    ex = _find_exit(cur, player.room_id, a.direction, lock=True)
     if ex is None:
         raise ActionError(f"这里没有往{dir_name(a.direction)}的路")
+    facts = []
     if ex["locked"]:
-        raise ActionError(f"往{dir_name(a.direction)}的门锁着")
+        # 身上带着对应的钥匙就顺手打开，不用玩家专门说"用钥匙开门"
+        keys = load_items(cur, "i.player_id = %s and i.template_id = %s", (player.id, ex["key_item"])) \
+            if ex["key_item"] else []
+        if not keys:
+            raise ActionError(f"往{dir_name(a.direction)}的门锁着")
+        cur.execute("update room_exits set locked = false, unlocked_at = now() where room_id = %s and direction = %s",
+                    (player.room_id, a.direction))
+        facts.append(f"{player.name}用{keys[0].name}打开了往{dir_name(a.direction)}的门")
     # 自己走就不再跟着别人
     cur.execute("update players set room_id = %s, following = null, updated_at = now() where id = %s",
                 (ex["to_room"], player.id))
     room = load_room(cur, ex["to_room"])
-    facts = [f"{player.name}往{dir_name(a.direction)}走，来到了{room.name}"]
+    facts.append(f"{player.name}往{dir_name(a.direction)}走，来到了{room.name}")
     # 同房间跟着他的人一起走：睡着、倒下、带着负面状态的跟不上
     cur.execute(
         f"""update players set room_id = %s, updated_at = now()
@@ -431,6 +439,9 @@ def do_look(cur: Cursor, player: Player, view: RoomView, a: Look) -> list[str]:
 
 def do_take(cur: Cursor, player: Player, view: RoomView, a: Take) -> list[str]:
     item = _get_item(cur, view, a.item)
+    if item.player_id == player.id:
+        # "从背包里拿出钥匙开门"会解析成先 take，东西本来就在身上，算成功，后面的动作照常执行
+        return [f"{item.name}就在{player.name}身上"]
     if item.room_id != player.room_id:
         raise ActionError(f"这里没有{item.name}")
     if not item.template.takeable:

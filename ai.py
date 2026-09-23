@@ -30,7 +30,7 @@ KEY_VARS = {"zhipu": "ZAI_API_KEY", "gemini": "GEMINI_API_KEY", "claude": "ANTHR
 # 调用出错时服务器捕获这些，退回规则结果
 API_ERRORS = (anthropic.APIError, genai_errors.APIError, ZaiError)
 
-ZHIPU_TIMEOUT = 25                      # 秒；超时算报错，有备用模型就换备用
+ZHIPU_TIMEOUT = 15                      # 秒；超时算报错，有备用模型就换备用（备用的 4-flash 一般 1 到 3 秒）
 
 _clients: dict = {}
 _action = TypeAdapter(PlayerAction).validate_python
@@ -63,9 +63,9 @@ class Usage(BaseModel):
 def _generate_zhipu(system: str, user: str, fmt: type[BaseModel], max_tokens: int, mdl: str):
     # 智谱只有 json_object 模式，不强制 schema，所以把 schema 写进 system，回来再用 Pydantic 校验
     if "zhipu" not in _clients:
-        # 读 ZAI_API_KEY，默认连国内 bigmodel.cn。SDK 默认限流时自己等着重试 3 次，会拖很久；
-        # 有备用模型时少重试、超时短一点，出问题直接换备用（见 _call）
-        _clients["zhipu"] = ZhipuAiClient(timeout=ZHIPU_TIMEOUT, max_retries=1)
+        # 读 ZAI_API_KEY，默认连国内 bigmodel.cn。SDK 默认限流、超时时自己等着重试 3 次，会拖很久；
+        # 这里不让它重试，出问题直接换备用模型（见 _generate_with_fallback）
+        _clients["zhipu"] = ZhipuAiClient(timeout=ZHIPU_TIMEOUT, max_retries=0)
     schema = json.dumps(fmt.model_json_schema(), ensure_ascii=False)
     resp = _clients["zhipu"].chat.completions.create(
         model=mdl, max_tokens=max_tokens,
@@ -325,6 +325,11 @@ def parse_intent(db, view: RoomView, text: str) -> tuple[Optional[list], dict]:
             if d["action"] == "use" and d.get("target") and d["target"] not in DIR_NAMES:
                 d = {"action": "stunt", "target": d["target"], "item": d["item"], "description": text,
                      "difficulty": "normal", "tier": "light"}
+            # 打的得是 NPC 或玩家；砍锁、砍门、砍树这种冲着东西去的当自由行动（模型会把地形 f1 填成目标）
+            npc_refs = {by_id[n.id] for n in view.npcs}
+            if (d["action"] in ("attack", "stunt") and d.get("target") not in npc_refs
+                    and d.get("target") not in {p.name for p in view.others}):
+                d = {"action": "freeform", "description": text}
             actions.append(_action(d))
         return actions
 
@@ -353,6 +358,7 @@ NARRATE_SYSTEM = """你是文字 MUD 游戏的叙事者，用中文第二人称�
 - 场景里的东西只能来自 <room> 的描述和环境细节、以及 facts。不要添加没写到的家具、物件、人物、动物
 - 可以加一点氛围点缀让文字有味道：光影、微风、气味、细小的声响、人物的神态和姿势。但不要定死天气、时间、季节（不写晴天雨天、清晨黄昏、酷暑寒冬）
 - 可以从环境细节里挑一两样写进叙事，让场景更具体；freeform 动作就围绕环境细节里的东西来写它的反应（敲空桶是咚咚声，敲满桶声音发闷）
+- 玩家用的武器、工具只能是 <player> 里"装备着""身上带着"的东西，或者 facts 里写到的；都没有就是空手，不要给玩家编出斧头、绳子、火把
 - 玩家和其他角色的名字只是称呼，不要从名字联想环境。其他玩家用【玩家1】这样的代号表示，写到他们时照原样写代号（"【玩家1】站在井边"），不要改成别的称呼
 - 其他玩家是真人在操作，只能写 facts 和 <recent> 里他们确实做过的事；不要替他们编动作、神态、手势、台词（"某某朝你点头示意跟上"这种都不行），最多写他们站在哪里
 - 名字后面标"（睡着了）"的玩家正在原地睡觉，不会回应也不会行动；标"倒下了""倒在地上"的玩家 HP 归零躺在地上，等人急救
@@ -465,9 +471,14 @@ def narrate(db, view: RoomView, text: str, results: list[ActionResult],
 
     facts, text, must = hide(facts), hide(text), [hide(m) for m in must]
     recent = [hide(r) for r in recent or []]
+    # 玩家手里拿着什么、身上带着什么：不告诉模型，它会给玩家编一把斧头
+    held = "、".join(i.name for i in view.inventory if i.equipped_slot) or "什么都没拿（空手）"
+    carried = "、".join(i.name + (f" x{i.quantity}" if i.quantity > 1 else "")
+                        for i in view.inventory if not i.equipped_slot) or "无"
     parts = [f"<room>\n{view.room.name}：{view.room.description}\n环境细节：{view.room.details}\n</room>",
              f"<player>角色名：{name}（只是称呼，不代表天气、环境或任何设定）；HP {view.player.hp}/{view.player.max_hp}"
-             + (f"；状态：{view.player.status.describe()}" if view.player.status else "") + "</player>"]
+             + (f"；状态：{view.player.status.describe()}" if view.player.status else "")
+             + f"\n装备着：{held}\n身上带着：{carried}</player>"]
     if npc:
         deeds = "、".join(view.player.flags) or "无"
         parts.append(
