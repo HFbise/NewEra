@@ -532,6 +532,10 @@ def narrate(db, view: RoomView, text: str, results: list[ActionResult],
             + (f"玩家已经有你能给的：{'、'.join(owned)}（他再要就提醒他已经在他身上了）\n" if owned else "")
             + "".join(f"委托（{QUEST_STAGES[stage]}）：{q['hook']}。要他做的：{q['goal']}\n" if stage != "closed"
                       else f"委托（已了结）：{q['after']}\n" for stage, q in quests or [])
+            # 明说有没有活，模型才不会顺口编一个"除非你帮我弄点酒来"
+            + ("你手上只有上面这些委托，没有别的。\n" if any(stage != "closed" for stage, _ in quests or [])
+               else "你手上现在没有委托。玩家问起有没有活，就直说没有了，可以请他喝一杯、陪你聊聊，或者让他四处转转；"
+                    "不要暗示以后会有什么差事\n")
             + (f"能把闹事的人轰出去，轰到门外的{eject_to}\n" if eject_to else "")
             + "</npc>"
         )
@@ -565,6 +569,11 @@ def narrate(db, view: RoomView, text: str, results: list[ActionResult],
         elif out.npc_reply:
             # 台词里的"你"就是对主角说的，留着；模型偶尔写出【主角】就换回名字，外层引号去掉（旁人那条自己加）
             out.npc_reply = out.npc_reply.replace("【主角】", name).strip().strip("“”\"'")
+            # 模型偶尔把台词只写进 npc_reply，叙事停在"……微笑："。台词开头对不上叙事就重写一次，还不行就补在末尾
+            if out.npc_reply[:6] not in out.narrative:
+                if not last:
+                    raise ValueError("叙事里没有 NPC 的台词")
+                out.narrative = out.narrative.rstrip() + f"“{out.npc_reply}”"
         # 查看房间漏写了东西：第一次让它重写，第二次还漏就在末尾补上
         text = out.narrative
         missing = [m for m in must if m not in text]
