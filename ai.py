@@ -654,7 +654,10 @@ def npc_line(db, view: RoomView, text: str, results: list[ActionResult], npc: Np
                      for st, q in quests or []) or "没有"
     user = (f"<npc>\n名字：{npc.name}\n外表：{npc.template.description}\n人设：{npc.template.persona}\n"
             f"对{view.player.name}的好感：{affinity}（-100 到 100）\n对他的记忆：\n{memory or '第一次见面'}\n"
-            f"你卖的货、做过的东西：{goods}\n委托：{tasks}\n</npc>\n\n"
+            f"你卖的货、做过的东西：{goods}\n委托：{tasks}\n"
+            + (f"住店：一晚 {npc.template.props['inn'].get('price', 0)} 金币，价钱固定不讲价（他说一句“住店”就能住）\n"
+               if npc.template.props.get("inn") else "")
+            + "</npc>\n\n"
             + ("<recent>\n" + "\n".join(recent) + "\n</recent>\n\n" if recent else "")
             + f"<this_turn>\n{this_turn}\n</this_turn>\n\n<player>{view.player.name}</player>\n"
             f"<player_input>\n{text}\n</player_input>")
@@ -990,6 +993,8 @@ def narrate(db, view: RoomView, text: str, results: list[ActionResult],
             + (f"能把闹事的人轰出去，轰到门外的{eject_to}\n" if eject_to else "")
             + ("你卖的货：" + "、".join(f"{s['name']}（建议价 {s['base_price']} 金币）" for s in sells) + "\n"
                if sells else "")
+            + (f"住店：一晚 {npc.template.props['inn'].get('price', 0)} 金币，价钱固定不讲价，回满体力、醒酒（他说一句“住店”就能住）\n"
+               if npc.template.props.get("inn") else "")
             + (f"你以前做过、随时能再做的：{'、'.join(g['name'] for g in made_before)}（有人要就说有）\n"
                if made_before else "")
             + ("你给他开过价、还没成交的：" + "、".join(f"{v['spec']['name']} {v['price']} 金币" for k, v in (offers or {}).items()
@@ -1031,6 +1036,8 @@ def narrate(db, view: RoomView, text: str, results: list[ActionResult],
                                                  if k.startswith("made:") and v.get("spec")]
 
     def check(out: Narration, last: bool) -> Narration:
+        # 4.5 常用英文单引号包台词，换成中文引号
+        out.narrative = re.sub(r"'([^'\n]+)'", r"“\1”", out.narrative)
         # 台词是单独演好的：叙事得原样用上，没写进去就重写一次，还没写就补在末尾
         if npc and line:
             out.npc_reply = line

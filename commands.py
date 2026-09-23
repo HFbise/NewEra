@@ -98,6 +98,9 @@ def parse_one(view: RoomView, text: str) -> dict:
         return {"action": "freeform", "description": text.strip()}
 
 
+REST_TALK_RE = re.compile(r"开.{0,2}房|住店|住一晚|投宿|睡一觉|过夜")
+
+
 def _parse_one(view: RoomView, t: str) -> dict:
     # 失去战斗能力时说什么都算挣扎着醒来；有 AI 时服务器会让 AI 按怎么做来判难度
     st = view.player.status
@@ -213,7 +216,13 @@ def _parse_one(view: RoomView, t: str) -> dict:
              or re.fullmatch(r"(?:say|talk)\s+(?:to\s+)?(\S+)\s+(.+)", t, re.I)):
         if name := _player(view, m[1]):
             return {"action": "say", "target": name, "message": m[2]}
-        return {"action": "talk", "target": _find(view, m[1], "npc"), "message": m[2]}
+        target = _find(view, m[1], "npc")
+        # 跟开店的说要住店（"对麦琪说 住店"）就是住店；只问价钱的还是说话，让她报价
+        npc = next((n for n in view.npcs if view.refs.get(target) == n.id), None)
+        if (npc and npc.template.props.get("inn") and REST_TALK_RE.search(m[2])
+                and not re.search(r"多少|几个?金币|什么价|价格|价钱|贵不贵|怎么收", m[2])):
+            return {"action": "rest"}
+        return {"action": "talk", "target": target, "message": m[2]}
 
     # 对大家说
     if m := re.fullmatch(r"(?:说|喊|say)[:：]?\s*(.+)", t, re.I):
