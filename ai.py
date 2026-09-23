@@ -523,6 +523,8 @@ def _tidy(text: str) -> str:
 PRICE_RE = re.compile(r"([0-9]+|[零一二两三四五六七八九十百]+)\s*(?:枚|个)?\s*金币")
 # 叙事里写成交了（收钱、付钱），facts 里却没有成交
 PAID_RE = re.compile(r"(收|付|掏出|接过|数出)[^。！？“”]{0,10}金币")
+# 叙事里写了 NPC 把东西交到玩家手上
+GAVE_RE = re.compile(r"(递|抛|扔|塞|交|推|丢|甩)给你|(递|抛|扔|塞|推|放|丢|甩)(到|进)你的?(怀里|手里|手上|手中|面前|跟前)")
 CN_DIGITS = {"零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
 
 
@@ -574,11 +576,12 @@ observer（给同房间其他人看）：
 
 NPC 对话（只有 facts 里有对话时才用）：
 - NPC 按 <npc> 里的人设说话，要回应玩家说的内容，把 NPC 的台词写进叙事
+- 不要重复你在记忆里说过的原话，就算他问了一样的问题，也换个说法、接着最新的情况说
 - 语气跟着 <npc> 里的好感度走：-30 以下嫌弃、刻薄、爱搭不理；-30 到 10 是人设的本色；10 到 50 嘴上照旧，但话里明显更关照、更愿意多说；50 以上是老交情，一定要流露出关心（嘴硬的人设也要露馅），不能只是冷冰冰地挖苦。人设里的口头禅、称呼可以用，但别每次都原样重复同一句，换着花样说
 - 物品交付以 facts 为准：facts 里有"把某物交给了""卖给了"就照写。facts 里没有交付时，只有"你卖的货""你以前做过、随时能再做的"里的东西，NPC 才能在这回合递给他，而且必须填 npc_handed（引擎会真的给他、按规矩收钱）；清单外的东西绝对不能写 NPC 给了、递了、塞了，也不要暗示马上会给。玩家要的东西 facts 里既没交付也没开价，NPC 就按人设说没有、不卖或者做不了（货架上、"你卖的货"里有的除外，那些可以报价），不能写拿出来、取出来
 - 玩家要的东西如果 <player> 里"身上带着"已经有了，NPC 就提醒他已经有了（"钥匙不是已经在你手上了吗"）。但 facts 里这回合刚交给他的东西也会出现在"身上带着"里，那是刚给的，不是他原来就有的
 - affinity_delta：根据玩家这回合的言行，NPC 好感变化，-5 到 5 的整数。一般聊天 0 到 1，礼貌帮忙加分，无礼威胁减分
-- NPC 要记得 <npc> 里"对这个玩家的记忆"，说话时自然体现（认出老熟人、提起上次的事）。但说"刚才你……""上次你……""你不是说过……"之前，那件事必须真的写在记忆、<recent> 或 facts 里，不能凭空说他做过、说过什么
+- NPC 要记得 <npc> 里"对这个玩家的记忆"，说话时自然体现（认出老熟人、提起上次的事）。但说"刚才你……""上次你……""你不是说过……"之前，那件事必须真的写在记忆、<recent> 或 facts 里，不能凭空说他做过、说过什么。他问"我刚才说了什么""上次我们聊了什么"，就照记忆里的原话回答（可以带着人设的态度复述、调侃）
 - <npc> 里的记忆 = 长期总结 + 跟这次话题有关的旧来往 + 最近几条原话记录，每条前面是离现在多久（"刚才""2 小时前""3 天前"）。说话时自然用上（认出老熟人、提起上次的事），但只能提记忆里真有的事；"刚才"只用于几分钟内的事，隔了好几天没来就可以说"好几天没见你了"
 - 买卖：成交价只照 facts 写（"卖给了……收了 N 金币"）。facts 里没有成交就不能写东西已经给了、钱已经收了
 - npc_offer：玩家问 <npc> 里"你卖的货"的价钱、想买时，NPC 报价：照建议价上下浮动（看他顺眼可以便宜一点，讨厌他可以贵一点，一般在建议价的一半到两倍之间，超出会被引擎拉回来）；玩家砍价，按人设决定让不让、让多少。"开过价、还没成交的"现做东西也能砍价。把 item（货的名字）和 price（整数金币）填在这里，台词里说的价要跟它一致；没报价就填 null。玩家得下一句同意了才会成交
@@ -964,7 +967,9 @@ def narrate(db, view: RoomView, text: str, results: list[ActionResult],
                 if len(named) == 1:
                     out.npc_offer = Offer(item=named.pop(), price=_cn_int(m[1]))
         # NPC 报价、卖东西时念了回几点血这种数值：重写一次，还念就把那一句删掉（平时聊天给建议可以说）
-        trading = any(r.success and r.action in TRADE_ACTIONS for r in results)
+        # 报价（台词里带着"N 金币"）也算：这时念回几点血就是在念商品数值
+        trading = (any(r.success and r.action in TRADE_ACTIONS for r in results)
+                   or bool(out.npc_reply and PRICE_RE.search(out.npc_reply)))
         if npc and trading and out.npc_reply and STAT_RE.search(out.npc_reply):
             if not last:
                 raise ValueError("NPC 台词里念了游戏数值")
@@ -1002,6 +1007,12 @@ def narrate(db, view: RoomView, text: str, results: list[ActionResult],
         # 报价必须是台词里说出口的价，没说出口的不算（模型会悄悄给别的货填个价，下一句"成交"就卖错东西）
         if out.npc_offer and not any(_cn_int(x) == out.npc_offer.price for x in PRICE_RE.findall(out.npc_reply or "")):
             out.npc_offer = None
+        # 这回合没交付，叙事却写了 NPC 把东西递给、抛给他（npc_handed 认出来的除外）：重写一次，还写就把那句删掉
+        delivered = any(r.success and r.action in ("npc_give", "npc_create", "npc_sell", "quest") for r in results)
+        if npc and not delivered and not out.npc_handed and GAVE_RE.search(out.narrative):
+            if not last:
+                raise ValueError("没有交付却写了 NPC 把东西给他")
+            out.narrative = "".join(x for x in re.split(r"(?<=[。！？”])", out.narrative) if not GAVE_RE.search(x))
         # 这回合没成交，叙事却写了收钱、付钱：重写一次
         dealt = any(r.success and r.action in ("npc_give", "npc_create", "npc_sell") for r in results)  # 开价（quote）不算成交
         if npc and not dealt and PAID_RE.search(out.narrative):
