@@ -103,6 +103,8 @@ def _parse_one(view: RoomView, t: str) -> dict:
     st = view.player.status
     if st and st.kind == "incapacitated":
         return {"action": "struggle", "description": t}
+    if re.fullmatch(r"住店|投宿|开房|开间房|要间房|住一晚|睡一觉|rest", t, re.I):
+        return {"action": "rest"}
     if re.fullmatch(r"站起来|爬起来|起身|起来|站起|爬起|stand( up)?", t, re.I):
         return {"action": "stand"}
     if re.fullmatch(r"挣脱|挣扎|醒来|醒过来|struggle", t, re.I):

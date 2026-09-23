@@ -85,6 +85,11 @@ class Respawn(BaseModel):
     target: Optional[str] = None        # 想去哪（地方名字的一部分），不填就是酒馆
 
 
+class Rest(BaseModel):
+    """住店：在有店家的地方付钱睡一觉，回满血、醒酒"""
+    action: Literal["rest"]
+
+
 class Stand(BaseModel):
     """倒地（被绊倒、掀翻）后爬起来：不用掷骰，但占掉这一下"""
     action: Literal["stand"]
@@ -240,7 +245,7 @@ class Reject(BaseModel):
 
 
 PlayerAction = Annotated[
-    Union[Move, Look, Take, Drop, Use, Equip, Unequip, Attack, Talk, Give, Upgrade, Say, Revive, Respawn, Stand, Invite, Join, LeaveParty,
+    Union[Move, Look, Take, Drop, Use, Equip, Unequip, Attack, Talk, Give, Upgrade, Say, Revive, Respawn, Stand, Rest, Invite, Join, LeaveParty,
           Follow, Unfollow, Challenge, AcceptDuel, DeclineDuel, Flee, Stunt, Struggle, Maneuver, Dodge, Hide, Search,
           Freeform, Reject],
     Field(discriminator="action"),

@@ -37,7 +37,7 @@ app.include_router(admin.router)
 # 这些动作的回合不调叙事 AI：facts 已经说清楚了，AI 反而容易替别的玩家编动作
 NO_NARRATION = {"say", "follow", "unfollow", "invite", "join", "leave_party", "challenge", "accept_duel", "decline_duel"}
 # NPC 对话里这些结果旁人也看得到（交东西、提委托、轰人），跟在对话原文后面
-NPC_OUTCOMES = {"npc_give", "npc_create", "npc_sell", "quote", "quest", "npc_eject", "upgrade"}
+NPC_OUTCOMES = {"npc_give", "npc_create", "npc_sell", "quote", "quest", "npc_eject", "upgrade", "rest"}
 
 
 class LoginReq(BaseModel):
@@ -369,10 +369,13 @@ def run_turn(req: CommandReq):
     offers, made_before = {}, []
     with pool.connection() as conn:
         results = engine.execute_all(conn, view, actions)
-        # 跟 NPC 说话、把东西交给 NPC、找铁匠升级都算跟他打交道：委托结算、NPC 回应
+        # 跟 NPC 说话、把东西交给 NPC、找铁匠升级、住店都算跟他打交道：委托结算、NPC 回应
         talk = next((a for a, r in zip(actions, results) if r.success and (
-            a.action in ("talk", "upgrade") or a.action == "give" and a.target in view.refs)), None)
-        npc_id = view.resolve(talk.target) if talk else None
+            a.action in ("talk", "upgrade", "rest") or a.action == "give" and a.target in view.refs)), None)
+        if talk and talk.action == "rest":
+            npc_id = next((n.id for n in view.npcs if n.template.props.get("inn")), None)
+        else:
+            npc_id = view.resolve(talk.target) if talk else None
         npc = _load_npc(conn, npc_id) if npc_id else None
         if npc:
             # 跟发布任务的 NPC 说话：做完的委托自动发奖励（有没有 AI 都一样），没接过的这次提起
@@ -406,8 +409,8 @@ def run_turn(req: CommandReq):
         try:
             # NPC 身上有能给的东西、或者能现造东西时，先单独决定给不给，执行完变成 fact，叙事再照着写
             # 交易：给现有的、现造、卖货，价钱 AI 定，引擎查钱够不够、扣钱、交货
-            # 升级武器这回合就只是升级，不再另外做买卖
-            if (giveable or creatable or sells) and talk.action != "upgrade":
+            # 升级武器、住店这回合就只是升级、住店，不再另外做买卖
+            if (giveable or creatable or sells) and talk.action not in ("upgrade", "rest"):
                 trade, u = ai.decide_give(pool, view, req.text, npc, giveable, creatable, affinity, memory,
                                           recent, sells, offers, made_before)
                 add(u)

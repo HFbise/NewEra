@@ -25,7 +25,7 @@ from schema import (
     ActionResult, Attack, Drop, Equip, Feature, Follow, Freeform, Give, Invite, ItemInstance, Join, LeaveParty, Look,
     Move, Npc, OtherPlayer, Player, PlayerAction, Reject, Revive, Room, RoomExit, RoomView, Say, Status, Struggle,
     Stunt, Take, Talk, Unfollow, Unequip, Use, dir_name, Dispenser, SLOT_CHOICES, SLOT_NAMES, Dodge, Hide, Maneuver, Search, Stealth,
-    AcceptDuel, Challenge, DeclineDuel, Duel, Flee, SKILL_NAMES, Upgrade, Respawn, Stand,
+    AcceptDuel, Challenge, DeclineDuel, Duel, Flee, SKILL_NAMES, Upgrade, Respawn, Stand, Rest,
 )
 
 
@@ -43,7 +43,9 @@ TIERS = ["none", "light", "heavy", "lethal"]
 # 伤害在区间里随机：自由动作是控场用的，新手拿它打伤害不如老老实实砍一刀
 TIER_RANGE = {"none": (0, 0), "light": (1, 3), "heavy": (3, 6), "lethal": (5, 9)}
 TIER_MIN_DIFFICULTY = {"none": 1, "light": 2, "heavy": 3, "lethal": 4}   # 伤得越重难度越高（对无力反抗的补刀不算）
-IMPROVISED_MAX_TIER = "light"           # 没在 world.yaml 声明成可利用地形的东西最多轻伤
+IMPROVISED_MAX_TIER = "light"           # 空手、随手的东西（没在 world.yaml 声明成可利用地形）最多轻伤
+WEAPON_MAX_TIER = "heavy"               # 拿武器的花样（挑、劈、刺喉）最多重伤
+WEAPON_STUNT_SHARE = 0.5                # 拿武器的花样打中了，档位伤害之外再加武器伤害的一半（向下取整）
 STATUS_MAX = "3 minutes"                # 负面状态最长多久自动解除，防止 AI 一直判醒不过来把人卡死
 # 被束缚时做不了的动作；失去战斗能力时只能挣脱（醒来）
 RESTRAINED_BLOCKED = {"move", "attack", "stunt", "take", "drop", "equip", "unequip", "use", "give", "revive", "hide", "search",
@@ -1403,6 +1405,10 @@ def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]
                 and (a.consume or a.status == "restrained" and not feature) else None)
     if material and _precious(cur, material):
         raise ActionError(f"{material.name}太要紧了，不能拿来这么用")
+    # 拿武器做花样比空手能打得狠：上限放到重伤，打中了再加一半武器伤害
+    weapon = item if item and item.template.type == "weapon" else None
+    if weapon and not feature:
+        cap = WEAPON_MAX_TIER
     tier = _cap(a.tier, cap, TIERS)
     escape = a.escape if feature or item else 1       # 随手的东西弄出来的状态都好挣脱
 
@@ -1496,7 +1502,8 @@ def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]
     # 偷袭、补刀判成致命就是一击毙命（扭断脖子），其余按档位的区间随机
     lethal_blow = finisher and tier == "lethal"
     if dmg := (0 if harmless_prank else poison.harm if poison else target.hp if lethal_blow
-               else random.randint(*TIER_RANGE[tier])):
+               else random.randint(*TIER_RANGE[tier])
+               + (int(weapon.damage * WEAPON_STUNT_SHARE) if weapon and tier != "none" else 0)):
         if is_npc:
             hurt, down = _hurt_npc(cur, player, target, dmg)
         else:
@@ -1547,6 +1554,20 @@ def _push_target(cur: Cursor, player: Player, name: str) -> tuple[Player, bool]:
         raise ActionError(f"{target.name}睡着了，不能趁人睡着下手")
     mate = bool(player.party_id and player.party_id == target.party_id)
     return target, mate or target.hp <= 0
+
+
+def do_rest(cur: Cursor, player: Player, view: RoomView, a: Rest) -> list[str]:
+    """住店：这里有开店的 NPC（world.yaml 的 props.inn）就付钱睡一觉，回满血、醒酒、状态清掉"""
+    host = next((n for n in view.npcs if n.template.props.get("inn") and n.status is None), None)
+    if host is None:
+        raise ActionError("这里没有能住的地方")
+    price = host.template.props["inn"].get("price", 0)
+    patron = _pay(cur, player, price, host)
+    cur.execute("""update players set hp = max_hp, status = null, drunk_until = null, drinks = 0, updated_at = now()
+                   where id = %s""", (player.id,))
+    return [f"{player.name}付了 {price} 金币，在{host.name}这儿要了间房，美美睡了一觉",
+            f"{player.name}精神饱满，HP {player.max_hp}/{player.max_hp}"
+            + ("，酒也醒了" if player.drunk else "")] + patron
 
 
 def do_stand(cur: Cursor, player: Player, view: RoomView, a: Stand) -> list[str]:
@@ -1720,10 +1741,10 @@ def do_upgrade(cur: Cursor, player: Player, view: RoomView, a: Upgrade) -> list[
         # 第一次只开价，说清风险，玩家再说一次才动手
         _put_offer(cur, player.id, npc, key, cost)
         return [f"{npc.name}看了看{player.name}的{item.name}：{terms}", f"{player.name}再说一次要升级，{npc.name}就动手"]
-    _pay(cur, player, cost)
+    patron = _pay(cur, player, cost, npc)
     cur.execute("update player_npc_relations set offers = offers - %s where player_id = %s and npc_template = %s",
                 (key, player.id, npc.template.id))
-    facts = [f"{player.name}付了 {cost} 金币，{npc.name}把{item.name}放进炉火里重新锻打（{terms}）"]
+    facts = [f"{player.name}付了 {cost} 金币，{npc.name}把{item.name}放进炉火里重新锻打（{terms}）"] + patron
     if _roll(risk):
         cur.execute("delete from item_instances where id = %s", (item.id,))
         return facts + [f"淬火的时候{item.name}裂成了两截，碎掉了"]
@@ -1786,7 +1807,7 @@ HANDLERS: dict[str, Callable[..., list[str]]] = {
     "say": do_say, "revive": do_revive, "stunt": do_stunt, "struggle": do_struggle,
     "follow": do_follow, "unfollow": do_unfollow, "invite": do_invite, "join": do_join, "leave_party": do_leave_party,
     "maneuver": do_maneuver, "dodge": do_dodge, "hide": do_hide, "search": do_search, "reject": do_reject,
-    "upgrade": do_upgrade, "respawn": do_respawn, "stand": do_stand, "challenge": do_challenge, "accept_duel": do_accept_duel, "decline_duel": do_decline_duel, "flee": do_flee,
+    "upgrade": do_upgrade, "respawn": do_respawn, "stand": do_stand, "rest": do_rest, "challenge": do_challenge, "accept_duel": do_accept_duel, "decline_duel": do_decline_duel, "flee": do_flee,
 }
 
 
@@ -1894,13 +1915,32 @@ def giveable_items(conn: Connection, player_id: UUID, npc_id: UUID) -> list[Item
         return [i for i in items if _give_rule_ok(cur, npcs[0], player, i)]
 
 
-def _pay(cur: Cursor, player: Player, price: int) -> None:
-    """交易扣钱：价钱是 AI 定的，这里只管够不够、扣掉。钱不够整笔交易回滚"""
+# 在 NPC 那儿花钱加好感：每次成交 +1，每满 10 金币再 +1，一次最多 PATRON_MAX；
+# 光靠花钱最多到 PATRON_CAP，再往上（白送东西的交情）得靠聊天、帮忙、做委托
+PATRON_MAX = 5
+PATRON_CAP = 30
+
+
+def _pay(cur: Cursor, player: Player, price: int, npc: Optional[Npc] = None) -> list[str]:
+    """交易扣钱：价钱是 AI 定的，这里只管够不够、扣掉。钱不够整笔交易回滚。
+    给了 npc 就是在他那儿消费，好感跟着涨，返回好感变化的 fact"""
     price = max(0, price)
     if price > player.gold:
         raise ActionError(f"{player.name}的钱不够，要 {price} 金币，身上只有 {player.gold} 金币")
-    if price:
-        cur.execute("update players set gold = gold - %s where id = %s", (price, player.id))
+    if not price:
+        return []
+    cur.execute("update players set gold = gold - %s where id = %s", (price, player.id))
+    if npc is None:
+        return []
+    now = _affinity(cur, player, npc)
+    new = max(now, min(PATRON_CAP, now + min(PATRON_MAX, 1 + price // 10)))
+    if new == now:
+        return []                       # 已经是熟客了，再花钱也不涨
+    cur.execute(
+        """insert into player_npc_relations (player_id, npc_template, affinity) values (%s, %s, %s)
+           on conflict (player_id, npc_template) do update set affinity = excluded.affinity""",
+        (player.id, npc.template.id, new))
+    return [f"{npc.name}对{player.name}的好感上升（当前 {new}，照顾生意）"]
 
 
 def _deal(npc: Npc, player: Player, name: str, price: int) -> str:
@@ -1921,9 +1961,9 @@ def npc_give(conn: Connection, player_id: UUID, npc_id: UUID, item_id: UUID, pri
             items = load_items(cur, "i.id = %s and i.npc_id = %s", (item_id, npc.id), lock=True)
             if not items or not _give_rule_ok(cur, npc, player, items[0]):
                 raise ActionError(f"{npc.name}不会给这个")
-            _pay(cur, player, price)
+            patron = _pay(cur, player, price, npc)
             _move_item(cur, items[0], player_id=player.id)
-        return ActionResult(action="npc_give", success=True, facts=[_deal(npc, player, _label(items[0]), price)])
+        return ActionResult(action="npc_give", success=True, facts=[_deal(npc, player, _label(items[0]), price)] + patron)
     except ActionError as e:
         return ActionResult(action="npc_give", success=False, facts=[str(e)])
 
@@ -1999,14 +2039,14 @@ def npc_sell(conn: Connection, player_id: UUID, npc: Npc, template_id: str) -> A
         with conn.transaction():
             cur = _cursor(conn)
             player = load_player(cur, player_id, lock=True)
-            _pay(cur, player, offer["price"])
+            patron = _pay(cur, player, offer["price"], npc)
             # 成交了这个报价就作废，再买要重新谈
             cur.execute("update player_npc_relations set offers = offers - %s where player_id = %s and npc_template = %s",
                         (template_id, player_id, npc.template.id))
             cur.execute("insert into item_instances (template_id, player_id) values (%s, %s)", (template_id, player_id))
             cur.execute("select name from item_templates where id = %s", (template_id,))
             name = cur.fetchone()["name"]
-        return ActionResult(action="npc_sell", success=True, facts=[_deal(npc, player, name, offer["price"])])
+        return ActionResult(action="npc_sell", success=True, facts=[_deal(npc, player, name, offer["price"])] + patron)
     except ActionError as e:
         return ActionResult(action="npc_sell", success=False, facts=[str(e)])
 
@@ -2227,13 +2267,13 @@ def npc_buy_made(conn: Connection, player_id: UUID, npc: Npc, key: str) -> Actio
         with conn.transaction():
             cur = _cursor(conn)
             player = load_player(cur, player_id, lock=True)
-            _pay(cur, player, offer["price"])
+            patron = _pay(cur, player, offer["price"], npc)
             _make(cur, player_id, spec)
             _remember_goods(cur, npc, spec, offer["price"])
             cur.execute("update player_npc_relations set offers = offers - %s where player_id = %s and npc_template = %s",
                         (key, player_id, npc.template.id))
         return ActionResult(action="npc_create", success=True,
-                            facts=[_deal(npc, player, f"{spec['name']}（{effect_text(spec)}）", offer["price"])])
+                            facts=[_deal(npc, player, f"{spec['name']}（{effect_text(spec)}）", offer["price"])] + patron)
     except ActionError as e:
         return ActionResult(action="npc_create", success=False, facts=[str(e)])
 

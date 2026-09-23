@@ -184,7 +184,7 @@ def _call(db, player_id: UUID, kind: str, system: str, user: str, fmt: type[Base
 class AIAction(BaseModel):
     """给 AI 的扁平格式，比嵌套 union 好填；回来再转成 PlayerAction 校验"""
     action: Literal["move", "look", "take", "drop", "use", "equip", "unequip", "attack", "talk", "give", "say",
-                    "upgrade", "respawn", "stand", "revive", "invite", "join", "leave_party", "follow", "unfollow", "challenge", "accept_duel",
+                    "upgrade", "respawn", "stand", "rest", "revive", "invite", "join", "leave_party", "follow", "unfollow", "challenge", "accept_duel",
                     "decline_duel", "flee", "stunt", "struggle",
                     "maneuver", "dodge", "hide", "search", "freeform", "reject"]
     direction: Optional[str] = None
@@ -230,6 +230,7 @@ INTENT_SYSTEM = """你是文字 MUD 游戏的指令解析器。读玩家的输�
 - talk: target（NPC 的 ref），message（玩家说的话，保留原话）。找 NPC 买东西、问价、砍价、点菜、要东西都是 talk
 - give: item（背包物品的 ref），target（NPC 的 ref；给其他玩家时填"其他玩家"里的名字）。给、递、交、送、塞到他手里是 give：东西到了对方手上，吃不吃是他的事。喂他吃、塞进他嘴里（强行的也算）、给他灌下去是 use 不是 give
 - upgrade: item（背包里武器的 ref），target（会升级武器的铁匠 NPC 的 ref）。找铁匠升级、强化、重新锻打自己的武器；问升级要多少钱也是 upgrade（第一次引擎只开价，再说一次才动手）
+- rest: 不用填字段。在酒馆这种能住的地方住店、开房、要间房睡一觉（跟老板说"我要住店"也是 rest）
 - stand: 不用填字段。自己倒在地上（被绊倒、掀翻）时爬起来、站起来、起身
 - respawn: target 可空（想被抬去的地方名字，不说就是酒馆）。自己倒下了，选择复活、回酒馆、回城
 - say: message（说的话，保留原话），target 可空（对某个玩家说时填"其他玩家"里的名字，对大家说不填）
@@ -246,7 +247,7 @@ INTENT_SYSTEM = """你是文字 MUD 游戏的指令解析器。读玩家的输�
 - stunt: 借环境或创意动作去伤害、制住某个 NPC 或玩家（推石头砸、用铁叉捅、绊倒、用绳子捆、泼东西迷眼）。拿吃的喝的去砸、扔、泼人也是 stunt（item 填那样东西）；喂进嘴里、灌下去是 use 不是 stunt。你是裁判，要填：
   - target（NPC 的 ref 或其他玩家的名字），description（第三人称简述怎么做的）
   - feature：用到"可利用地形"里的东西就填它的 ref（如 f1）；只用环境描述里随手的东西就不填
-  - item：用到背包里的东西（绳子、腰带、武器等）就填它的 ref，只能填"背包"列表里的；地上的东西要先 take；没用就不填。玩家点名用哪样就填哪样；没点名就挑一样合理又最不值钱的，钥匙、任务要交的东西、护符这类贵重的别挑
+  - item：用到背包里的东西（绳子、腰带、武器等）就填它的 ref（用手上的武器砍、刺、劈、挑也要填武器，能多打伤害），只能填"背包"列表里的；地上的东西要先 take；没用就不填。玩家点名用哪样就填哪样；没点名就挑一样合理又最不值钱的，钥匙、任务要交的东西、护符这类贵重的别挑
   - consume：item 这一下会被用掉就填 true（泼出去的油和酒、点着的布条、撒出去的石灰、扔出去砸碎的瓶子）；拿刀比划、用铲子撬、挥武器这种用完还在手上的填 false。捆人用的东西引擎会自动用掉，不用管
   - knockback：把 NPC 踹开、撞退、推远时填推出去几格（1 或 2），不推开不填
   - push：把对方推、踹、扔、拖进某个出口时填那个出口的英文名，做成了对方就到了那边（只能对其他玩家，队友、倒下的人也行）。门锁着的话同一句里要先 use 钥匙开门，比如"开门把他踹进去"是 use 加 stunt（push 填 down）
@@ -378,6 +379,10 @@ def parse_intent(db, view: RoomView, text: str) -> tuple[Optional[list], dict]:
             for field in ("difficulty", "escape", "tier", "status"):
                 if isinstance(d.get(field), str):
                     d[field] = JUDGE_WORDS.get(d[field].strip().lower(), d[field].strip().lower())
+            # 跟开店的说要住店、开房，模型常写成 talk：转成 rest
+            if (d["action"] == "talk" and re.search(r"开.{0,2}房|住店|住一晚|投宿|睡一觉|过夜", d.get("message", ""))
+                    and any(n.template.props.get("inn") for n in view.npcs)):
+                d = {"action": "rest"}
             # 跟铁匠说要升级、强化自己的武器，模型常写成 talk：转成 upgrade，武器按原话挑，挑不出就用手上拿着的
             by_id = {uid: ref for ref, uid in view.refs.items()}
             smith =next((n for n in view.npcs if n.template.props.get("upgrades") and by_id[n.id] == d.get("target")), None)
@@ -386,6 +391,12 @@ def parse_intent(db, view: RoomView, text: str) -> tuple[Optional[list], dict]:
                 named = [i for i in weapons if any(ch in d["message"] for ch in set(i.name) - set("的"))]
                 pick = (named or sorted(weapons, key=lambda i: i.equipped_slot != "right_hand"))[0]
                 d = {"action": "upgrade", "item": by_id[pick.id], "target": d["target"]}
+            # 说了拿刀剑斧头砍、刺，模型却没填武器：用手上拿着的那把（没填就按空手算，伤害少）
+            held = [i for i in view.inventory if i.template.type == "weapon" and i.equipped_slot]
+            if (d["action"] == "stunt" and not d.get("item") and held
+                    and re.search(r"剑|刀|斧|镰|匕|枪|锤|刃|砍|劈|刺|捅|斩", d.get("description", "") + text)):
+                named = [i for i in held if any(ch in text for ch in set(i.name) - set("的"))]
+                d["item"] = by_id[(named or sorted(held, key=lambda i: i.equipped_slot != "right_hand"))[0].id]
             # 砍断手臂、刺穿、割伤只是伤害的描写，按 tier 扣血，不附加状态：
             # 束缚得有能捆人的东西（地形、背包里的绳子腰带），拿武器的"捆住"不算；失去战斗能力得是打晕、药倒这类
             weapon_refs = {by_id[i.id] for i in view.inventory if i.template.type == "weapon"}

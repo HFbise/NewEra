@@ -240,6 +240,8 @@ npcs:
         drink: {heal: 5, harm: 5, knockout: true}
         misc: {}
       # 玩家闹事时能把人轰出去：从这个出口扔出去。不写就不能轰人
+      # 能住店：付钱睡一觉回满血、醒酒
+      inn: {price: 5}
       # 吧台上的货，价钱由 AI 按建议价浮动
       sells: [dwarf_stout, elf_mead, dragon_breath, sober_potion]
       eject_to: south
