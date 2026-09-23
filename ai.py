@@ -381,8 +381,11 @@ def parse_intent(db, view: RoomView, text: str) -> tuple[Optional[list], dict]:
             feeding = d.get("item") in food and to_player and not THROW_WORDS.search(text)
             if feeding and d["action"] == "use":
                 # 喂的东西得是玩家说的那样：模型会拿背包里别的顶替（说喂药草，喂下去的是毒酒）
-                name = next(i.name for i in view.inventory if by_id[i.id] == d["item"])
-                if name not in text and name[-2:] not in text:
+                # 按字比对，不按整词：玩家会把"药草"写成"草药"、把"矮人黑啤"简称"黑啤"、只说"喂他喝点酒"。
+                # 挑中的一个字都对不上，或者背包里别的吃喝跟原话对得更多，就是挑错了
+                score = {by_id[i.id]: sum(ch in text for ch in set(i.name))
+                         for i in view.inventory if i.template.type == "consumable"}
+                if score[d["item"]] == 0 or max(score.values()) > score[d["item"]]:
                     d = {"action": "reject", "reason": "背包里没有玩家要喂的那样东西"}
             if d["action"] == "use" and d.get("target") and d["target"] not in DIR_NAMES and not feeding:
                 d = {"action": "stunt", "target": d["target"], "item": d["item"], "description": text,
