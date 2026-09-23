@@ -145,11 +145,11 @@ function render(s) {
       (n.max_hp ? `<span class="tag">${n.hp}/${n.max_hp}</span>` : "") +
       (n.status ? `<span class="tag">${esc(n.status)}</span>` : ""))).join("")}</ul>` : ""}
     ${s.others.length ? `<h2>其他玩家</h2><ul>${s.others.map(o => o.hp <= 0
-      ? `<li data-name="急救${esc(o.name)}">${esc(o.name)}<span class="tag">倒下了</span></li>`
-      : `<li data-name="对${esc(o.name)}说 ">${esc(o.name)}<span class="tag">${o.status ? esc(o.status) : o.awake ? "HP " + o.hp : "睡着了"}</span></li>`).join("")}</ul>` : ""}
+      ? `<li data-name="${esc(o.name)}">${esc(o.name)}<span class="tag">倒下了</span></li>`
+      : `<li data-name="${esc(o.name)}">${esc(o.name)}<span class="tag">${o.status ? esc(o.status) : o.awake ? "HP " + o.hp : "睡着了"}</span></li>`).join("")}</ul>` : ""}
     ${s.following ? `<div class="sys">正跟着${esc(s.following)}（输入"停止跟随"不跟了）</div>` : ""}
     ${s.party.length ? `<h2>队伍</h2><ul>${s.party.map(n => `<li>${esc(n)}</li>`).join("")}</ul>` : ""}
-    ${s.invites.length ? `<h2>组队邀请</h2><ul>${s.invites.map(n => `<li data-name="加入${esc(n)}的队伍">${esc(n)}<span class="tag">点一下接受</span></li>`).join("")}</ul>` : ""}
+    ${s.invites.length ? `<h2>组队邀请</h2><ul>${s.invites.map(n => `<li data-name="${esc(n)}">${esc(n)}<span class="tag">邀请你组队</span></li>`).join("")}</ul>` : ""}
     ${s.items.length ? `<h2>地上</h2><ul>${s.items.map(i => li(i.ref, i.name,
       i.quantity > 1 ? `<span class="tag">x${i.quantity}</span>` : "")).join("")}</ul>` : ""}
     <h2>背包</h2>
@@ -158,17 +158,12 @@ function render(s) {
       (i.equipped ? `<span class="tag">[${i.equipped === "weapon" ? "武器" : "护甲"}]</span>` : ""))).join("") || '<li class="sys">空</li>'}</ul>
     <h2>命令</h2>
     <div id="help">
-      看 / 看 哥布林 / 看 北<br>
-      北 南 东 西 上 下（或 n s e w u d）<br>
-      拿面包 · 扔面包 · 装备短剑 · 吃药草<br>
-      打哥布林 · 开下面的门 · 用钥匙 下<br>
-      对老汉斯说 你好 · 把面包给老汉斯<br>
-      说 大家好 · 对寒风说 跟我来（对玩家说话不走 AI）<br>
-      邀请寒风组队 · 加入寒风的队伍 · 离开队伍<br>
-      急救寒风 · 打寒风（不能打睡着的人和队友）<br>
-      跟着寒风（他走你也走）· 停止跟随<br>
-      借环境打人：推石头砸哥布林、用绳子捆住寒风（AI 判定）· 挣脱<br>
-      用 ; 分隔多个命令，其他输入算 自由行动<br>      点侧栏里的名字会填进输入框
+      看 · 北 南 东 西 上 下<br>
+      拿 · 扔 · 装备 · 吃 · 给<br>
+      打 · 说 · 对某人说<br>
+      邀请组队 · 加入队伍 · 离开队伍<br>
+      跟着 · 停止跟随 · 急救 · 挣脱<br>
+      其他想做的事直接写，AI 判定
     </div>
     <h2></h2>
     <a href="#" id="logout" class="sys">换角色</a>　<a href="#" id="delete" class="sys">删除角色</a>`;

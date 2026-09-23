@@ -110,6 +110,7 @@ class Stunt(BaseModel):
     description: str                    # 第三人称简述怎么做的
     feature: Optional[str] = None       # 用到的可利用地形 ref（f1）；只用环境里随手的东西就空，最多轻伤
     item: Optional[str] = None          # 用到的背包物品 ref（绳子、武器）；捆人（restrained）必须有 feature 或 item
+    push: Optional[str] = None          # 把对方推、踹、扔进哪个出口（英文方向），成功就挪到那个房间；只能推玩家
     difficulty: Difficulty = "normal"   # 做成的难度，引擎按它掷骰
     tier: Tier = "none"                 # 做成时的伤害档位
     status: Optional[StatusKind] = None # 做成时给对方加的负面状态

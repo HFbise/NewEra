@@ -196,6 +196,7 @@ class AIAction(BaseModel):
     status: Optional[str] = None
     status_label: Optional[str] = None
     escape: Optional[str] = None
+    push: Optional[str] = None
 
 
 class AIParsed(BaseModel):
@@ -209,7 +210,7 @@ INTENT_SYSTEM = """你是文字 MUD 游戏的指令解析器。读玩家的输�
 3. 都不是，这句话不成立？输出 reject，reason 里用第三人称客观写明为什么做不到
 
 标准动作和字段：
-- move: direction（出口的英文名，必须在出口列表里）。只有玩家明确说了方向或目的地（往北、去酒馆、下地窖）才是 move，不要根据别人去了哪、叙事里写了什么来猜方向
+- move: direction（出口的英文名，必须在出口列表里）。只有玩家明确说了方向或目的地（往北、去酒馆、下地窖、钻进去）才是 move，不要根据别人去了哪、叙事里写了什么来猜方向。出口标着"你带着能开这扇门的钥匙"时，想进去就是 move（会自动用钥匙开门），只说开门就是 use 钥匙，开门又进去就是 use 加 move；不要因为锁着就 reject
 - look: target 可空（空=看整个房间；也可以是 ref 或出口英文名）
 - take: item（地上物品的 ref）
 - drop: item（背包物品的 ref）
@@ -229,6 +230,7 @@ INTENT_SYSTEM = """你是文字 MUD 游戏的指令解析器。读玩家的输�
   - target（NPC 的 ref 或其他玩家的名字），description（第三人称简述怎么做的）
   - feature：用到"可利用地形"里的东西就填它的 ref（如 f1）；只用环境描述里随手的东西就不填
   - item：用到背包里的东西（绳子、武器等）就填它的 ref，只能填"背包"列表里的；地上的东西要先 take；没用就不填
+  - push：把对方推、踹、扔、拖进某个出口时填那个出口的英文名，做成了对方就到了那边（只能对其他玩家，队友、倒下的人也行）。门锁着的话同一句里要先 use 钥匙开门，比如"开门把他踹进去"是 use 加 stunt（push 填 down）
   - difficulty：做成的难度 easy / normal / hard，看动作合不合理、对方有没有防备
   - tier：做成时的伤害 none（不伤人，比如捆绑）/ light（轻伤）/ heavy（重伤）/ lethal（足以致命），照实判断，规则会按地形限幅
   - status：做成时对方陷入的负面状态，不会就不填。incapacitated = 失去战斗能力（砸晕、打昏、呛晕）；restrained = 被束缚（捆住、压住、缠住）
@@ -256,7 +258,10 @@ INTENT_SYSTEM = """你是文字 MUD 游戏的指令解析器。读玩家的输�
 
 def room_context(view: RoomView) -> str:
     by_id = {uid: ref for ref, uid in view.refs.items()}
-    exits = "、".join(f"{e.direction}（{dir_name(e.direction)}）" + ("锁着" if e.locked else "")
+    # 锁着的门如果玩家带着钥匙要标出来，不然模型看到"锁着"就直接 reject
+    keys = {i.template.id for i in view.inventory}
+    exits = "、".join(f"{e.direction}（{dir_name(e.direction)}）"
+                     + (("锁着，你带着能开这扇门的钥匙" if e.key_item in keys else "锁着") if e.locked else "")
                      for e in view.exits) or "无"
     items = "、".join(f"{by_id[i.id]} {i.name}" for i in view.items) or "无"
     npcs = "、".join(f"{by_id[n.id]} {n.name}" + (f"（{n.status.describe()}）" if n.status else "")
@@ -305,7 +310,7 @@ def parse_intent(db, view: RoomView, text: str) -> tuple[Optional[list], dict]:
                     r"包扎|急救|止血|扶|救|喂|叫醒|唤醒|治疗|人工呼吸|松绑|解开|割开|割断", said)
                     or d["action"] == "struggle" and view.player.status is None):
                 d = {"action": "revive", "target": who[0]}
-            for field in ("item", "target", "direction", "feature"):
+            for field in ("item", "target", "direction", "feature", "push"):
                 if field not in d:
                     continue
                 # 玩家名字可能带着抄过来的"（睡着了）""（倒下了）"，方向可能是 "up（上）"
@@ -314,7 +319,7 @@ def parse_intent(db, view: RoomView, text: str) -> tuple[Optional[list], dict]:
                 # 开头不是 ref 或方向的是玩家名字（say、PvP、急救、组队），原样留着
                 m = re.match(r"([A-Za-z]+\d*)", v)
                 if d["action"] != "say" and m and (m[1] in view.refs or m[1].lower() in DIR_NAMES):
-                    v = m[1].lower() if field == "direction" else m[1]
+                    v = m[1].lower() if field in ("direction", "push") else m[1]
                 d[field] = v
             by_id = {uid: ref for ref, uid in view.refs.items()}
             carried = {by_id[i.id] for i in view.inventory}

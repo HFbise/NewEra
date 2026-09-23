@@ -647,10 +647,26 @@ def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]
     tier = _cap(a.tier, cap, TIERS)
     escape = a.escape if feature or item else "easy"   # 随手的东西弄出来的状态都好挣脱
 
+    # 把人推、踹、扔进某个出口：门得开着（同一句里先开门就行）
+    exit_ = None
+    if a.push:
+        exit_ = _find_exit(cur, player.room_id, a.push)
+        if exit_ is None:
+            raise ActionError(f"这里没有往{dir_name(a.push)}的路")
+        if exit_["locked"]:
+            raise ActionError(f"往{dir_name(a.push)}的门锁着，推不过去")
+
     if a.target in view.refs:
         target = _room_npc(cur, view, player, a.target)
         if not target.combatable:
             raise ActionError(f"{target.name}不是能打的对象")
+        if exit_:
+            raise ActionError(f"{target.name}不肯挪窝，推不走")      # NPC 暂时不能挪房间
+    elif exit_:
+        target, harmless = _push_target(cur, player, a.target)
+        tier, escape = _lower(tier, TIERS), _lower(escape, DIFFICULTIES)
+        if harmless:                                              # 推队友、拖倒下的人：只挪位置不伤人
+            tier, a.status = "none", None
     else:
         target = _pvp_target(cur, player, a.target)
         tier, escape = _lower(tier, TIERS), _lower(escape, DIFFICULTIES)
@@ -665,7 +681,7 @@ def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]
         return facts + (_npc_counter(cur, player, target) if is_npc else [])
 
     facts.append("成功了")
-    down = False
+    down = stunned = False
     if dmg := TIER_DAMAGE[tier]:
         hurt, down = _hurt_npc(cur, player, target, dmg) if is_npc else _hurt_player(cur, target, dmg)
         facts += [f"{target.name}受到 {dmg} 点伤害"] + hurt
@@ -675,10 +691,28 @@ def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]
                     or ("被打得失去了战斗能力" if a.status == "incapacitated" else "被困住了"))
         _set_status(cur, "npcs" if is_npc else "players", target.id, st)
         facts.append(f"{target.name}{st.describe()}")
-        return facts                                  # 刚被放倒、捆住的 NPC 这回合不还手
-    if is_npc and not down:
+        stunned = True                                # 刚被放倒、捆住的 NPC 这回合不还手
+    if exit_:
+        room = load_room(cur, exit_["to_room"])
+        cur.execute("update players set room_id = %s, following = null, updated_at = now() where id = %s",
+                    (exit_["to_room"], target.id))
+        facts.append(f"{target.name}被弄到了{room.name}")
+        # 那边的人（包括被推的人自己）看到他进来；player_id 记推人的，被推的人自己才收得到这条
+        cur.execute("insert into events (room_id, player_id, kind, observer) values (%s, %s, 'pushed', %s)",
+                    (exit_["to_room"], player.id, f"{target.name}被{player.name}从{load_room(cur, player.room_id).name}弄了进来。"))
+    elif is_npc and not down and not stunned:
         facts += _npc_counter(cur, player, target)
     return facts
+
+
+def _push_target(cur: Cursor, player: Player, name: str) -> tuple[Player, bool]:
+    """推人能推的玩家，返回 (玩家, 是否只挪位置不伤人)。
+    队友和倒下的人也能推（把队友踹进门、把倒下的人拖走），但不伤人；睡着的人不能动"""
+    target, awake = _room_player(cur, player, name, lock=True)
+    if not awake:
+        raise ActionError(f"{target.name}睡着了，不能趁人睡着下手")
+    mate = bool(player.party_id and player.party_id == target.party_id)
+    return target, mate or target.hp <= 0
 
 
 def do_struggle(cur: Cursor, player: Player, view: RoomView, a: Struggle) -> list[str]:
