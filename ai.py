@@ -470,6 +470,11 @@ class Offer(BaseModel):
 
 Narration.model_rebuild()                # npc_offer 引用了后面才定义的 Offer
 
+# 物品效果的说明（"（回 1 点血）""（伤害 4）"），叙事不该念给玩家听；台词里念了游戏数值的那一句去掉
+EFFECT_RE = re.compile(r"（[^（）]*(?:点血|伤害|防御|有毒|药倒|没什么效果)[^（）]*）")
+STAT_RE = re.compile(r"[^，。！？,.!?“”'‘’]*(?:回|恢复|加|掉)\s*[0-9一二三四五六七八九十两]+\s*点(?:血|HP|生命)[^，。！？,.!?“”'‘’]*[，,]?")
+TRADE_ACTIONS = {"quote", "npc_sell", "npc_create", "npc_give"}
+
 # 台词里的价钱："10 金币""十五枚金币"。模型常常嘴上报了价却不填 npc_offer，靠这个兜底
 PRICE_RE = re.compile(r"([0-9]+|[零一二两三四五六七八九十百]+)\s*(?:枚|个)?\s*金币")
 # 叙事里写成交了（收钱、付钱），facts 里却没有成交
@@ -534,6 +539,7 @@ NPC 对话（只有 facts 里有对话时才用）：
 - 买卖：成交价只照 facts 写（"卖给了……收了 N 金币"）。facts 里没有成交就不能写东西已经给了、钱已经收了
 - npc_offer：玩家问 <npc> 里"你卖的货"的价钱、想买时，NPC 报价：照建议价上下浮动（看他顺眼可以便宜一点，讨厌他可以贵一点，一般在建议价的一半到两倍之间，超出会被引擎拉回来）；玩家砍价，按人设决定让不让、让多少。"开过价、还没成交的"现做东西也能砍价。把 item（货的名字）和 price（整数金币）填在这里，台词里说的价要跟它一致；没报价就填 null。玩家得下一句同意了才会成交
 - facts 里有"开价：……"就是 NPC 这回合给现做的东西开了价，台词照这个价说出来
+- NPC 报价、卖东西时说东西叫什么、多少钱，而且一定要再按人设、好感和对他的记忆多说一两句闲聊（味道、来历、做工、问他最近干嘛去了、调侃或关心他），好感越高越热络，不能只干巴巴报个价；括号里的游戏数值（回几点血、伤害多少、有毒掉几点）是给系统看的，台词里不要说，叙事里也不用写
 - facts 里有"卖给了……收了 N 金币"就照这个数写付钱，直接付 N 金币，不要写找零
 - <player> 里写着"敌人还没注意到你"或"躲着"时，敌人没发现他：写敌人自顾自地做事，不要写敌人看过来、扑上来、攻击他。facts 里有"发现了""扑上来攻击"才写敌人动手
 - 远近照 facts 和 <player> 里的格数写（贴身、一步之遥、几步开外），"没打中""够不着"就写扑空、落空，不要写成打中了
@@ -741,8 +747,10 @@ def narrate(db, view: RoomView, text: str, results: list[ActionResult],
     """返回 (叙事, token 统计)。NPC 给东西已经在 decide_give 里定好并执行，结果在 results 里。
     quests 是 engine.quest_turn 给的这个 NPC 的委托情况；eject_to 是 NPC 能把人轰去的地方（房间名），不能轰就空
     memory 是 NPC 对这个玩家的记忆，recent 是这个房间最近几条别人的动态"""
+    # 买卖的 facts 里括号中的游戏数值（回 1 点血）不给叙事看，免得 NPC 报价时念出来
     facts = "\n".join(
-        f"[{r.action}{'' if r.success else ' 失败'}] " + "；".join(r.facts) for r in results
+        f"[{r.action}{'' if r.success else ' 失败'}] "
+        + "；".join(EFFECT_RE.sub("", f) if r.action in TRADE_ACTIONS else f for f in r.facts) for r in results
     )
     # 查看整个房间时必须写到的东西：facts 里列出的地上物品、NPC、其他玩家
     must, exits = [], []                  # exits: (方向, 目的地, 是否锁着)
@@ -816,9 +824,10 @@ def narrate(db, view: RoomView, text: str, results: list[ActionResult],
                else "你手上现在没有委托。玩家问起有没有活，就直说没有了，可以请他喝一杯、陪你聊聊，或者让他四处转转；"
                     "不要暗示以后会有什么差事\n")
             + (f"能把闹事的人轰出去，轰到门外的{eject_to}\n" if eject_to else "")
-            + ("你卖的货：" + "、".join(f"{s['name']}（" + (f"伤害 {s['damage']}，" if s["damage"] else "")
-                                       + f"建议价 {s['base_price']} 金币）" for s in sells) + "\n" if sells else "")
-            + (f"你以前做过、随时能再做的：{made_text(made_before)}（有人要就说有）\n" if made_before else "")
+            + ("你卖的货：" + "、".join(f"{s['name']}（建议价 {s['base_price']} 金币）" for s in sells) + "\n"
+               if sells else "")
+            + (f"你以前做过、随时能再做的：{'、'.join(g['name'] for g in made_before)}（有人要就说有）\n"
+               if made_before else "")
             + ("你给他开过价、还没成交的：" + "、".join(f"{v['spec']['name']} {v['price']} 金币" for k, v in (offers or {}).items()
                                             if k.startswith("made:") and v.get("spec")) + "\n"
                if any(k.startswith("made:") for k in offers or {}) else "")
@@ -869,6 +878,17 @@ def narrate(db, view: RoomView, text: str, results: list[ActionResult],
                 named = {g for g in goods if any(g in t or g[-1] in t for t in (out.npc_reply, player_said))}
                 if len(named) == 1:
                     out.npc_offer = Offer(item=named.pop(), price=_cn_int(m[1]))
+        # NPC 报价时念了回几点血这种数值：重写一次，还念就把那一句删掉
+        if npc and out.npc_reply and STAT_RE.search(out.npc_reply):
+            if not last:
+                raise ValueError("NPC 台词里念了游戏数值")
+            cleaned = STAT_RE.sub("", out.npc_reply)
+            out.narrative = out.narrative.replace(out.npc_reply, cleaned)
+            out.npc_reply = cleaned
+        # 报价只干巴巴一句"黑啤，1 金币"：让它重写一次，带上闲聊
+        if (npc and out.npc_reply and not last and len(PRICE_RE.sub("", out.npc_reply)) < 16
+                and any(r.success and r.action in TRADE_ACTIONS for r in results)):
+            raise ValueError("报价之外还要按人设和好感跟他闲聊一两句，不能只报个价")
         # 报价必须是台词里说出口的价，没说出口的不算（模型会悄悄给别的货填个价，下一句"成交"就卖错东西）
         if out.npc_offer and not any(_cn_int(x) == out.npc_offer.price for x in PRICE_RE.findall(out.npc_reply or "")):
             out.npc_offer = None
