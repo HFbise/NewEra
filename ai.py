@@ -266,7 +266,7 @@ INTENT_SYSTEM = """你是文字 MUD 游戏的指令解析器。读玩家的输�
 
 技能判定（stunt、hide、struggle、有难度的 freeform 用）：
 - skill 从这十个里挑最贴切的：acrobatics 体操（挣脱、捆绑、绊倒、滑铲、要求精细的动作）；animal 驯兽（安抚、驱使动物）；athletics 运动（跳远、攀爬、游泳、撞人、推重物、幅度极大的动作）；sleight 巧手（扒窃、开锁、解除或布置陷阱、手上的小把戏）；stealth 隐匿（潜行、躲藏、偷袭、暗杀）；investigation 调查（找线索、看出破绽、打听）；nature 自然（辨认动植物、有没有毒）；perception 察觉（发现异常、听动静）；survival 生存（觅食、追踪、辨方向）；medicine 医药（治伤、处理病痛）
-- difficulty 是 1 到 10 的整数，只看动作本身多难，不要考虑玩家练到几级（引擎会比）。参照：1 很容易（绊倒一个没防备的人、躲进浓密的草丛）；2 普通（用绳子捆住挣扎的人、翻过齐腰的栅栏）；3 有难度（翻过一人高的墙、把正盯着你的人绊倒）；4 很难（从清醒的人腰间偷东西、在光秃秃的地方躲过盯着你的敌人）；5 到 6 是老手才做得到的；7 以上是传说级的
+- difficulty 是 1 到 10 的整数，只看动作本身多难，不要考虑玩家练到几级（引擎会比）。参照：1 很容易（绊倒一个没防备的人、躲进浓密的草丛）；2 普通（用绳子捆住挣扎的人、翻过齐腰的栅栏、从背后偷袭没发现你的敌人捅一刀）；3 有难度（翻过一人高的墙、把正盯着你的人绊倒）；4 很难（从清醒的人腰间偷东西、在光秃秃的地方躲过盯着你的敌人）；5 到 6 是老手才做得到的；7 以上是传说级的
 - 旧写法 easy / normal / hard 分别等于 1 / 2 / 3
 
 什么时候用 freeform：唱歌、跳舞、闻味道、做表情、自言自语，或者对"描述""环境"里写到的东西动手动眼（看细节、摸、敲、闻、坐、靠、摆弄），但不指望从中得到物品。环境里的东西不能拿走，想拿走就是 reject
@@ -496,6 +496,13 @@ Narration.model_rebuild()                # npc_offer 引用了后面才定义的
 EFFECT_RE = re.compile(r"（[^（）]*(?:点血|伤害|防御|有毒|药倒|没什么效果)[^（）]*）")
 STAT_RE = re.compile(r"[^，。！？,.!?“”'‘’]*(?:回|恢复|加|掉)\s*[0-9一二三四五六七八九十两]+\s*点(?:血|HP|生命)[^，。！？,.!?“”'‘’]*[，,]?")
 TRADE_ACTIONS = {"quote", "npc_sell", "npc_create", "npc_give"}
+
+def _tidy(text: str) -> str:
+    """删掉半句之后收拾标点：连在一起的逗号、逗号接句末标点、开头的逗号"""
+    text = re.sub(r"[，,]+(?=[。！？!?…”’'])", "", text)
+    text = re.sub(r"[，,]{2,}", "，", text)
+    return re.sub(r"^[，,\s]+", "", text).strip()
+
 
 # 台词里的价钱："10 金币""十五枚金币"。模型常常嘴上报了价却不填 npc_offer，靠这个兜底
 PRICE_RE = re.compile(r"([0-9]+|[零一二两三四五六七八九十百]+)\s*(?:枚|个)?\s*金币")
@@ -819,7 +826,8 @@ def narrate(db, view: RoomView, text: str, results: list[ActionResult],
     # 玩家手里拿着什么、身上带着什么：不告诉模型，它会给玩家编一把斧头
     held = "、".join(f"{SLOT_NAMES[i.equipped_slot]}：{i.name}" for i in view.inventory if i.equipped_slot)         or "什么都没装备（空手）"
     # 这回合 NPC 刚交到他手上的标出来，不然 NPC 刚递过去就说"不就在你身上吗"
-    just_got = "".join(f for r in results if r.success and r.action.startswith("npc_") for f in r.facts)
+    just_got = "".join(f for r in results if r.success and (r.action.startswith("npc_") or r.action == "quest")
+                       for f in r.facts)
     carried = "、".join(i.name + (f" x{i.quantity}" if i.quantity > 1 else "")
                         + ("（这回合刚拿到）" if i.name in just_got else "")
                         for i in view.inventory if not i.equipped_slot) or "无"
@@ -868,6 +876,12 @@ def narrate(db, view: RoomView, text: str, results: list[ActionResult],
     if recent:
         parts.append("<recent>\n" + "\n".join(recent) + "\n</recent>")
     parts += [f"<player_input>\n{text}\n</player_input>", f"<facts>\n{facts}\n</facts>"]
+    # 委托刚办完：单独放在最后提醒，小模型常只顾回玩家的话、把刚给的奖励当成他早就有的
+    handed = [f for r in results if r.success and r.action == "quest" for f in r.facts]
+    if npc and handed:
+        parts.append(f"<important>这回合{view.player.name}刚办完你托的事，你要先认可他（按人设和好感，嘴硬也行），"
+                     f"并且亲手把奖励交给他：{'；'.join(handed)}。这是这回合刚给的，不是他原来就有的。"
+                     "然后再回应他说的话；不要提到 <npc> 里没有的人物、店铺</important>")
     if must or exits:
         checklist = [f"- {m}" for m in must] + \
                     [f"- 往{d}：{dest}{'（门锁着）' if locked else ''}" for d, dest, locked in exits]
@@ -900,11 +914,12 @@ def narrate(db, view: RoomView, text: str, results: list[ActionResult],
                 named = {g for g in goods if any(g in t or g[-1] in t for t in (out.npc_reply, player_said))}
                 if len(named) == 1:
                     out.npc_offer = Offer(item=named.pop(), price=_cn_int(m[1]))
-        # NPC 报价时念了回几点血这种数值：重写一次，还念就把那一句删掉
-        if npc and out.npc_reply and STAT_RE.search(out.npc_reply):
+        # NPC 报价、卖东西时念了回几点血这种数值：重写一次，还念就把那一句删掉（平时聊天给建议可以说）
+        trading = any(r.success and r.action in TRADE_ACTIONS for r in results)
+        if npc and trading and out.npc_reply and STAT_RE.search(out.npc_reply):
             if not last:
                 raise ValueError("NPC 台词里念了游戏数值")
-            cleaned = STAT_RE.sub("", out.npc_reply)
+            cleaned = _tidy(STAT_RE.sub("", out.npc_reply))
             out.narrative = out.narrative.replace(out.npc_reply, cleaned)
             out.npc_reply = cleaned
         # 报价只干巴巴一句"黑啤，1 金币"：让它重写一次，带上闲聊
@@ -921,6 +936,18 @@ def narrate(db, view: RoomView, text: str, results: list[ActionResult],
                 raise ValueError("没成交却写了收钱")
             # 重写机会已经用掉了：把写了收钱付钱的句子删掉
             out.narrative = "".join(x for x in re.split(r"(?<=[。！？])", out.narrative) if not PAID_RE.search(x))
+        # 委托刚办完：叙事得写到交付的奖励（模型常只顾回玩家的话），第一次重写，第二次还漏就把那条 fact 补在末尾
+        rewards = [(m[1], f) for r in results if r.success and r.action == "quest"
+                   for f in r.facts if (m := re.search(r"把(.+?)交给了", f))]
+        if npc and rewards and not last and re.search(r"已经在你|不是已经|早就有|已经拿到", out.npc_reply or ""):
+            raise ValueError("奖励是这回合刚给的，不能说他早就有了")
+        # 比对时不管"的"："地窖的钥匙"也算写到了地窖钥匙
+        plain = out.narrative.replace("的", "")
+        missed = [f for name, f in rewards if name.replace("的", "") not in plain]
+        if npc and missed:
+            if not last:
+                raise ValueError("委托办完了，叙事没写交付奖励")
+            out.narrative += "".join(re.sub(r"（.*?）", "", f).replace(view.player.name, "你") + "。" for f in missed)
         # 查看房间漏写了东西：第一次让它重写，第二次还漏就在末尾补上
         text = out.narrative
         missing = [m for m in must if m not in text]
