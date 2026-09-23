@@ -266,7 +266,7 @@ def _keeper_revive(cur: Cursor, room_id: str) -> list[str]:
                    returning id, name, max_hp""", (room_id,))
     facts = []
     for r in cur.fetchall():
-        fact = f"{keeper['name']}把倒在地上的{r['name']}扶了起来，照料了一番，{r["name"]}缓过劲来，HP {r['max_hp']}/{r['max_hp']}"
+        fact = f"{keeper['name']}把倒在地上的{r['name']}扶了起来，照料了一番，{r['name']}缓过劲来，HP {r['max_hp']}/{r['max_hp']}"
         # 不记在谁名下，房间里所有人（包括被扶起来的本人）都看得到
         cur.execute("insert into events (room_id, kind, observer) values (%s, 'keeper_revive', %s)", (room_id, fact + "。"))
         facts.append(fact)
