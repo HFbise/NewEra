@@ -25,6 +25,7 @@ create table item_templates (
   damage      int not null default 0,
   defense     int not null default 0,
   heal        int not null default 0,
+  slot        text check (slot in ('hand','ring','head','chest','belt','legs','feet','neck')),  -- 能装在哪，见 schema.Slot
   props       jsonb not null default '{}'       -- 以后加新属性先放这里，稳定了再升成独立列
 );
 
@@ -108,7 +109,7 @@ create table item_instances (
   room_id       text references rooms(id) on delete cascade,
   player_id     uuid references players(id) on delete cascade,
   npc_id        uuid references npcs(id) on delete cascade,
-  equipped_slot text check (equipped_slot in ('weapon','armor')),
+  equipped_slot text check (equipped_slot in ('head','chest','belt','legs','feet','neck','ring1','ring2','left_hand','right_hand')),
   props         jsonb not null default '{}',     -- 实例级别的变化，如耐久度、附魔
   check (num_nonnulls(room_id, player_id, npc_id) = 1),
   check (equipped_slot is null or player_id is not null)

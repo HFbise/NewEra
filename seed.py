@@ -33,15 +33,17 @@ def _content(cur, world, reset: bool) -> None:
 
     for iid, it in world["items"].items():
         cur.execute(
-            """insert into item_templates (id, name, description, type, takeable, stackable, damage, defense, heal, props)
-               values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+            """insert into item_templates (id, name, description, type, takeable, stackable, damage, defense, heal, slot, props)
+               values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                on conflict (id) do update set
                  name = excluded.name, description = excluded.description, type = excluded.type,
                  takeable = excluded.takeable, stackable = excluded.stackable, damage = excluded.damage,
-                 defense = excluded.defense, heal = excluded.heal, props = excluded.props""",
+                 defense = excluded.defense, heal = excluded.heal, slot = excluded.slot, props = excluded.props""",
             (iid, it["name"], it["description"], it["type"], it.get("takeable", True),
              it.get("stackable", it["type"] == "consumable"),
-             it.get("damage", 0), it.get("defense", 0), it.get("heal", 0), Jsonb(it.get("props", {}))),
+             it.get("damage", 0), it.get("defense", 0), it.get("heal", 0),
+             # 武器默认拿在手上，护甲默认穿在身上，别的写明 slot（护符 neck、戒指 ring）
+             it.get("slot", {"weapon": "hand", "armor": "chest"}.get(it["type"])), Jsonb(it.get("props", {}))),
         )
 
     # 出口依赖房间，放在房间后面

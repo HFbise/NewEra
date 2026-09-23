@@ -5,6 +5,8 @@ start_room: square
 #   出口 relock: 秒，打开后多久自动锁回去
 #   NPC respawn: 秒，死后多久复活；restock: 秒，身上 inventory 给出去后多久补回来（默认 300）
 #   房间 forage: [{item, chance, cooldown}]，"搜索"时找到（chance 默认 1.0 一定找到；cooldown 默认 0，设了就是每人找到后隔几秒才能再找到）
+#   物品 slot：装在哪（hand 左右手都行 / ring 两个戒指位都行 / head / chest / belt / legs / feet / neck），
+#     武器默认 hand、护甲默认 chest；双持时普通攻击两把武器伤害相加，所有装备的防御相加
 #   房间 dispensers: {key: {name, description, item, unless, where, once}}，武器桶这类取用处：身上有 item 或 unless 里的东西就不能拿；
 #     once: true 是每人一辈子只能拿一次（丢了也不能再拿）；where 是"里"（桶里）或"上"（桌上）
 
@@ -136,6 +138,7 @@ items:
     name: 古旧护符
     description: 刻着看不懂的符文，在昏暗处微微发着蓝光。
     type: armor
+    slot: neck
     defense: 2
   shiny_sword:
     name: 闪亮的短剑

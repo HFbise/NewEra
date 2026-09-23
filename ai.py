@@ -23,7 +23,7 @@ from zai import ZhipuAiClient
 from zai.core import ZaiError
 
 import engine
-from schema import DIR_NAMES, ActionResult, ItemInstance, Npc, PlayerAction, RoomView, dir_name
+from schema import DIR_NAMES, SLOT_NAMES, ActionResult, ItemInstance, Npc, PlayerAction, RoomView, dir_name
 
 DEFAULT_MODELS = {"zhipu": "glm-4.7-flash", "gemini": "gemini-3.1-flash-lite", "claude": "claude-haiku-4-5"}
 KEY_VARS = {"zhipu": "ZAI_API_KEY", "gemini": "GEMINI_API_KEY", "claude": "ANTHROPIC_API_KEY"}
@@ -181,7 +181,7 @@ def _call(db, player_id: UUID, kind: str, system: str, user: str, fmt: type[Base
 
 class AIAction(BaseModel):
     """给 AI 的扁平格式，比嵌套 union 好填；回来再转成 PlayerAction 校验"""
-    action: Literal["move", "look", "take", "drop", "use", "equip", "attack", "talk", "give", "say",
+    action: Literal["move", "look", "take", "drop", "use", "equip", "unequip", "attack", "talk", "give", "say",
                     "revive", "invite", "join", "leave_party", "follow", "unfollow", "stunt", "struggle",
                     "maneuver", "dodge", "hide", "search", "freeform", "reject"]
     direction: Optional[str] = None
@@ -198,6 +198,7 @@ class AIAction(BaseModel):
     status_label: Optional[str] = None
     escape: Optional[str] = None
     push: Optional[str] = None
+    slot: Optional[str] = None
     knockback: Optional[int] = None
     steps: Optional[int] = None
 
@@ -218,7 +219,8 @@ INTENT_SYSTEM = """你是文字 MUD 游戏的指令解析器。读玩家的输�
 - take: item（地上物品或"取用处"的 ref）。从武器桶这类取用处拿东西也是 take，填取用处的 ref（如 d1）
 - drop: item（背包物品的 ref）
 - use: item（背包物品的 ref），target 可空。只用于吃喝（自己吃 target 不填；喂别人吃、把药草嚼碎喂给倒下的人、给人灌药 target 填"其他玩家"里的名字）和用钥匙开门（target 填出口英文名）。拿东西打人、砸人、抽人是 stunt（item 填那样东西），不是 use
-- equip: item（背包物品的 ref）。穿上、戴上、装备、拿在手里当武器都是 equip
+- equip: item（背包物品的 ref），slot 可空。穿上、戴上、装备、拿在手里当武器都是 equip。玩家说了哪只手就填 slot：左手 left_hand、右手 right_hand（第二个戒指位 ring2）；没说就不填。武器两只手都能拿，可以双持。换手（"把斧子换到左手"）就是一个 equip 填 slot，不要先 unequip：两只手会自动互换
+- unequip: item（已装备的背包物品 ref）。卸下、脱下、摘下、收起武器
 - attack: target（NPC 的 ref；打其他玩家时填"其他玩家"里的名字）
 - talk: target（NPC 的 ref），message（玩家说的话，保留原话）。找 NPC 买东西、问价、砍价、点菜、要东西都是 talk
 - give: item（背包物品的 ref），target（NPC 的 ref；给其他玩家时填"其他玩家"里的名字）。给、递、交、送、塞到他手里是 give：东西到了对方手上，吃不吃是他的事。喂他吃、塞进他嘴里（强行的也算）、给他灌下去是 use 不是 give
@@ -235,7 +237,7 @@ INTENT_SYSTEM = """你是文字 MUD 游戏的指令解析器。读玩家的输�
   - item：用到背包里的东西（绳子、武器等）就填它的 ref，只能填"背包"列表里的；地上的东西要先 take；没用就不填
   - knockback：把 NPC 踹开、撞退、推远时填推出去几格（1 或 2），不推开不填
   - push：把对方推、踹、扔、拖进某个出口时填那个出口的英文名，做成了对方就到了那边（只能对其他玩家，队友、倒下的人也行）。门锁着的话同一句里要先 use 钥匙开门，比如"开门把他踹进去"是 use 加 stunt（push 填 down）
-  - difficulty：做成的难度 easy / normal / hard，看动作合不合理、对方有没有防备
+  - difficulty：做成的难度（引擎按 easy 70% / normal 40% / hard 10% 掷骰），看动作合不合理、对方有没有防备：有地形或道具帮忙、对方没防备、动作简单可行是 easy；普通的临场发挥是 normal；花哨离谱、要一连串巧合、对方正盯着你的是 hard。重伤以上引擎一律按 hard 算
   - tier：做成时的伤害 none（不伤人，比如捆绑）/ light（轻伤）/ heavy（重伤）/ lethal（足以致命），照实判断，规则会按地形限幅
   - status：做成时对方陷入的负面状态，不会就不填。incapacitated = 失去战斗能力（砸晕、打昏、呛晕）；restrained = 被束缚（捆住、压住、缠住）
   - 捆人、缠住（restrained）必须用"可利用地形"或背包里真有的东西，填上 feature 或 item。比如玩家说"用绳子捆人"，可利用地形里有"井上的麻绳"就填它的 feature ref。环境描述里的东西拿不走，地形和背包里都没有能捆人的东西，就不能捆：输出 reject，reason 写没有能用来捆人的东西
@@ -280,7 +282,7 @@ def room_context(view: RoomView) -> str:
     dispensers = "、".join(f"{by_id[d.id]} {d.container}（物件，不会说话"
                            + (f"；能拿一件{d.item_name}）" if d.available else f"；{d.item_name}已经拿过了）")
                            for d in view.dispensers) or "无"
-    inv = "、".join(f"{by_id[i.id]} {i.name}" + ("（已装备）" if i.equipped_slot else "")
+    inv = "、".join(f"{by_id[i.id]} {i.name}" + (f"（装备在{SLOT_NAMES[i.equipped_slot]}）" if i.equipped_slot else "")
                    for i in view.inventory) or "无"
     players = "、".join(p.name + ("（倒下了）" if p.downed else f"（{p.status.describe()}）" if p.status
                                  else "" if p.awake else "（睡着了）")
@@ -656,7 +658,7 @@ def narrate(db, view: RoomView, text: str, results: list[ActionResult],
     facts, text, must = hide(facts), hide(text), [hide(m) for m in must]
     recent = [hide(r) for r in recent or []]
     # 玩家手里拿着什么、身上带着什么：不告诉模型，它会给玩家编一把斧头
-    held = "、".join(i.name for i in view.inventory if i.equipped_slot) or "什么都没拿（空手）"
+    held = "、".join(f"{SLOT_NAMES[i.equipped_slot]}：{i.name}" for i in view.inventory if i.equipped_slot)         or "什么都没装备（空手）"
     # 这回合 NPC 刚交到他手上的标出来，不然 NPC 刚递过去就说"不就在你身上吗"
     just_got = "".join(f for r in results if r.success and r.action.startswith("npc_") for f in r.facts)
     carried = "、".join(i.name + (f" x{i.quantity}" if i.quantity > 1 else "")

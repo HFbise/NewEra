@@ -23,7 +23,7 @@ from psycopg.types.json import Jsonb
 from schema import (
     ActionResult, Attack, Drop, Equip, Feature, Follow, Freeform, Give, Invite, ItemInstance, Join, LeaveParty, Look,
     Move, Npc, OtherPlayer, Player, PlayerAction, Reject, Revive, Room, RoomExit, RoomView, Say, Status, Struggle,
-    Stunt, Take, Talk, Unfollow, Use, dir_name, Dispenser, Dodge, Hide, Maneuver, Search, Stealth,
+    Stunt, Take, Talk, Unfollow, Unequip, Use, dir_name, Dispenser, SLOT_CHOICES, SLOT_NAMES, Dodge, Hide, Maneuver, Search, Stealth,
 )
 
 
@@ -40,12 +40,13 @@ TIERS = ["none", "light", "heavy", "lethal"]
 TIER_DAMAGE = {"none": 0, "light": 3, "heavy": 8, "lethal": 15}
 IMPROVISED_MAX_TIER = "light"           # 没在 world.yaml 声明成可利用地形的东西最多轻伤
 DIFFICULTIES = ["easy", "normal", "hard"]
-SUCCESS_CHANCE = {"easy": 0.9, "normal": 0.65, "hard": 0.35}
+SUCCESS_CHANCE = {"easy": 0.9, "normal": 0.65, "hard": 0.35}      # 躲藏这类不伤人的动作
+STUNT_CHANCE = {"easy": 0.7, "normal": 0.4, "hard": 0.1}          # 自由动作攻击；重伤以上一律按困难
 ESCAPE_CHANCE = {"easy": 0.7, "normal": 0.45, "hard": 0.2}
 ESCAPE_BONUS = 0.15                     # 每挣脱失败一次，下次成功率加这么多
 STATUS_MAX = "3 minutes"                # 负面状态最长多久自动解除，防止 AI 一直判醒不过来把人卡死
 # 被束缚时做不了的动作；失去战斗能力时只能挣脱（醒来）
-RESTRAINED_BLOCKED = {"move", "attack", "stunt", "take", "drop", "equip", "use", "give", "revive", "hide", "search",
+RESTRAINED_BLOCKED = {"move", "attack", "stunt", "take", "drop", "equip", "unequip", "use", "give", "revive", "hide", "search",
                       "maneuver", "dodge"}
 
 # 敌人发现玩家：进门时几率 DETECT_START，之后玩家每发一条消息掷一次骰，没被发现就涨 DETECT_STEP（躲着不涨）。
@@ -385,9 +386,23 @@ def _move_item(cur: Cursor, item: ItemInstance, *, room_id: Optional[str] = None
     )
 
 
-def _equipped(cur: Cursor, player: Player, slot: str) -> Optional[ItemInstance]:
-    items = load_items(cur, "i.player_id = %s and i.equipped_slot = %s", (player.id, slot))
-    return items[0] if items else None
+def _worn(cur: Cursor, player: Player) -> list[ItemInstance]:
+    """身上装备着的全部东西"""
+    return load_items(cur, "i.player_id = %s and i.equipped_slot is not null", (player.id,))
+
+
+def _weapons(cur: Cursor, player: Player) -> list[ItemInstance]:
+    """手上拿着的武器（双持就是两把，普通攻击伤害相加）"""
+    return [i for i in _worn(cur, player) if i.template.type == "weapon" and i.equipped_slot in SLOT_CHOICES["hand"]]
+
+
+def _defense(cur: Cursor, player: Player) -> int:
+    """基础防御加上所有装备的防御（护甲、护符、以后的盾）"""
+    return player.defense + sum(i.defense for i in _worn(cur, player))
+
+
+def _wielding(weapons: list[ItemInstance]) -> str:
+    return "和".join(i.name for i in weapons) or "拳头"
 
 
 def _affinity(cur: Cursor, player: Player, npc: Npc) -> int:
@@ -490,13 +505,13 @@ def do_look(cur: Cursor, player: Player, view: RoomView, a: Look) -> list[str]:
     # 看同房间的玩家：HP、倒下、负面状态、手里拿着什么（背包里别的东西看不到）
     if a.target not in view.refs:
         other, awake = _room_player(cur, player, a.target)
-        weapon, armor = _equipped(cur, other, "weapon"), _equipped(cur, other, "armor")
+        worn = _worn(cur, other)
         facts = [f"{other.name}：HP {other.hp}/{other.max_hp}"
                  + ("，倒在地上" if other.hp <= 0 else "") + ("" if awake else "，睡着了")]
         if other.status:
             facts.append(f"{other.name}{other.status.describe()}")
-        if weapon or armor:
-            facts.append(f"{other.name}身上带着" + "、".join(i.name for i in (weapon, armor) if i))
+        if worn:
+            facts.append(f"{other.name}身上装备着" + "、".join(f"{i.name}（{SLOT_NAMES[i.equipped_slot]}）" for i in worn))
         return facts
 
     uid = _resolve(view, a.target)
@@ -649,19 +664,44 @@ def _knock_out(cur: Cursor, table: str, target_id: UUID, label: str) -> None:
 
 
 def do_equip(cur: Cursor, player: Player, view: RoomView, a: Equip) -> list[str]:
+    """装上：武器左右手都行（双持），戒指两个位都行。玩家说了哪只手就放哪只，没说就放空着的，都满了换掉第一个"""
     item = _inv_item(cur, view, player, a.item)
-    slot = item.template.type
-    if slot not in ("weapon", "armor"):
+    kind = item.template.slot
+    if not kind:
         raise ActionError(f"{item.name}不能装备")
-    if item.equipped_slot:
-        raise ActionError(f"{item.name}已经装备着了")
+    choices = SLOT_CHOICES.get(kind, [kind])
+    worn = {i.equipped_slot: i for i in _worn(cur, player)}
+    if a.slot in choices:
+        slot = a.slot
+    elif item.equipped_slot:
+        raise ActionError(f"{item.name}已经装备在{SLOT_NAMES[item.equipped_slot]}了")
+    else:
+        slot = next((c for c in choices if c not in worn), choices[0])
+    if item.equipped_slot == slot:
+        raise ActionError(f"{item.name}已经装备在{SLOT_NAMES[slot]}了")
     facts = []
-    old = _equipped(cur, player, slot)
-    if old:
+    old = worn.get(slot)
+    prev = item.equipped_slot
+    if prev:
+        # 已经装着的换个位置（右手的斧子换到左手）：先腾出来，免得撞上"每格一件"的唯一索引
+        cur.execute("update item_instances set equipped_slot = null where id = %s", (item.id,))
+    if old and prev:
+        # 两只手互换：原来那格的东西挪到空出来的这格
+        cur.execute("update item_instances set equipped_slot = %s where id = %s", (prev, old.id))
+        facts.append(f"{player.name}把{old.name}换到了{SLOT_NAMES[prev]}")
+    elif old:
         cur.execute("update item_instances set equipped_slot = null where id = %s", (old.id,))
         facts.append(f"{player.name}卸下了{old.name}")
     cur.execute("update item_instances set equipped_slot = %s where id = %s", (slot, item.id))
-    return facts + [f"{player.name}装备了{item.name}"]
+    return facts + [f"{player.name}把{item.name}装备在{SLOT_NAMES[slot]}"]
+
+
+def do_unequip(cur: Cursor, player: Player, view: RoomView, a: Unequip) -> list[str]:
+    item = _inv_item(cur, view, player, a.item)
+    if not item.equipped_slot:
+        raise ActionError(f"{item.name}没有装备着")
+    cur.execute("update item_instances set equipped_slot = null where id = %s", (item.id,))
+    return [f"{player.name}卸下了{SLOT_NAMES[item.equipped_slot]}的{item.name}"]
 
 
 # ============ 战斗 ============
@@ -772,8 +812,7 @@ def _npc_strike(cur: Cursor, player: Player, npc: Npc, verb: str, chance: float 
     """NPC 打玩家一下（反击、主动攻击），chance 是命中率。player.hp 跟着更新，同一回合几个敌人连着打能接上"""
     if not _roll(chance):
         return [f"{npc.name}{verb}，没打中{player.name}"]
-    armor = _equipped(cur, player, "armor")
-    dmg = max(1, npc.template.attack - player.defense - (armor.defense if armor else 0))
+    dmg = max(1, npc.template.attack - _defense(cur, player))
     player.hp = max(0, player.hp - dmg)
     cur.execute("update players set hp = %s, updated_at = now() where id = %s", (player.hp, player.id))
     facts = [f"{npc.name}{verb}，对{player.name}造成 {dmg} 点伤害", f"{player.name} HP {player.hp}/{player.max_hp}"]
@@ -925,13 +964,13 @@ def enemy_turn(conn: Connection, player_id: UUID, actions: list[PlayerAction], r
 
 def do_attack(cur: Cursor, player: Player, view: RoomView, a: Attack) -> list[str]:
     # target 是 ref 就是打 NPC，不是 ref 就当玩家名字（PvP）
-    weapon = _equipped(cur, player, "weapon")
-    how = weapon.name if weapon else "拳头"
+    # 双持：两把武器的伤害加在一起
+    weapons = _weapons(cur, player)
+    how = _wielding(weapons)
+    power = player.attack + sum(w.damage for w in weapons)
     if a.target not in view.refs:
         target = _pvp_target(cur, player, a.target)
-        armor = _equipped(cur, target, "armor")
-        dmg = max(1, player.attack + (weapon.damage if weapon else 0)
-                  - target.defense - (armor.defense if armor else 0))
+        dmg = max(1, power - _defense(cur, target))
         facts, _ = _hurt_player(cur, target, dmg)
         return [f"{player.name}用{how}攻击{target.name}，造成 {dmg} 点伤害"] + facts
 
@@ -944,7 +983,7 @@ def do_attack(cur: Cursor, player: Player, view: RoomView, a: Attack) -> list[st
         if not _roll(MELEE_HIT.get(d, 0)):
             return [f"{player.name}用{how}攻击{npc.name}，" + (f"隔着 {distance_word(d)}够不着" if d not in MELEE_HIT
                                                              else f"隔着 {distance_word(d)}，没打中")]
-    dmg = max(1, player.attack + (weapon.damage if weapon else 0) - npc.template.defense)
+    dmg = max(1, power - npc.template.defense)
     facts, dead = _hurt_npc(cur, player, npc, dmg)
     facts = [f"{player.name}用{how}攻击{npc.name}，造成 {dmg} 点伤害"] + facts
     return facts if dead else facts + _npc_counter(cur, player, npc)
@@ -1005,11 +1044,11 @@ def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]
     if poison:
         _consume(cur, poison)
     facts = [f"{player.name}尝试：{a.description}"]
-    chance = SUCCESS_CHANCE[a.difficulty]
+    chance = STUNT_CHANCE[a.difficulty]
+    helpless = (target.status is not None) if is_npc else (target.status is not None or target.hp <= 0)
     # 一击毙命、直接打晕（扭断脖子、一拳打晕）：不借地形、不用药，对方又有防备，这种事不可能成。
     # 对方已经倒下、被放倒、被捆住就照常补刀；敌人还没发现你是偷袭，给一成把握，得手就照判的档位来
     if not feature and not poison and (a.tier == "lethal" or a.status == "incapacitated"):
-        helpless = (target.status is not None) if is_npc else (target.status is not None or target.hp <= 0)
         # 扭脖子、打晕都是贴身的事，敌人离着几格就得先摸过去
         if is_npc and target.template.hostile and (d := _distance(_stealth(player), target)) > 0:
             raise ActionError(f"离{target.name}还有 {distance_word(d)}，够不着，得先靠近")
@@ -1024,6 +1063,9 @@ def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]
             chance = ASSASSINATE_CHANCE
             facts.append(f"{target.name}还没发现{player.name}，出其不意，只有一成把握")
             tier = a.tier                           # 偷袭得手不受徒手最多轻伤的限制
+    # 重伤以上（推大石头、铁叉捅）一律按困难；对无力反抗的补刀不算
+    if not poison and TIERS.index(tier) >= TIERS.index("heavy") and not helpless:
+        chance = min(chance, STUNT_CHANCE["hard"])
     if not _roll(chance):
         facts.append("没有成功")
         return facts + (_npc_counter(cur, player, target) if is_npc else [])
@@ -1217,7 +1259,7 @@ def do_reject(cur: Cursor, player: Player, view: RoomView, a: Reject) -> list[st
 
 HANDLERS: dict[str, Callable[..., list[str]]] = {
     "move": do_move, "look": do_look, "take": do_take, "drop": do_drop, "use": do_use,
-    "equip": do_equip, "attack": do_attack, "talk": do_talk, "give": do_give, "freeform": do_freeform,
+    "equip": do_equip, "unequip": do_unequip, "attack": do_attack, "talk": do_talk, "give": do_give, "freeform": do_freeform,
     "say": do_say, "revive": do_revive, "stunt": do_stunt, "struggle": do_struggle,
     "follow": do_follow, "unfollow": do_unfollow, "invite": do_invite, "join": do_join, "leave_party": do_leave_party,
     "maneuver": do_maneuver, "dodge": do_dodge, "hide": do_hide, "search": do_search, "reject": do_reject,

@@ -28,7 +28,7 @@ import ai
 import commands
 import engine
 from db import pool
-from schema import ActionResult, RoomView, dir_name
+from schema import SLOT_NAMES, ActionResult, RoomView, dir_name
 
 app = FastAPI()
 app.include_router(admin.router)
@@ -115,8 +115,17 @@ def state(conn, view: RoomView, after: Optional[int] = None) -> dict:
                     "fill": f"拿{d.take_label}"} if d.available
                    else {"ref": by_id[d.id], "name": d.container, "fill": f"看{d.container}"}
                    for d in view.dispensers],
-        "inventory": [{"ref": by_id[i.id], "name": i.name, "quantity": i.quantity,
-                       "equipped": i.equipped_slot} for i in view.inventory],
+        # 装备栏按固定顺序列全部格子，空的 item 为 null；背包只列没装备的
+        "equipment": [{"slot": slot, "label": label,
+                       "item": next(({"ref": by_id[i.id], "name": i.name} for i in view.inventory
+                                     if i.equipped_slot == slot), None)} for slot, label in SLOT_NAMES.items()],
+        "inventory": [{"ref": by_id[i.id], "name": i.name, "quantity": i.quantity}
+                      for i in view.inventory if not i.equipped_slot],
+        # 攻防算上装备：双持两把武器伤害相加，所有装备的防御相加
+        "attack_total": view.player.attack + sum(i.damage for i in view.inventory
+                                                 if i.equipped_slot in ("left_hand", "right_hand")
+                                                 and i.template.type == "weapon"),
+        "defense_total": view.player.defense + sum(i.defense for i in view.inventory if i.equipped_slot),
         "others": others,
         "party": view.party,
         "invites": view.invites,

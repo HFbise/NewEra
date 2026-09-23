@@ -45,6 +45,12 @@
   .hp { height: 6px; background: var(--border); border-radius: 3px; overflow: hidden; margin-top: 4px; }
   .hp div { height: 100%; background: var(--ok); }
   #help { color: var(--dim); font-size: 12px; line-height: 1.7; }
+  /* 装备栏两列，格子名在前；空格子不能点 */
+  #side ul.equip { display: grid; grid-template-columns: 1fr 1fr; gap: 0 8px; }
+  #side ul.equip li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  #side ul.equip li.empty { color: var(--dim); cursor: default; }
+  #side ul.equip li.empty:hover { background: none; }
+  .tag.slot { margin: 0 6px 0 0; }
   #login { position: fixed; inset: 0; z-index: 20; background: var(--bg); display: flex; align-items: center; justify-content: center; }
   #login form { border: 1px solid var(--border); border-radius: 8px; flex-direction: column; width: 300px; padding: 20px; }
   #login button { padding: 10px; }
@@ -132,7 +138,7 @@ function render(s) {
     `<li data-name="${esc(fill)}"><span class="ref">${ref}</span>${esc(label)}${extra}</li>`;
   $("#side").innerHTML = `
     <h2>${esc(p.name)}</h2>
-    <div>HP ${p.hp}/${p.max_hp} · 攻 ${p.attack} · 防 ${p.defense} · 金币 ${p.gold}</div>
+    <div>HP ${p.hp}/${p.max_hp} · 攻 ${s.attack_total} · 防 ${s.defense_total} · 金币 ${p.gold}</div>
     <div class="hp"><div style="width:${100 * p.hp / p.max_hp}%"></div></div>
     ${p.hp <= 0 ? `<div class="sys">你倒下了，只能看和说话，等别人来急救</div>` : ""}
     ${s.stealth ? `<div class="sys">${esc(s.stealth)}</div>` : ""}
@@ -154,14 +160,17 @@ function render(s) {
     ${s.invites.length ? `<h2>组队邀请</h2><ul>${s.invites.map(n => `<li data-name="${esc(n)}">${esc(n)}<span class="tag">邀请你组队</span></li>`).join("")}</ul>` : ""}
     ${s.items.length ? `<h2>地上</h2><ul>${s.items.map(i => li(i.ref, i.name,
       i.quantity > 1 ? `<span class="tag">x${i.quantity}</span>` : "", i.fill)).join("")}</ul>` : ""}
+    <h2>装备</h2>
+    <ul class="equip">${s.equipment.map(e => e.item
+      ? `<li data-name="卸下${esc(e.item.name)}"><span class="tag slot">${e.label}</span>${esc(e.item.name)}</li>`
+      : `<li class="empty"><span class="tag slot">${e.label}</span>—</li>`).join("")}</ul>
     <h2>背包</h2>
     <ul>${s.inventory.map(i => li(i.ref, i.name,
-      (i.quantity > 1 ? `<span class="tag">x${i.quantity}</span>` : "") +
-      (i.equipped ? `<span class="tag">[${i.equipped === "weapon" ? "武器" : "护甲"}]</span>` : ""))).join("") || '<li class="sys">空</li>'}</ul>
+      i.quantity > 1 ? `<span class="tag">x${i.quantity}</span>` : "")).join("") || '<li class="sys">空</li>'}</ul>
     <h2>命令</h2>
     <div id="help">
       看 · 北 南 东 西 上 下<br>
-      拿 · 扔 · 装备 · 吃 · 给 · 买<br>
+      拿 · 扔 · 装备 · 卸下 · 吃 · 喂 · 给 · 买<br>
       打 · 躲起来 · 搜索 · 说 · 对某人说<br>
       邀请组队 · 加入队伍 · 离开队伍<br>
       跟着 · 停止跟随 · 急救 · 挣脱<br>

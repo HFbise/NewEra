@@ -135,6 +135,8 @@ def _parse_one(view: RoomView, t: str) -> dict:
 
     if m := re.fullmatch(r"(?:equip|wear|wield|装备|穿上|戴上)\s*(.+)", t, re.I):
         return {"action": "equip", "item": _find(view, m[1], "inv")}
+    if m := re.fullmatch(r"(?:unequip|卸下|脱下|摘下|脱掉|摘掉)\s*(.+)", t, re.I):
+        return {"action": "unequip", "item": _find(view, m[1], "inv")}
 
     # 开锁：自动找背包里的钥匙，必须放在"打"前面，不然"打开"会被当成攻击
     if m := re.fullmatch(r"(?:unlock|打开|开锁|开)\s*(.+?)(?:的?门)?", t, re.I):

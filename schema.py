@@ -8,7 +8,7 @@ AI MUD 核心数据结构
 from typing import Annotated, Any, Literal, Optional, Union
 from uuid import UUID
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # ============ 玩家动作（意图解析输出） ============
@@ -45,6 +45,13 @@ class Use(BaseModel):
 
 class Equip(BaseModel):
     action: Literal["equip"]
+    item: str
+    slot: Optional[str] = None          # 玩家指定了哪只手、哪个戒指位（left_hand / right_hand / ring1 / ring2），没说就空
+
+
+class Unequip(BaseModel):
+    """卸下、脱下、摘下装备，放回背包"""
+    action: Literal["unequip"]
     item: str
 
 
@@ -173,7 +180,7 @@ class Reject(BaseModel):
 
 
 PlayerAction = Annotated[
-    Union[Move, Look, Take, Drop, Use, Equip, Attack, Talk, Give, Say, Revive, Invite, Join, LeaveParty,
+    Union[Move, Look, Take, Drop, Use, Equip, Unequip, Attack, Talk, Give, Say, Revive, Invite, Join, LeaveParty,
           Follow, Unfollow, Stunt, Struggle, Maneuver, Dodge, Hide, Search, Freeform, Reject],
     Field(discriminator="action"),
 ]
@@ -186,7 +193,12 @@ class ParsedInput(BaseModel):
 # ============ 世界数据（对应数据库表） ============
 
 ItemType = Literal["weapon", "armor", "consumable", "key", "misc"]
-Slot = Literal["weapon", "armor"]
+# 装备栏：每格一件。物品模板的 slot 是它能放的位置：hand（左右手都行，武器、以后的盾）、ring（两个戒指位都行），
+# 其余就是格子本身
+Slot = Literal["head", "chest", "belt", "legs", "feet", "neck", "ring1", "ring2", "left_hand", "right_hand"]
+SLOT_NAMES = {"head": "头盔", "chest": "胸甲", "belt": "腰带", "legs": "腿部", "feet": "鞋子", "neck": "项链",
+              "ring1": "戒指", "ring2": "戒指", "left_hand": "左手", "right_hand": "右手"}
+SLOT_CHOICES = {"hand": ["right_hand", "left_hand"], "ring": ["ring1", "ring2"]}
 
 
 class Room(BaseModel):
@@ -246,6 +258,7 @@ class ItemTemplate(BaseModel):
     damage: int = 0
     defense: int = 0
     heal: int = 0
+    slot: Optional[str] = None          # 能装在哪：hand / ring / head / chest / belt / legs / feet / neck，不能装备就空
     props: dict[str, Any] = {}
 
 
@@ -270,6 +283,17 @@ class ItemInstance(BaseModel):
     npc_id: Optional[UUID] = None
     equipped_slot: Optional[Slot] = None
     props: dict[str, Any] = {}          # NPC 现造的东西（酒、地图）把名字和描述存在这里，覆盖模板的
+
+    @model_validator(mode="before")
+    @classmethod
+    def _legacy_slot(cls, data: Any) -> Any:
+        """装备栏以前只有 weapon / armor 两格，库里的老数据读出来换成新格子（武器算右手，护甲按它能装的位置）"""
+        if isinstance(data, dict) and data.get("equipped_slot") in ("weapon", "armor"):
+            tpl = data.get("template") or {}
+            slot = tpl.get("slot") if isinstance(tpl, dict) else getattr(tpl, "slot", None)
+            data = dict(data, equipped_slot="right_hand" if data["equipped_slot"] == "weapon"
+                        else {"ring": "ring1", "hand": "left_hand"}.get(slot, slot or "chest"))
+        return data
 
     @property
     def name(self) -> str:
