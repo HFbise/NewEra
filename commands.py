@@ -101,6 +101,12 @@ def _parse_one(view: RoomView, t: str) -> dict:
     if re.fullmatch(r"挣脱|挣扎|醒来|醒过来|struggle", t, re.I):
         return {"action": "struggle", "description": t}
 
+    if re.fullmatch(r"搜索|搜寻|搜查|找找|四处找找|search", t, re.I):
+        return {"action": "search", "description": "四处搜寻"}
+    # 躲在哪、怎么躲要 AI 看环境判难度，这里只认光秃秃的一句"躲起来"
+    if re.fullmatch(r"躲起来|躲一躲|藏起来|hide", t, re.I):
+        return {"action": "hide", "description": "找地方躲了起来", "difficulty": "normal"}
+
     if t.lower() == "l":
         return {"action": "look", "target": None}
     if m := re.fullmatch(r"(?:look|查看|观察|看看|看)(?:\s*(.+))?", t, re.I):

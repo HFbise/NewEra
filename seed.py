@@ -91,12 +91,13 @@ def _content(cur, world, reset: bool) -> None:
     quests = world.get("quests", {})
     for qid, q in quests.items():
         cur.execute(
-            """insert into quests (id, giver, name, hook, goal, done_flag, reward_item, after)
-               values (%s, %s, %s, %s, %s, %s, %s, %s)
+            """insert into quests (id, giver, name, hook, goal, done_flag, needs_item, hidden, reward_item, after)
+               values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                on conflict (id) do update set giver = excluded.giver, name = excluded.name, hook = excluded.hook,
-                 goal = excluded.goal, done_flag = excluded.done_flag, reward_item = excluded.reward_item,
-                 after = excluded.after""",
-            (qid, q["giver"], q["name"], q["hook"], q["goal"], q["done"], q.get("reward"), q.get("after", "")),
+                 goal = excluded.goal, done_flag = excluded.done_flag, needs_item = excluded.needs_item,
+                 hidden = excluded.hidden, reward_item = excluded.reward_item, after = excluded.after""",
+            (qid, q["giver"], q["name"], q["hook"], q["goal"], q.get("done"), q.get("needs"), q.get("hidden", False),
+             q.get("reward"), q.get("after", "")),
         )
     cur.execute("delete from quests where id <> all(%s)", (list(quests),))
 

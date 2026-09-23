@@ -10,6 +10,7 @@
   results = execute_all(conn, view, parsed.actions)
 """
 import random
+import re
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 from uuid import UUID, uuid4
@@ -22,7 +23,7 @@ from psycopg.types.json import Jsonb
 from schema import (
     ActionResult, Attack, Drop, Equip, Feature, Follow, Freeform, Give, Invite, ItemInstance, Join, LeaveParty, Look,
     Move, Npc, OtherPlayer, Player, PlayerAction, Reject, Revive, Room, RoomExit, RoomView, Say, Status, Struggle,
-    Stunt, Take, Talk, Unfollow, Use, dir_name,
+    Stunt, Take, Talk, Unfollow, Use, dir_name, Hide, Search, Stealth,
 )
 
 
@@ -44,7 +45,12 @@ ESCAPE_CHANCE = {"easy": 0.7, "normal": 0.45, "hard": 0.2}
 ESCAPE_BONUS = 0.15                     # 每挣脱失败一次，下次成功率加这么多
 STATUS_MAX = "3 minutes"                # 负面状态最长多久自动解除，防止 AI 一直判醒不过来把人卡死
 # 被束缚时做不了的动作；失去战斗能力时只能挣脱（醒来）
-RESTRAINED_BLOCKED = {"move", "attack", "stunt", "take", "drop", "equip", "use", "give", "revive"}
+RESTRAINED_BLOCKED = {"move", "attack", "stunt", "take", "drop", "equip", "use", "give", "revive", "hide", "search"}
+
+# 敌人发现玩家：进门时几率 DETECT_START，之后每个动作先掷骰，没被发现就涨 DETECT_STEP（躲着不涨）。
+# 被发现了，在场能动的敌人每个动作都打他一下
+DETECT_START = 0.05
+DETECT_STEP = 0.10
 
 
 class ActionError(Exception):
@@ -71,7 +77,8 @@ def _cursor(conn: Connection) -> Cursor:
 
 def load_player(cur: Cursor, player_id: UUID, lock: bool = False) -> Player:
     cur.execute(
-        "select id, name, room_id, hp, max_hp, attack, defense, flags, party_id, status, following from players where id = %s"
+        "select id, name, room_id, hp, max_hp, attack, defense, flags, party_id, status, following, gold, stealth"
+        " from players where id = %s"
         + (" for update" if lock else ""),
         (player_id,),
     )
@@ -135,15 +142,7 @@ def delete_player(conn: Connection, player_id: UUID) -> None:
 def _refresh_room(cur: Cursor, room_id: str) -> None:
     """刷新：NPC 复活、门自动锁回、物品重新出现。
     不用后台任务，有人在这个房间（发命令或页面轮询）时顺手检查，没人的房间不用管"""
-    # NPC 死了 respawn_seconds 秒后原地复活
-    cur.execute(
-        """update npcs n set alive = true, hp = t.max_hp, died_at = null
-           from npc_templates t
-           where t.id = n.template_id and n.room_id = %s and not n.alive
-             and t.props ? 'respawn_seconds'
-             and n.died_at < now() - make_interval(secs => (t.props->>'respawn_seconds')::int)""",
-        (room_id,),
-    )
+    _respawn_npcs(cur, room_id)
     # 负面状态到点自动解除
     for table in ("players", "npcs"):
         cur.execute(
@@ -191,6 +190,23 @@ def _refresh_room(cur: Cursor, room_id: str) -> None:
             if cur.fetchone():
                 cur.execute(f"insert into item_instances (template_id, {col}) values (%s, %s)",
                             (sp["template_id"], val))
+
+
+def _respawn_npcs(cur: Cursor, room_id: str, found: bool = False) -> list[str]:
+    """NPC 死了 respawn_seconds 秒后原地复活，返回复活的名字。
+    有醒着的玩家在场时不凭空冒出来，要有人搜寻（found=True）才找得到；没人在场就悄悄回来"""
+    cur.execute(
+        f"""update npcs n set alive = true, hp = t.max_hp, died_at = null, status = null
+            from npc_templates t
+            where t.id = n.template_id and n.room_id = %s and not n.alive
+              and t.props ? 'respawn_seconds'
+              and n.died_at < now() - make_interval(secs => (t.props->>'respawn_seconds')::int)
+              and (%s or not exists (select 1 from players p where p.room_id = n.room_id
+                                     and p.last_active_at > now() - interval '{ONLINE_WINDOW}'))
+            returning t.name""",
+        (room_id, found),
+    )
+    return [r["name"] for r in cur.fetchall()]
 
 
 def load_view(conn: Connection, player_id: UUID) -> RoomView:
@@ -339,9 +355,11 @@ def do_move(cur: Cursor, player: Player, view: RoomView, a: Move) -> list[str]:
         cur.execute("update room_exits set locked = false, unlocked_at = now() where room_id = %s and direction = %s",
                     (player.room_id, a.direction))
         facts.append(f"{player.name}用{keys[0].name}打开了往{dir_name(a.direction)}的门")
+    # 进门前没人在的区域先把该回来的敌人刷出来（走进去才碰上），进门时还没被发现
+    _respawn_npcs(cur, ex["to_room"])
     # 自己走就不再跟着别人
-    cur.execute("update players set room_id = %s, following = null, updated_at = now() where id = %s",
-                (ex["to_room"], player.id))
+    cur.execute("update players set room_id = %s, following = null, stealth = %s, updated_at = now() where id = %s",
+                (ex["to_room"], Jsonb(Stealth(room=ex["to_room"], chance=DETECT_START).model_dump()), player.id))
     room = load_room(cur, ex["to_room"])
     facts.append(f"{player.name}往{dir_name(a.direction)}走，来到了{room.name}")
     # 同房间跟着他的人一起走：睡着、倒下、带着负面状态的跟不上
@@ -474,14 +492,35 @@ def do_use(cur: Cursor, player: Player, view: RoomView, a: Use) -> list[str]:
 
     if item.template.type != "consumable":
         raise ActionError(f"{item.name}不能直接使用")
-    healed = min(item.template.heal, player.max_hp - player.hp)
-    hp = player.hp + healed
+    _consume(cur, item)
+    facts = [f"{player.name}{'喝' if item.template.id == 'made_drink' else '吃'}掉了{item.name}"]
+    # 有毒的东西掉血，蒙汗药这类把人放倒；正常的回血
+    hp = max(0, min(player.max_hp, player.hp + item.heal - item.harm))
     cur.execute("update players set hp = %s, updated_at = now() where id = %s", (hp, player.id))
+    if item.harm:
+        facts.append(f"{item.name}有毒，{player.name}掉了 {item.harm} 点 HP，当前 HP {hp}/{player.max_hp}")
+    elif item.heal:
+        facts.append(f"恢复 {hp - player.hp} 点 HP，当前 HP {hp}/{player.max_hp}")
+    if hp == 0:
+        facts.append(f"{player.name}倒下了")
+    elif item.knockout:
+        _knock_out(cur, "players", player.id, item.knockout)
+        facts.append(f"{player.name}{item.knockout}，失去战斗能力")
+    return facts
+
+
+def _consume(cur: Cursor, item: ItemInstance) -> None:
+    """用掉一个（叠着的减一，最后一个删掉）"""
     if item.quantity > 1:
         cur.execute("update item_instances set quantity = quantity - 1 where id = %s", (item.id,))
     else:
         cur.execute("delete from item_instances where id = %s", (item.id,))
-    return [f"{player.name}吃掉了{item.name}", f"恢复 {healed} 点 HP，当前 HP {hp}/{player.max_hp}"]
+
+
+def _knock_out(cur: Cursor, table: str, target_id: UUID, label: str) -> None:
+    """药倒：失去战斗能力，挣脱（醒来）难度普通"""
+    _set_status(cur, table, target_id, Status(kind="incapacitated", label=label[:20], escape="normal",
+                                              since=datetime.now(timezone.utc).isoformat()))
 
 
 def do_equip(cur: Cursor, player: Player, view: RoomView, a: Equip) -> list[str]:
@@ -571,6 +610,11 @@ def _hurt_npc(cur: Cursor, player: Player, npc: Npc, dmg: int) -> tuple[list[str
         mates = [r["name"] for r in cur.fetchall() if r["name"] != player.name]
         if mates:
             facts.append(f"这次击杀算整支队伍的，{'、'.join(mates)}也记了功")
+    # 掉金币（world.yaml 的 on_death.gold: [最少, 最多]），给补最后一刀的人
+    if gold := npc.template.props.get("on_death", {}).get("gold"):
+        n = random.randint(*gold)
+        cur.execute("update players set gold = gold + %s where id = %s", (n, player.id))
+        facts.append(f"{player.name}从{npc.name}身上摸到了 {n} 枚金币")
     return facts, True
 
 
@@ -594,14 +638,95 @@ def _npc_counter(cur: Cursor, player: Player, npc: Npc) -> list[str]:
         st.attempts += 1
         _set_status(cur, "npcs", npc.id, st)
         return [f"{npc.name}还{st.label}，没法还手"]
+    return _npc_strike(cur, player, npc, "反击")
+
+
+def _npc_strike(cur: Cursor, player: Player, npc: Npc, verb: str) -> list[str]:
+    """NPC 打玩家一下（反击、主动攻击）。player.hp 跟着更新，同一回合几个敌人连着打能接上"""
     armor = _equipped(cur, player, "armor")
-    back = max(1, npc.template.attack - player.defense - (armor.template.defense if armor else 0))
-    hp = max(0, player.hp - back)
-    cur.execute("update players set hp = %s, updated_at = now() where id = %s", (hp, player.id))
-    facts = [f"{npc.name}反击，对{player.name}造成 {back} 点伤害", f"{player.name} HP {hp}/{player.max_hp}"]
-    if hp == 0:
+    dmg = max(1, npc.template.attack - player.defense - (armor.defense if armor else 0))
+    player.hp = max(0, player.hp - dmg)
+    cur.execute("update players set hp = %s, updated_at = now() where id = %s", (player.hp, player.id))
+    facts = [f"{npc.name}{verb}，对{player.name}造成 {dmg} 点伤害", f"{player.name} HP {player.hp}/{player.max_hp}"]
+    if player.hp == 0:
         facts.append(f"{player.name}倒下了")
     return facts
+
+
+def _stealth(player: Player) -> Stealth:
+    """玩家在当前区域的隐蔽情况；记录的是别的区域（刚被人带进来、刚登录）就当刚进门"""
+    st = player.stealth
+    return st if st and st.room == player.room_id else Stealth(room=player.room_id, chance=DETECT_START)
+
+
+def _save_stealth(cur: Cursor, player: Player, st: Stealth) -> None:
+    cur.execute("update players set stealth = %s where id = %s", (Jsonb(st.model_dump()), player.id))
+
+
+def _enemies(cur: Cursor, room_id: str) -> list[Npc]:
+    """在场、活着的敌人"""
+    return [n for n in load_npcs(cur, "n.room_id = %s and n.alive", (room_id,), lock=True)
+            if n.template.hostile and n.combatable]
+
+
+def do_hide(cur: Cursor, player: Player, view: RoomView, a: Hide) -> list[str]:
+    """躲起来：成功了几率不再上涨；已经被发现的，躲成功就甩掉了（难度高一档）"""
+    st = _stealth(player)
+    diff = DIFFICULTIES[min(len(DIFFICULTIES) - 1, DIFFICULTIES.index(a.difficulty) + st.detected)]
+    facts = [f"{player.name}尝试：{a.description or '躲起来'}"]
+    if not _roll(SUCCESS_CHANCE[diff]):
+        return facts + [f"{player.name}没能藏好"]
+    st.hidden, st.detected = True, False
+    _save_stealth(cur, player, st)
+    return facts + [f"{player.name}藏好了，暂时没人能发现"]
+
+
+def do_search(cur: Cursor, player: Player, view: RoomView, a: Search) -> list[str]:
+    """四处搜寻：该回来的敌人（到了复活时间）被找出来"""
+    found = _respawn_npcs(cur, player.room_id, found=True)
+    facts = [f"{player.name}尝试：{a.description or '四处搜寻'}"]
+    if found:
+        return facts + [f"{player.name}发现了{'、'.join(found)}"]
+    here = [n.name for n in view.npcs if n.template.hostile]
+    return facts + ([f"{'、'.join(here)}就在这里"] if here else ["什么也没找到"])
+
+
+def enemy_turn(conn: Connection, player_id: UUID, action: PlayerAction, result: ActionResult) -> list[str]:
+    """玩家每个动作之后，同区域的敌人看一眼：没发现就掷骰，发现了就动手。返回敌人这一下的 facts"""
+    with conn.transaction():
+        cur = _cursor(conn)
+        player = load_player(cur, player_id, lock=True)
+        st = _stealth(player)
+        if action.action == "move" and result.success or action.action == "reject" or player.hp <= 0:
+            return []                   # 刚进门这一下不算；没做成的空话不算；倒下的不管
+        alive = _enemies(cur, player.room_id)
+        if not alive:
+            st = Stealth(room=player.room_id, chance=DETECT_START)   # 敌人都死了，下一只（搜出来、刷回来的）重新算
+        # 被放倒、被捆住的看不见也打不了人，正是偷袭的时候
+        enemies = [n for n in alive if n.status is None]
+        if action.action in ("attack", "stunt") and result.success:
+            st.detected, st.hidden = bool(alive), False    # 动了手就暴露了，挨的那下就是反击
+            _save_stealth(cur, player, st)
+            return []
+        if action.action in ("say", "talk"):
+            st.hidden = False                       # 出声就藏不住了
+        if not enemies or action.action == "hide" and result.success:
+            _save_stealth(cur, player, st)
+            return []
+        facts = []
+        if not st.detected:
+            if _roll(st.chance):
+                st.detected, st.hidden = True, False
+                facts.append(f"{'、'.join(n.name for n in enemies)}发现了{player.name}")
+            elif not st.hidden:
+                st.chance = round(min(1.0, st.chance + DETECT_STEP), 2)
+        if st.detected:
+            for npc in enemies:
+                facts += _npc_strike(cur, player, npc, "扑上来攻击")
+                if player.hp <= 0:
+                    break
+        _save_stealth(cur, player, st)
+        return facts
 
 
 def do_attack(cur: Cursor, player: Player, view: RoomView, a: Attack) -> list[str]:
@@ -611,15 +736,15 @@ def do_attack(cur: Cursor, player: Player, view: RoomView, a: Attack) -> list[st
     if a.target not in view.refs:
         target = _pvp_target(cur, player, a.target)
         armor = _equipped(cur, target, "armor")
-        dmg = max(1, player.attack + (weapon.template.damage if weapon else 0)
-                  - target.defense - (armor.template.defense if armor else 0))
+        dmg = max(1, player.attack + (weapon.damage if weapon else 0)
+                  - target.defense - (armor.defense if armor else 0))
         facts, _ = _hurt_player(cur, target, dmg)
         return [f"{player.name}用{how}攻击{target.name}，造成 {dmg} 点伤害"] + facts
 
     npc = _room_npc(cur, view, player, a.target)
     if not npc.combatable:
         raise ActionError(f"{npc.name}不是能打的对象")
-    dmg = max(1, player.attack + (weapon.template.damage if weapon else 0) - npc.template.defense)
+    dmg = max(1, player.attack + (weapon.damage if weapon else 0) - npc.template.defense)
     facts, dead = _hurt_npc(cur, player, npc, dmg)
     facts = [f"{player.name}用{how}攻击{npc.name}，造成 {dmg} 点伤害"] + facts
     return facts if dead else facts + _npc_counter(cur, player, npc)
@@ -675,6 +800,10 @@ def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]
     if feature:
         cur.execute("update room_features set uses_left = uses_left - 1, used_at = coalesce(used_at, now()) where id = %s",
                     (feature["id"],))
+    # 拿有毒的酒菜泼、砸别人：东西用掉，砸中了按它的毒性算（伤害、放倒），不按 AI 给的档位
+    poison = item if item and item.template.type == "consumable" and (item.harm or item.knockout) else None
+    if poison:
+        _consume(cur, poison)
     facts = [f"{player.name}尝试：{a.description}"]
     if not _roll(SUCCESS_CHANCE[a.difficulty]):
         facts.append("没有成功")
@@ -682,10 +811,14 @@ def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]
 
     facts.append("成功了")
     down = stunned = False
-    if dmg := TIER_DAMAGE[tier]:
+    if dmg := (poison.harm if poison else TIER_DAMAGE[tier]):
         hurt, down = _hurt_npc(cur, player, target, dmg) if is_npc else _hurt_player(cur, target, dmg)
         facts += [f"{target.name}受到 {dmg} 点伤害"] + hurt
-    if a.status and not down:
+    if poison and poison.knockout and not down:
+        _knock_out(cur, "npcs" if is_npc else "players", target.id, poison.knockout)
+        facts.append(f"{target.name}{poison.knockout}，失去战斗能力")
+        stunned = True
+    elif a.status and not down:
         st = Status(kind=a.status, escape=escape, since=datetime.now(timezone.utc).isoformat(),
                     label=(a.status_label or "").strip()[:20]
                     or ("被打得失去了战斗能力" if a.status == "incapacitated" else "被困住了"))
@@ -810,7 +943,9 @@ def do_leave_party(cur: Cursor, player: Player, view: RoomView, a: LeaveParty) -
 def do_talk(cur: Cursor, player: Player, view: RoomView, a: Talk) -> list[str]:
     # 这里只校验对象在场，NPC 怎么回、给不给东西由对话步骤决定（见 giveable_items / npc_give）
     npc = _room_npc(cur, view, player, a.target)
-    return [f"{player.name}对{npc.name}说：“{a.message}”"]
+    # AI 解析偶尔把"对麦琪 来杯酒"整句当成说的话，去掉开头的称呼
+    message = re.sub(rf"^(对|跟|和|向)?{re.escape(npc.name)}[\s，,：:]*", "", a.message).strip() or a.message
+    return [f"{player.name}对{npc.name}说：“{message}”"]
 
 
 def do_give(cur: Cursor, player: Player, view: RoomView, a: Give) -> list[str]:
@@ -849,7 +984,7 @@ HANDLERS: dict[str, Callable[..., list[str]]] = {
     "equip": do_equip, "attack": do_attack, "talk": do_talk, "give": do_give, "freeform": do_freeform,
     "say": do_say, "revive": do_revive, "stunt": do_stunt, "struggle": do_struggle,
     "follow": do_follow, "unfollow": do_unfollow, "invite": do_invite, "join": do_join, "leave_party": do_leave_party,
-    "reject": do_reject,
+    "hide": do_hide, "search": do_search, "reject": do_reject,
 }
 
 
@@ -878,10 +1013,12 @@ def execute(conn: Connection, view: RoomView, action: PlayerAction) -> ActionRes
 
 
 def execute_all(conn: Connection, view: RoomView, actions: list[PlayerAction]) -> list[ActionResult]:
-    """按顺序执行，前一步失败就中断"""
+    """按顺序执行，前一步失败就中断。每个动作之后同区域的敌人跟着行动（发现、攻击），
+    facts 接在这个动作后面，results 和 actions 仍然一一对应"""
     results = []
     for action in actions:
         result = execute(conn, view, action)
+        result.facts += enemy_turn(conn, view.player.id, action, result)
         results.append(result)
         if not result.success:
             break
@@ -919,8 +1056,22 @@ def giveable_items(conn: Connection, player_id: UUID, npc_id: UUID) -> list[Item
         return [i for i in items if _give_rule_ok(cur, npcs[0], player, i)]
 
 
-def npc_give(conn: Connection, player_id: UUID, npc_id: UUID, item_id: UUID) -> ActionResult:
-    """对话 AI 提议 NPC 给玩家东西时调用，规则不满足就当没说"""
+def _pay(cur: Cursor, player: Player, price: int) -> None:
+    """交易扣钱：价钱是 AI 定的，这里只管够不够、扣掉。钱不够整笔交易回滚"""
+    price = max(0, price)
+    if price > player.gold:
+        raise ActionError(f"{player.name}的钱不够，要 {price} 金币，身上只有 {player.gold} 金币")
+    if price:
+        cur.execute("update players set gold = gold - %s where id = %s", (price, player.id))
+
+
+def _deal(npc: Npc, player: Player, name: str, price: int) -> str:
+    return (f"{npc.name}把{name}卖给了{player.name}，收了 {price} 金币" if price > 0
+            else f"{npc.name}把{name}交给了{player.name}")
+
+
+def npc_give(conn: Connection, player_id: UUID, npc_id: UUID, item_id: UUID, price: int = 0) -> ActionResult:
+    """对话 AI 提议 NPC 给玩家东西时调用，规则不满足就当没说。price 是 AI 定的价钱，0 就是白给"""
     try:
         with conn.transaction():
             cur = _cursor(conn)
@@ -932,11 +1083,83 @@ def npc_give(conn: Connection, player_id: UUID, npc_id: UUID, item_id: UUID) -> 
             items = load_items(cur, "i.id = %s and i.npc_id = %s", (item_id, npc.id), lock=True)
             if not items or not _give_rule_ok(cur, npc, player, items[0]):
                 raise ActionError(f"{npc.name}不会给这个")
+            _pay(cur, player, price)
             _move_item(cur, items[0], player_id=player.id)
-        return ActionResult(action="npc_give", success=True,
-                            facts=[f"{npc.name}把{_label(items[0])}交给了{player.name}"])
+        return ActionResult(action="npc_give", success=True, facts=[_deal(npc, player, _label(items[0]), price)])
     except ActionError as e:
         return ActionResult(action="npc_give", success=False, facts=[str(e)])
+
+
+def sellable(conn: Connection, npc: Npc) -> list[dict]:
+    """NPC 能卖的货（world.yaml 的 sells），给交易 AI 看：物品 id、名字、说明、伤害防御、按效果算的原价"""
+    ids = npc.template.props.get("sells", [])
+    if not ids:
+        return []
+    with conn.transaction():
+        cur = _cursor(conn)
+        cur.execute("select id, name, description, type, damage, defense, heal from item_templates where id = any(%s)", (ids,))
+        return [r | {"base_price": base_price(r)} for r in cur.fetchall()]
+
+
+OFFER_WINDOW = "10 minutes"             # NPC 报的价多久内有效
+
+
+def get_offers(conn: Connection, player_id: UUID, npc: Npc) -> dict[str, dict]:
+    """NPC 给这个玩家报过、还没过期的价 {key: {price, spec}}。
+    key 是卖货的物品 id，或者 "made:名字"（现造的东西，spec 是报价时定好的规格）"""
+    with conn.transaction():
+        cur = _cursor(conn)
+        cur.execute(
+            f"""select o.key, o.value from player_npc_relations r, jsonb_each(r.offers) o
+                where r.player_id = %s and r.npc_template = %s
+                  and to_timestamp((o.value->>'at')::float) > now() - interval '{OFFER_WINDOW}'""",
+            (player_id, npc.template.id),
+        )
+        return {r["key"]: r["value"] for r in cur.fetchall()}
+
+
+def _put_offer(cur: Cursor, player_id: UUID, npc: Npc, key: str, price: int, spec: Optional[dict] = None) -> None:
+    """记一条报价；已有的就改价钱（砍价让步），现造东西的规格不变"""
+    value = {"price": max(0, price)} | ({"spec": spec} if spec else {})
+    cur.execute(
+        """insert into player_npc_relations (player_id, npc_template, offers)
+           values (%(p)s, %(t)s, jsonb_build_object(%(k)s::text, %(v)s::jsonb || jsonb_build_object('at', extract(epoch from now()))))
+           on conflict (player_id, npc_template) do update set offers = player_npc_relations.offers
+             || jsonb_build_object(%(k)s::text, coalesce(player_npc_relations.offers->%(k)s, '{}'::jsonb) || %(v)s::jsonb
+                                   || jsonb_build_object('at', extract(epoch from now())))""",
+        {"p": player_id, "t": npc.template.id, "k": key, "v": Jsonb(value)},
+    )
+
+
+def set_offer(conn: Connection, player_id: UUID, npc: Npc, key: str, price: int) -> None:
+    """叙事里 NPC 报了价、砍价让了步就记下来：卖货清单里的物品 id，或者已经报过价的现造东西"""
+    if key not in npc.template.props.get("sells", []) and key not in get_offers(conn, player_id, npc):
+        return
+    with conn.transaction():
+        _put_offer(_cursor(conn), player_id, npc, key, price)
+
+
+def npc_sell(conn: Connection, player_id: UUID, npc: Npc, template_id: str) -> ActionResult:
+    """NPC 卖一件货给玩家（货不限量，每卖一件新造一件）。必须先报过价，只按报的价收钱，AI 当场改不了价"""
+    try:
+        if template_id not in npc.template.props.get("sells", []):
+            raise ActionError(f"{npc.name}不卖这个")
+        offer = get_offers(conn, player_id, npc).get(template_id)
+        if offer is None:
+            raise ActionError(f"{npc.name}还没给这件东西报价")
+        with conn.transaction():
+            cur = _cursor(conn)
+            player = load_player(cur, player_id, lock=True)
+            _pay(cur, player, offer["price"])
+            # 成交了这个报价就作废，再买要重新谈
+            cur.execute("update player_npc_relations set offers = offers - %s where player_id = %s and npc_template = %s",
+                        (template_id, player_id, npc.template.id))
+            cur.execute("insert into item_instances (template_id, player_id) values (%s, %s)", (template_id, player_id))
+            cur.execute("select name from item_templates where id = %s", (template_id,))
+            name = cur.fetchone()["name"]
+        return ActionResult(action="npc_sell", success=True, facts=[_deal(npc, player, name, offer["price"])])
+    except ActionError as e:
+        return ActionResult(action="npc_sell", success=False, facts=[str(e)])
 
 
 # ============ 任务（对话步骤调用） ============
@@ -961,12 +1184,23 @@ def quest_turn(conn: Connection, player_id: UUID, npc_id: UUID) -> tuple[list[Ac
             (player_id, npc.template.id),
         )
         for q in cur.fetchall():
-            done = bool(player.flags.get(q["done_flag"]))
+            # 两种完成条件：身上有标记（打死哥布林），或者带着要的东西来找发布者（锈剑）
+            brought = None
+            if q["needs_item"]:
+                brought = next(iter(load_items(cur, "i.player_id = %s and i.template_id = %s",
+                                               (player_id, q["needs_item"]), lock=True)), None)
+            done = bool(q["done_flag"] and player.flags.get(q["done_flag"])) or brought is not None
             if q["status"] == "rewarded":
                 context.append(("closed", q))
             elif done:
-                # 做完了：奖励直接给（身上已经有就不重复给），不用玩家开口要
+                # 做完了：奖励直接给（身上已经有就不重复给），不用玩家开口要；要带的东西收走
                 facts = []
+                if brought:
+                    if brought.quantity > 1:
+                        cur.execute("update item_instances set quantity = quantity - 1 where id = %s", (brought.id,))
+                    else:
+                        cur.execute("delete from item_instances where id = %s", (brought.id,))
+                    facts.append(f"{npc.name}收走了{player.name}的{brought.name}")
                 if q["reward_item"]:
                     cur.execute("select 1 from item_instances where player_id = %s and template_id = %s",
                                 (player_id, q["reward_item"]))
@@ -981,6 +1215,8 @@ def quest_turn(conn: Connection, player_id: UUID, npc_id: UUID) -> tuple[list[Ac
                 context.append(("done", q))
             elif q["status"] == "offered":
                 context.append(("active", q))
+            elif q["hidden"]:
+                continue                        # 隐藏委托：NPC 不提，玩家自己碰上（带着东西来）才触发
             else:
                 # 这次对话 NPC 提起委托：写成 fact，叙事一定会写到，玩家界面上也能看到这条
                 _set_quest(cur, player_id, q["id"], "offered")
@@ -1000,47 +1236,127 @@ def _set_quest(cur: Cursor, player_id: UUID, quest_id: str, status: str) -> None
 
 # ============ NPC 现造东西、轰人（对话步骤调用） ============
 
-MADE_TEMPLATES = {"food": "made_food", "drink": "made_drink", "misc": "made_misc"}
-CREATE_COOLDOWN = "3 minutes"           # 同一个 NPC 给同一个玩家现造东西的间隔
+MADE_TEMPLATES = {"food": "made_food", "drink": "made_drink", "misc": "made_misc", "weapon": "made_weapon"}
+CREATE_COOLDOWN = "3 minutes"           # 同一个 NPC 白送现造东西给同一个玩家的间隔
+# 开价按效果算，数值越高越贵（之后可以砍价）：伤害、防御每点 3 金币，回血、毒每点 1 金币，能把人药倒另加 3
+PRICE_PER = {"damage": 3, "defense": 3, "heal": 1, "harm": 1}
+KNOCKOUT_PRICE = 3
 
 
-def creatable_kinds(conn: Connection, player_id: UUID, npc: Npc) -> list[str]:
-    """NPC 现在能给这个玩家造哪些东西：world.yaml 里 creates 配的，冷却中就是空"""
-    kinds = [k for k in npc.template.props.get("creates", []) if k in MADE_TEMPLATES]
-    if not kinds:
-        return []
-    with conn.transaction():
-        cur = _cursor(conn)
-        cur.execute(
-            f"""select 1 from player_npc_relations where player_id = %s and npc_template = %s
-                and last_created_at > now() - interval '{CREATE_COOLDOWN}'""",
-            (player_id, npc.template.id),
-        )
-        return [] if cur.fetchone() else kinds
+def base_price(stats: dict) -> int:
+    return max(1, sum(stats.get(k, 0) * v for k, v in PRICE_PER.items()) + (KNOCKOUT_PRICE if stats.get("knockout") else 0))
 
 
-def npc_create(conn: Connection, player_id: UUID, npc: Npc, kind: str, name: str, description: str) -> ActionResult:
-    """NPC 现造一件东西给玩家。种类、冷却都在这里再查一遍，名字描述由 AI 起、这里截长度"""
+# 白送的门槛：值钱的东西（超过一杯小酒的价）只白送给交情够的人，不然模型第一次见面就把剑白送了
+GIFT_FREE_MAX = 3
+GIFT_AFFINITY = 30
+
+
+def can_gift(spec: dict, affinity: int) -> bool:
+    return base_price(spec) <= GIFT_FREE_MAX or affinity >= GIFT_AFFINITY
+
+
+def effect_text(stats: dict) -> str:
+    """给人看的效果说明：伤害 4 / 回 3 点血 / 有毒，掉 3 点血 / 能把人药倒"""
+    parts = [f"伤害 {stats['damage']}" if stats.get("damage") else "",
+             f"防御 {stats['defense']}" if stats.get("defense") else "",
+             f"回 {stats['heal']} 点血" if stats.get("heal") else "",
+             f"有毒，掉 {stats['harm']} 点血" if stats.get("harm") else "",
+             "能把人药倒" if stats.get("knockout") else ""]
+    return "，".join(p for p in parts if p) or "没什么效果"
+
+
+def create_limits(npc: Npc) -> dict[str, dict]:
+    """NPC 能现造的种类和上限（world.yaml 的 creates）。老写法 [food, drink] 当成没有数值上限"""
+    cfg = npc.template.props.get("creates", {})
+    if isinstance(cfg, list):
+        cfg = {k: {} for k in cfg}
+    return {k: (v or {}) for k, v in cfg.items() if k in MADE_TEMPLATES}
+
+
+def made_spec(npc: Npc, kind: str, name: str, description: str, heal: int = 0, harm: int = 0,
+              damage: int = 0, knockout: Optional[str] = None) -> dict:
+    """AI 提议的现造东西，按 NPC 的上限裁剪成规格。种类不允许就抛 ActionError"""
+    caps = create_limits(npc).get(kind)
+    if caps is None:
+        raise ActionError(f"{npc.name}做不了这种东西")
+    spec = {"kind": kind, "name": name.strip()[:12] or "小玩意", "description": description.strip()[:120]}
+    clamp = lambda v, key: max(0, min(int(v or 0), caps.get(key, 0)))
+    if kind in ("food", "drink"):
+        spec["harm"] = clamp(harm, "harm")
+        if knockout and caps.get("knockout"):
+            spec["knockout"] = knockout.strip()[:20]
+        # 有毒、下了药的就不回血
+        spec["heal"] = 0 if spec["harm"] or spec.get("knockout") else clamp(heal, "heal")
+    elif kind == "weapon":
+        spec["damage"] = max(1, clamp(damage, "damage"))
+    return spec
+
+
+def creatable_kinds(conn: Connection, player_id: UUID, npc: Npc) -> dict[str, dict]:
+    """NPC 能给这个玩家现造的种类和上限。白送有冷却，但买卖（先报价）不受冷却限制，所以这里总是返回"""
+    return create_limits(npc)
+
+
+def _gift_cooldown(cur: Cursor, player_id: UUID, npc: Npc) -> None:
+    cur.execute(
+        f"""insert into player_npc_relations (player_id, npc_template, last_created_at) values (%s, %s, now())
+            on conflict (player_id, npc_template) do update set last_created_at = now()
+            where player_npc_relations.last_created_at is null
+               or player_npc_relations.last_created_at < now() - interval '{CREATE_COOLDOWN}'
+            returning 1""",
+        (player_id, npc.template.id),
+    )
+    if not cur.fetchone():
+        raise ActionError(f"{npc.name}刚白送过东西，过一会儿再说")
+
+
+def _make(cur: Cursor, player_id: UUID, spec: dict) -> None:
+    cur.execute("insert into item_instances (template_id, player_id, props) values (%s, %s, %s)",
+                (MADE_TEMPLATES[spec["kind"]], player_id, Jsonb({k: v for k, v in spec.items() if k != "kind"})))
+
+
+def npc_gift(conn: Connection, player_id: UUID, npc: Npc, spec: dict) -> ActionResult:
+    """NPC 高兴了现造一件白送（请客），不用报价；同一个玩家 3 分钟一次"""
     try:
         with conn.transaction():
             cur = _cursor(conn)
             player = load_player(cur, player_id, lock=True)
-            if kind not in npc.template.props.get("creates", []) or kind not in MADE_TEMPLATES:
-                raise ActionError(f"{npc.name}给不了这种东西")
-            cur.execute(
-                f"""insert into player_npc_relations (player_id, npc_template, last_created_at) values (%s, %s, now())
-                    on conflict (player_id, npc_template) do update set last_created_at = now()
-                    where player_npc_relations.last_created_at is null
-                       or player_npc_relations.last_created_at < now() - interval '{CREATE_COOLDOWN}'
-                    returning 1""",
-                (player_id, npc.template.id),
-            )
-            if not cur.fetchone():
-                raise ActionError(f"{npc.name}刚给过东西，过一会儿再说")
-            name = name.strip()[:12] or "小玩意"
-            cur.execute("insert into item_instances (template_id, player_id, props) values (%s, %s, %s)",
-                        (MADE_TEMPLATES[kind], player_id, Jsonb({"name": name, "description": description.strip()[:120]})))
-        return ActionResult(action="npc_create", success=True, facts=[f"{npc.name}把{name}交给了{player.name}"])
+            _gift_cooldown(cur, player_id, npc)
+            _make(cur, player_id, spec)
+        return ActionResult(action="npc_create", success=True,
+                            facts=[f"{npc.name}把{spec['name']}（{effect_text(spec)}）送给了{player.name}"])
+    except ActionError as e:
+        return ActionResult(action="npc_create", success=False, facts=[str(e)])
+
+
+def quote_made(conn: Connection, player_id: UUID, npc: Npc, spec: dict) -> ActionResult:
+    """要收钱的现造东西先报价：按效果算开价，连同规格记进报价，玩家同意了再照这个规格做"""
+    price = base_price(spec)
+    with conn.transaction():
+        cur = _cursor(conn)
+        player = load_player(cur, player_id)
+        _put_offer(cur, player_id, npc, "made:" + spec["name"], price, spec)
+    return ActionResult(action="quote", success=True,
+                        facts=[f"{npc.name}给{player.name}开价：{spec['name']}（{effect_text(spec)}），{price} 金币"])
+
+
+def npc_buy_made(conn: Connection, player_id: UUID, npc: Npc, key: str) -> ActionResult:
+    """玩家同意了现造东西的报价：按报价收钱，照报价时的规格做"""
+    try:
+        offer = get_offers(conn, player_id, npc).get(key)
+        if not offer or not offer.get("spec"):
+            raise ActionError(f"{npc.name}还没给这件东西报价")
+        spec = offer["spec"]
+        with conn.transaction():
+            cur = _cursor(conn)
+            player = load_player(cur, player_id, lock=True)
+            _pay(cur, player, offer["price"])
+            _make(cur, player_id, spec)
+            cur.execute("update player_npc_relations set offers = offers - %s where player_id = %s and npc_template = %s",
+                        (key, player_id, npc.template.id))
+        return ActionResult(action="npc_create", success=True,
+                            facts=[_deal(npc, player, f"{spec['name']}（{effect_text(spec)}）", offer["price"])])
     except ActionError as e:
         return ActionResult(action="npc_create", success=False, facts=[str(e)])
 

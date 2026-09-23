@@ -127,7 +127,7 @@ def sync():
 def players():
     with pool.connection() as conn:
         rows = _rows(conn, f"""
-            select p.id, p.name, p.room_id, r.name as room_name, p.hp, p.max_hp, p.attack, p.defense, p.flags,
+            select p.id, p.name, p.room_id, r.name as room_name, p.hp, p.max_hp, p.attack, p.defense, p.flags, p.gold,
                    p.status, p.party_id, f.name as following, p.last_active_at, p.created_at,
                    coalesce(p.last_active_at > now() - interval '{engine.ONLINE_WINDOW}', false) as awake
             from players p join rooms r on r.id = p.room_id left join players f on f.id = p.following

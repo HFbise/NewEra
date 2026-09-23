@@ -36,7 +36,7 @@ app.include_router(admin.router)
 # 这些动作的回合不调叙事 AI：facts 已经说清楚了，AI 反而容易替别的玩家编动作
 NO_NARRATION = {"say", "follow", "unfollow", "invite", "join", "leave_party"}
 # NPC 对话里这些结果旁人也看得到（交东西、提委托、轰人），跟在对话原文后面
-NPC_OUTCOMES = {"npc_give", "npc_create", "quest", "npc_eject"}
+NPC_OUTCOMES = {"npc_give", "npc_create", "npc_sell", "quote", "quest", "npc_eject"}
 
 
 class LoginReq(BaseModel):
@@ -114,6 +114,7 @@ def state(conn, view: RoomView, after: Optional[int] = None) -> dict:
         "party": view.party,
         "invites": view.invites,
         "following": view.following,
+        "stealth": ai.stealth_text(view),
         "events": events,
         "last_event_id": last_event_id,
     }
@@ -299,7 +300,8 @@ def run_turn(req: CommandReq):
     yield {"stage": "execute"}
     use_ai = ai.enabled() and not all(a.action in NO_NARRATION for a in actions)
     npc_id = npc = eject_to = None
-    giveable, creatable, quests, affinity, memory, recent = [], [], [], 0, "", []
+    giveable, creatable, sells, quests, affinity, memory, recent = [], [], [], [], 0, "", []
+    offers = {}
     with pool.connection() as conn:
         results = engine.execute_all(conn, view, actions)
         talk = next((a for a, r in zip(actions, results) if a.action == "talk" and r.success), None)
@@ -315,6 +317,8 @@ def run_turn(req: CommandReq):
             if npc:
                 giveable = engine.giveable_items(conn, pid, npc_id)
                 creatable = engine.creatable_kinds(conn, pid, npc)
+                sells = engine.sellable(conn, npc)
+                offers = engine.get_offers(conn, pid, npc) if sells or creatable else {}
                 affinity = engine.get_affinity(conn, pid, npc_id)
                 memory = engine.get_npc_memory(conn, pid, npc_id)
                 if engine.can_eject(npc):
@@ -331,17 +335,35 @@ def run_turn(req: CommandReq):
         yield {"stage": "narrate"}
         try:
             # NPC 身上有能给的东西、或者能现造东西时，先单独决定给不给，执行完变成 fact，叙事再照着写
-            if giveable or creatable:
-                give_id, made, u = ai.decide_give(pool, view, req.text, npc, giveable, creatable, affinity, memory,
-                                                  recent)
+            # 交易：给现有的、现造、卖货，价钱 AI 定，引擎查钱够不够、扣钱、交货
+            if giveable or creatable or sells:
+                trade, u = ai.decide_give(pool, view, req.text, npc, giveable, creatable, affinity, memory,
+                                          recent, sells, offers)
                 add(u)
-                if give_id or made:
+                if trade:
                     with pool.connection() as conn:
-                        results.append(engine.npc_give(conn, pid, npc_id, give_id) if give_id else
-                                       engine.npc_create(conn, pid, npc, made.kind, made.name, made.description))
-                        now_view = engine.load_view(conn, pid)   # 叙事要看到新拿到的东西
+                        if trade.give_id:
+                            results.append(engine.npc_give(conn, pid, npc_id, trade.give_id, trade.price))
+                        elif trade.made:
+                            # 现做：AI 给的效果按上限裁剪；白送当场给，要收钱就先按效果开价。
+                            # 值钱的东西交情不够不能白送，改成开价
+                            m = trade.made
+                            try:
+                                spec = engine.made_spec(npc, m.kind, m.name, m.description, m.heal, m.harm,
+                                                        m.damage, m.knockout)
+                                free = trade.price == 0 and engine.can_gift(spec, affinity)
+                                results.append(engine.npc_gift(conn, pid, npc, spec) if free
+                                               else engine.quote_made(conn, pid, npc, spec))
+                            except engine.ActionError as e:
+                                results.append(ActionResult(action="npc_create", success=False, facts=[str(e)]))
+                        elif trade.sell_id.startswith("made:"):
+                            results.append(engine.npc_buy_made(conn, pid, npc, trade.sell_id))
+                        else:
+                            results.append(engine.npc_sell(conn, pid, npc, trade.sell_id))
+                        now_view = engine.load_view(conn, pid)   # 叙事要看到新拿到的东西和剩下的钱
+                        offers = engine.get_offers(conn, pid, npc)
             out, u = ai.narrate(pool, now_view, req.text, results, npc, affinity, memory, recent,
-                                quests, eject_to)
+                                quests, eject_to, sells, offers)
             add(u)
             if out:
                 narrative, observer = out.narrative, out.observer or None
@@ -366,6 +388,16 @@ def run_turn(req: CommandReq):
             if out.eject and (kicked := engine.npc_eject(conn, pid, npc)):
                 results.append(kicked)
             # 跟 NPC 的对话给同房间的人看原文，大家能接着聊，NPC 下回合也能从最近动态里看到别人说了什么
+            # NPC 报了价就记下来，玩家下回合同意才按这个价成交（名字对上卖货清单里的哪件）
+            if out.npc_offer:
+                # 能报价的：墙上的货（物品 id）、开过价的现做东西（"made:名字"）
+                named = [(s["id"], s["name"]) for s in sells] + \
+                    [(k, v["spec"]["name"]) for k, v in offers.items() if k.startswith("made:") and v.get("spec")]
+                item = out.npc_offer.item
+                key = next((k for k, n in named if n == item), None) or \
+                    next((k for k, n in named if n in item or item in n), None)
+                if key:
+                    engine.set_offer(conn, pid, npc, key, out.npc_offer.price)
             if talk and out.npc_reply:
                 observer = "\n".join(
                     [f"{name}对{npc.name}说：“{talk.message}”", f"{npc.name}：“{out.npc_reply}”"]

@@ -189,7 +189,7 @@ async function loadPlayers() {
     ${ps.map(p => `<tr data-id="${p.id}" data-name="${esc(p.name)}">
       <td><span class="dot${p.awake ? " on" : ""}"></span>${esc(p.name)}</td>
       <td>${esc(p.room_name)}</td>
-      <td class="${p.hp <= 0 ? "bad" : ""}">${p.hp}/${p.max_hp}<div class="dim">攻 ${p.attack} 防 ${p.defense}</div></td>
+      <td class="${p.hp <= 0 ? "bad" : ""}">${p.hp}/${p.max_hp}<div class="dim">攻 ${p.attack} 防 ${p.defense} · ${p.gold} 金币</div></td>
       <td>${p.hp <= 0 ? '<span class="bad">倒下</span> ' : ""}${p.status ? `<span class="warn">${esc(p.status.label)}</span>` : ""}</td>
       <td>${p.party.length ? "队友：" + p.party.map(esc).join("、") : ""}${p.following ? `<div>跟着 ${esc(p.following)}</div>` : ""}</td>
       <td>${p.inventory.map(i => esc(i.name) + (i.quantity > 1 ? ` x${i.quantity}` : "") + (i.equipped_slot ? '<span class="dim">[装]</span>' : "")).join("、")}</td>

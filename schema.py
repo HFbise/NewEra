@@ -125,6 +125,19 @@ class Struggle(BaseModel):
     difficulty: Difficulty = "normal"
 
 
+class Hide(BaseModel):
+    """躲起来，不让敌人发现。难度由 AI 看藏身的地方判，引擎掷骰"""
+    action: Literal["hide"]
+    description: str = ""               # 第三人称简述怎么躲的
+    difficulty: Difficulty = "normal"
+
+
+class Search(BaseModel):
+    """四处搜寻：能找出躲着的、刚回来的敌人（NPC 到了复活时间，有人在场时要搜才会出现）"""
+    action: Literal["search"]
+    description: str = ""
+
+
 class Freeform(BaseModel):
     """规则引擎覆盖不到的动作，交给 AI 自由叙事，但不能改关键状态"""
     action: Literal["freeform"]
@@ -146,7 +159,7 @@ class Reject(BaseModel):
 
 PlayerAction = Annotated[
     Union[Move, Look, Take, Drop, Use, Equip, Attack, Talk, Give, Say, Revive, Invite, Join, LeaveParty,
-          Follow, Unfollow, Stunt, Struggle, Freeform, Reject],
+          Follow, Unfollow, Stunt, Struggle, Hide, Search, Freeform, Reject],
     Field(discriminator="action"),
 ]
 
@@ -227,6 +240,29 @@ class ItemInstance(BaseModel):
     def description(self) -> str:
         return self.props.get("description") or self.template.description
 
+    # NPC 现造的东西，数值（AI 定、引擎限过幅）也存在 props 里，没有就用模板的
+    @property
+    def damage(self) -> int:
+        return self.props.get("damage", self.template.damage)
+
+    @property
+    def defense(self) -> int:
+        return self.props.get("defense", self.template.defense)
+
+    @property
+    def heal(self) -> int:
+        return self.props.get("heal", self.template.heal)
+
+    @property
+    def harm(self) -> int:
+        """有毒的东西：吃喝下去掉的血，砸到别人身上造成的伤害"""
+        return self.props.get("harm", 0)
+
+    @property
+    def knockout(self) -> Optional[str]:
+        """能把人放倒的东西（蒙汗药酒）：放倒时的说法，比如"喝了蒙汗药昏睡过去"；没有就是 None"""
+        return self.props.get("knockout")
+
 
 class Npc(BaseModel):
     id: UUID
@@ -276,9 +312,22 @@ class Player(BaseModel):
     attack: int                         # 基础值，不含装备加成
     defense: int
     flags: dict[str, Any] = {}          # 任务标记
+    gold: int = 0                       # 金币
     party_id: Optional[UUID] = None     # 所在队伍，没组队为空
     status: Optional[Status] = None     # 负面状态
     following: Optional[UUID] = None    # 正在跟着谁
+    stealth: Optional["Stealth"] = None # 在有敌人的地方有没有被发现
+
+
+class Stealth(BaseModel):
+    """玩家在某个区域里有没有被敌人发现，存在 players.stealth（jsonb）。换了区域就作废重来"""
+    room: str
+    chance: float                       # 下一个动作被发现的几率，进门时 engine.DETECT_START，每个动作涨一点
+    detected: bool = False              # 被发现了：敌人每个动作都打他
+    hidden: bool = False                # 躲着：几率不再上涨
+
+
+Player.model_rebuild()                  # stealth 引用了后面才定义的 Stealth
 
 
 # ============ 意图解析的房间上下文 ============

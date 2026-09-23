@@ -60,7 +60,7 @@ rooms:
     details: >-
       熔炉用红砖砌成，风箱是牛皮做的，拉一下炉火就呼地一旺；屋里热得人冒汗，满是煤烟和铁锈味。
       铁砧黑亮，边上摆着大小几把锤子和长柄火钳，一桶淬火用的水表面浮着一层油光。
-      墙上挂的镰刀、锄头、斧头和几把粗糙的刀都是莉娜的货，用铁钩挂得很牢，没她点头拿不下来。
+      墙上挂的镰刀、锄头、斧头和几把粗糙的刀都是莉娜的货，用铁钩挂得很牢，想要就得跟她谈价钱。
       地上落着铁屑和煤渣，门口堆着一小堆等着修的破农具。
     exits:
       west: {to: square}
@@ -122,6 +122,27 @@ items:
     description: 刻着看不懂的符文，在昏暗处微微发着蓝光。
     type: armor
     defense: 2
+  shiny_sword:
+    name: 闪亮的短剑
+    description: 莉娜重新锻打、磨得雪亮的短剑，刃口能照出人影。
+    type: weapon
+    damage: 6
+  # 莉娜墙上的货（她的 sells），价钱由 AI 看心情定
+  iron_axe:
+    name: 铁斧
+    description: 斧刃厚实的铁斧，劈柴砍人都顺手。
+    type: weapon
+    damage: 5
+  forge_knife:
+    name: 锻打小刀
+    description: 粗糙但结实的短刀，刀背还留着锤痕。
+    type: weapon
+    damage: 3
+  sickle:
+    name: 镰刀
+    description: 弯月形的农用镰刀，挥起来带着风声。
+    type: weapon
+    damage: 3
   # NPC 现造东西用的通用模板（NPC 的 creates 配置），名字和描述由 AI 起，存在物品实例上
   made_food:
     name: 食物
@@ -137,16 +158,27 @@ items:
     heal: 2
   made_misc:
     name: 杂物
-    description: NPC 给的小东西，比如地图、字条、信物。
+    description: NPC 给的小东西，比如字条、信物。
+    type: misc
+  made_weapon:
+    name: 武器
+    description: NPC 现打的武器。
+    type: weapon
+  old_map:
+    name: 标着陷阱的破地图
+    description: >-
+      一张卷了边、沾着酒渍的羊皮纸，用木炭潦草地画着：村口广场在中间，北边是野猪酒馆（酒馆底下有地窖），
+      东边是铁匠铺，南边一条小路通到森林边缘。森林边缘画了个叉，旁边写着"哥布林，胆小但手黑"；
+      路边土坡上的大石头被圈起来，标着"松了，别站坡下"。
     type: misc
 
 npcs:
   innkeeper:
     name: 麦琪
     # description 是别人一眼能看到的外表；persona 是性格、来历、说话方式，只给 AI 看
-    description: 酒馆老板娘兼调酒师，看上去像个十五六岁、一米四出头的纤细金发少女。一头凌乱的金色卷发随手扎在脑后，湛蓝的眼睛总带着三分酒意和看戏的神情，嘴角挂着看透一切的戏谑微笑。个子太小，在吧台后要踩着一个垫脚木箱。穿粗布衬衫、皮胸衣和牛皮围裙，腰间挂着沉甸甸的铁钥匙串，手里永远端着一只盛满矮人黑啤的雕花锡杯。吧台下藏着一根带钢环的橡木短棍、一柄切肉刀和一把上了弦的轻弩。
+    description: 酒馆老板娘兼调酒师，一米四出头、看上去像个十五六岁的纤细金发少女，但没人敢问她的实际年龄。一头凌乱的金色卷发随手扎在脑后，湛蓝的眼睛总带着三分酒意和看戏的神情，嘴角挂着看透一切的戏谑微笑。个子太小，在吧台后要踩着一个垫脚木箱。穿粗布衬衫、皮胸衣和牛皮围裙，腰间挂着沉甸甸的铁钥匙串，手里永远端着一只盛满矮人黑啤的雕花锡杯。吧台下藏着一根带钢环的橡木短棍、一柄切肉刀和一把上了弦的轻弩。
     persona: 外表精致娇小，骨子里是刀口饮血过的退役雇佣兵，如今是边境的情报贩子，对自己的地盘有绝对的掌控欲。千杯不醉，常年微醺，反而直觉毒辣，闻一闻就知道客人刚从哪个地牢出来（哥布林的腐臭、酸液的味道）。嗜酒如命，说话爱拿矮人黑啤、精灵蜜酒、龙息烈酒和地牢怪物打比方。现实又贪财：打听消息先点三杯最贵的烈酒，没钱的菜鸟也可以替她干活来换。嘴硬心软，嘴上骂菜鸟冒险者是“去送死的笨蛋”，却常在人出发前往酒里偷偷加解毒草药，或者甩给对方一张标着陷阱的破地图。有人挑衅骚扰，她会笑得最甜、说得最狠，忍无可忍就抄起橡木短棍把人轰出酒馆。爱叫玩家“菜鸟”“铁罐头骑士”“尖耳朵”，说话慵懒轻快，带着酒馆的粗犷和风趣，习惯边晃酒杯边抿一口。
-    inventory: [cellar_key]
+    inventory: [cellar_key, old_map]
     restock: 60
     props:
       # 给予规则（不写就是不给）：
@@ -154,15 +186,28 @@ npcs:
       #   {requires: 标记, min_affinity: 数值}  两个条件可以只写一个，都写就要同时满足
       gives:
         cellar_key: {requires: goblin_slain}   # 任务奖励给过、玩家弄丢了还能再要
-      # 能现造什么给玩家：food 食物 / drink 酒水（吃了回 2 HP）/ misc 杂物（地图、字条，没效果），
-      # 同一个玩家 3 分钟最多一件。不写就不能造
-      creates: [food, drink, misc]
+        old_map: ai                            # 地图给不给、要不要钱看她心情
+      # 能现做什么、效果上限（AI 定具体数值，引擎按上限裁剪；开价按效果算，可以砍价，白送的话 3 分钟一次）：
+      #   food 食物 / drink 酒水：heal 回血上限；harm 有毒掉血上限；knockout: true 能下蒙汗药把人放倒
+      #   weapon 武器：damage 伤害上限
+      #   misc 杂物（字条、信物）：没效果
+      creates:
+        food: {heal: 5, harm: 5, knockout: true}
+        drink: {heal: 5, harm: 5, knockout: true}
+        misc: {}
       # 玩家闹事时能把人轰出去：从这个出口扔出去。不写就不能轰人
       eject_to: south
   smith:
-    name: 铁匠莉娜
-    description: 手臂粗壮的女铁匠，说话简短。
-    persona: 话少，不耐烦，但对真心想学打铁的人很友善。
+    name: 莉娜
+    description: 铁匠铺技术老练的年轻女铁匠，因炉火烘烤常年只穿透气的粗麻布抹胸与短裤，外罩一条斑驳防烫的厚重皮围裙，露出健壮有力、线条分明的肌肉与小麦色肌肤，浑身蒸腾着热气并挂满晶莹的汗珠。一头利落的暗红马尾随手扎在脑后，脸上和手臂常沾着炭灰。腰间挂着锻造锤与铁钳，手掌布满厚茧，眼睛明亮而专注。
+    persona: 性格直率寡言，日常极度省字，说话简短冷淡甚至只用单字回复。但对锻造拥有狂热的痴迷，一旦话题涉及武器、护甲、矿石素材或锻造工艺，瞬间两眼放光、语速极快且滔滔不绝，立刻切换成狂热的技术宅模式。眼光极毒，能一眼看穿玩家身上装备的材质缺陷与锻造瑕疵。崇尚优质金属与精湛工艺，对好兵器比对人更有耐心，最讨厌糟蹋武器和不懂装懂的菜鸟。
+    props:
+      # 能卖的东西（物品 id），价钱、卖不卖、打不打折都由 AI 看人设和心情定
+      sells: [iron_axe, forge_knife, sickle]
+      # 现打武器，伤害最多 4（墙上的铁斧是 5）
+      creates:
+        weapon: {damage: 4}
+      eject_to: west
   goblin:
     name: 哥布林
     description: 矮小的绿皮生物，手里攥着一根木棒。
@@ -171,13 +216,17 @@ npcs:
     respawn: 120
     stats: {hp: 8, max_hp: 8, attack: 3, defense: 1}
     props:
-      on_death: {set_flag: goblin_slain}   # 被击杀时给击杀者设标记
+      on_death:
+        set_flag: goblin_slain   # 被击杀时给击杀者（和同房间队友）设标记
+        gold: [1, 5]             # 掉落金币，给补最后一刀的人，每次随机
 
 # 任务：NPC 按每个玩家的进度自己提、自己跟进，人设里不用写。
 #   giver    发布任务的 NPC
 #   hook     给 AI 的引子：NPC 为什么要找人帮忙，第一次聊天时 NPC 会主动提
 #   goal     要玩家做什么
 #   done     玩家身上有这个标记就算做完了（标记来自 NPC 的 on_death.set_flag 等）
+#   needs    或者：玩家带着这件东西来找发布者就算做完了（东西会被收走）
+#   hidden   true 就是隐藏委托：NPC 不主动提，玩家自己碰上才触发
 #   reward   做完后玩家跟发布者说话时，自动交给玩家的东西（不写就只有口头感谢）
 #   after    了结后给 AI 的一句话，NPC 就不会再反复提
 quests:
@@ -189,3 +238,14 @@ quests:
     done: goblin_slain
     reward: cellar_key
     after: 这个人替你收拾了偷酒的哥布林，你已经把地窖钥匙给了他
+
+  # 隐藏委托：莉娜不主动提。玩家带着生锈的短剑去跟她说话，她就收走锈剑、打磨成闪亮的短剑
+  polish_sword:
+    name: 磨剑
+    giver: smith
+    hidden: true
+    hook: 你看不得别人拿着生锈的剑，谁拿锈剑来找你，你就忍不住抢过来重新锻打磨亮
+    goal: 把生锈的短剑拿给莉娜
+    needs: rusty_sword
+    reward: shiny_sword
+    after: 你已经把这个人的锈剑打磨成了闪亮的短剑

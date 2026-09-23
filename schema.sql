@@ -66,6 +66,8 @@ create table players (
   party_id    uuid,                              -- 所在队伍，同一队的人这个值相同；没组队为空
   status      jsonb,                             -- 负面状态 {kind, label, escape, attempts, since}，见 schema.Status
   following   uuid references players(id) on delete set null,  -- 正在跟着的玩家，对方移动时一起走
+  stealth     jsonb,                             -- 在有敌人的区域里有没有被发现（schema.Stealth），换区域作废
+  gold        int not null default 0 check (gold >= 0),       -- 金币：打怪掉，跟 NPC 买东西花
   created_at  timestamptz not null default now(),
   updated_at  timestamptz not null default now()
 );
@@ -128,6 +130,7 @@ create table player_npc_relations (
   affinity     int not null default 0 check (affinity between -100 and 100),  -- 好感度
   memory       text not null default '',        -- NPC 对这个玩家的记忆摘要，对话时由 AI 更新，限 150 字
   last_created_at timestamptz,                   -- NPC 上次给这个玩家现造东西的时间，冷却用（engine.CREATE_COOLDOWN）
+  offers       jsonb not null default '{}',     -- NPC 给这个玩家报过的价 {物品 id: {price, at}}，卖货只按报价成交
   primary key (player_id, npc_template)
 );
 
@@ -165,7 +168,9 @@ create table quests (
   name        text not null,
   hook        text not null,                     -- 给 AI：NPC 怎么提起这件事
   goal        text not null,                     -- 要玩家做什么
-  done_flag   text not null,                     -- 玩家有这个标记就算完成
+  done_flag   text,                              -- 玩家有这个标记就算完成
+  needs_item  text references item_templates(id),  -- 或者：玩家带着这件东西来找发布者就算完成（东西会被收走）
+  hidden      boolean not null default false,    -- 隐藏委托：NPC 不主动提，玩家自己碰上才触发
   reward_item text references item_templates(id),  -- 完成后跟发布者说话自动给的东西
   after       text not null default ''           -- 了结后给 AI 的一句话
 );

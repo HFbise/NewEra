@@ -132,9 +132,10 @@ function render(s) {
     `<li data-name="${esc(fill)}"><span class="ref">${ref}</span>${esc(label)}${extra}</li>`;
   $("#side").innerHTML = `
     <h2>${esc(p.name)}</h2>
-    <div>HP ${p.hp}/${p.max_hp} · 攻 ${p.attack} · 防 ${p.defense}</div>
+    <div>HP ${p.hp}/${p.max_hp} · 攻 ${p.attack} · 防 ${p.defense} · 金币 ${p.gold}</div>
     <div class="hp"><div style="width:${100 * p.hp / p.max_hp}%"></div></div>
     ${p.hp <= 0 ? `<div class="sys">你倒下了，只能看和说话，等别人来急救</div>` : ""}
+    ${s.stealth ? `<div class="sys">${esc(s.stealth)}</div>` : ""}
     ${p.status ? `<div class="sys">你${esc(p.status.label)}，${p.status.kind === "incapacitated" ? "说什么都算挣扎着醒来" : "动不了，试试挣脱"}</div>` : ""}
     ${Object.keys(p.flags).length ? `<div class="tag">标记：${Object.keys(p.flags).map(esc).join("、")}</div>` : ""}
     <h2>位置</h2>
@@ -160,8 +161,8 @@ function render(s) {
     <h2>命令</h2>
     <div id="help">
       看 · 北 南 东 西 上 下<br>
-      拿 · 扔 · 装备 · 吃 · 给<br>
-      打 · 说 · 对某人说<br>
+      拿 · 扔 · 装备 · 吃 · 给 · 买<br>
+      打 · 躲起来 · 搜索 · 说 · 对某人说<br>
       邀请组队 · 加入队伍 · 离开队伍<br>
       跟着 · 停止跟随 · 急救 · 挣脱<br>
       其他想做的事直接写，AI 判定
@@ -343,8 +344,26 @@ $("#cmd-form").onsubmit = e => {
   const text = $("#cmd").value.trim();
   if (!text) return;
   $("#cmd").value = "";
+  if (cmdHistory.at(-1) !== text) cmdHistory.push(text);
+  if (cmdHistory.length > HISTORY_MAX) cmdHistory.shift();
+  histPos = cmdHistory.length;
+  draft = "";
   send(text);
 };
+
+// 像命令行一样：↑ 翻出之前输入过的，↓ 翻回来，翻到底回到没发出去的草稿
+const HISTORY_MAX = 50;
+const cmdHistory = [];
+let histPos = 0, draft = "";
+$("#cmd").addEventListener("keydown", e => {
+  if ((e.key !== "ArrowUp" && e.key !== "ArrowDown") || e.isComposing || !cmdHistory.length) return;
+  e.preventDefault();
+  if (histPos === cmdHistory.length) draft = $("#cmd").value;
+  histPos = Math.max(0, Math.min(cmdHistory.length, histPos + (e.key === "ArrowUp" ? -1 : 1)));
+  const input = $("#cmd");
+  input.value = histPos === cmdHistory.length ? draft : cmdHistory[histPos];
+  input.setSelectionRange(input.value.length, input.value.length);
+});
 
 // 窄屏：按住输入框上沿的拖动条（或输入框两边的空白）上下拖，调信息栏高度；拖到很矮就收起，高度记在本机
 const SIDE_MIN = 60;                // 比这更矮就当收起
