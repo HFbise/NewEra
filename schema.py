@@ -200,12 +200,15 @@ class Room(BaseModel):
 class Dispenser(BaseModel):
     """取用处：酒馆的武器桶这类，每人能拿一件，身上已经有 unless 里的东西就不能再拿。配在 world.yaml 房间的 dispensers 里"""
     id: UUID                            # 按房间和 key 算出来的固定 id，只用来分配短编号
+    room: str
+    key: str
     container: str                      # "武器桶"，在房间里跟 NPC 列在一起，但不会说话
     description: str = ""
     item: str                           # 物品模板 id
     item_name: str
     unless: list[str] = []
     where: str = "里"                   # 东西放在"桶里""桌上"
+    once: bool = False                  # 每人一辈子只能拿一次（丢了也不能再拿），记在 dispenser_log
     available: bool = True              # 这个玩家还能不能拿（身上已经有了就只看得到桶、桌子本身）
 
     @property

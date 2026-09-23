@@ -217,19 +217,19 @@ INTENT_SYSTEM = """你是文字 MUD 游戏的指令解析器。读玩家的输�
 - look: target 可空（空=看整个房间；也可以是 ref 或出口英文名）
 - take: item（地上物品或"取用处"的 ref）。从武器桶这类取用处拿东西也是 take，填取用处的 ref（如 d1）
 - drop: item（背包物品的 ref）
-- use: item（背包物品的 ref），target 可空。只用于吃喝（target 不填）和用钥匙开门（target 填出口英文名）。拿东西打人、砸人、抽人是 stunt（item 填那样东西），不是 use
+- use: item（背包物品的 ref），target 可空。只用于吃喝（自己吃 target 不填；喂别人吃、把药草嚼碎喂给倒下的人、给人灌药 target 填"其他玩家"里的名字）和用钥匙开门（target 填出口英文名）。拿东西打人、砸人、抽人是 stunt（item 填那样东西），不是 use
 - equip: item（背包物品的 ref）。穿上、戴上、装备、拿在手里当武器都是 equip
 - attack: target（NPC 的 ref；打其他玩家时填"其他玩家"里的名字）
 - talk: target（NPC 的 ref），message（玩家说的话，保留原话）。找 NPC 买东西、问价、砍价、点菜、要东西都是 talk
 - give: item（背包物品的 ref），target（NPC 的 ref；给其他玩家时填"其他玩家"里的名字）
 - say: message（说的话，保留原话），target 可空（对某个玩家说时填"其他玩家"里的名字，对大家说不填）
-- revive: target（"其他玩家"里的名字）。帮倒下的、被捆住的、被打晕的其他玩家都是 revive，不是 freeform 也不是 struggle：急救、包扎、止血、扶起、喂药、叫醒、松绑、解开绳子、割断绳子、把人拉出来。struggle 只用于玩家自己摆脱自己身上的状态
+- revive: target（"其他玩家"里的名字）。帮倒下的、被捆住的、被打晕的其他玩家都是 revive，不是 freeform 也不是 struggle：急救、包扎、止血、扶起、叫醒、松绑、解开绳子、割断绳子、把人拉出来。用背包里的吃的、药草、酒喂他是 use（target 填他的名字），不是 revive 也不是 stunt。struggle 只用于玩家自己摆脱自己身上的状态
 - invite: target（"其他玩家"里的名字）。邀请对方组队
 - join: target（"邀请你组队的人"里的名字）。接受邀请、加入对方的队伍
 - leave_party: 不用填字段。离开、退出队伍
 - follow: target（"其他玩家"里的名字）。跟着、跟随、跟上某人：之后对方走到哪就自动跟到哪，这一回合本身不移动
 - unfollow: 不用填字段。不再跟着别人
-- stunt: 借环境或创意动作去伤害、制住某个 NPC 或玩家（推石头砸、用铁叉捅、绊倒、用绳子捆、泼东西迷眼）。你是裁判，要填：
+- stunt: 借环境或创意动作去伤害、制住某个 NPC 或玩家（推石头砸、用铁叉捅、绊倒、用绳子捆、泼东西迷眼）。只用于伤害、制住对方；喂人吃药草、给人喝酒是帮他，是 use 不是 stunt。你是裁判，要填：
   - target（NPC 的 ref 或其他玩家的名字），description（第三人称简述怎么做的）
   - feature：用到"可利用地形"里的东西就填它的 ref（如 f1）；只用环境描述里随手的东西就不填
   - item：用到背包里的东西（绳子、武器等）就填它的 ref，只能填"背包"列表里的；地上的东西要先 take；没用就不填
@@ -357,8 +357,11 @@ def parse_intent(db, view: RoomView, text: str) -> tuple[Optional[list], dict]:
             # stunt 的 item 只能是背包里的（模型会把地上的面包填成捆人的绳子），不是就去掉，交给引擎判"手边没东西"
             if d["action"] == "stunt" and d.get("item") not in carried:
                 d.pop("item", None)
-            # 拿东西打人，模型常写成 use（对人使用面包），改成借东西打人
-            if d["action"] == "use" and d.get("target") and d["target"] not in DIR_NAMES:
+            # 拿东西打人，模型常写成 use（对人使用面包），改成借东西打人。
+            # 吃的喝的用在其他玩家身上是喂他（引擎 _feed 判他肯不肯吃），不改
+            food = {by_id[i.id] for i in view.inventory if i.template.type == "consumable"}
+            feeding = d.get("item") in food and d.get("target") in {p.name for p in view.others}
+            if d["action"] == "use" and d.get("target") and d["target"] not in DIR_NAMES and not feeding:
                 d = {"action": "stunt", "target": d["target"], "item": d["item"], "description": text,
                      "difficulty": "normal", "tier": "light"}
             # 打的得是 NPC 或玩家；砍锁、砍门、砍树这种冲着东西去的当自由行动（模型会把地形 f1 填成目标）

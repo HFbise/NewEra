@@ -111,7 +111,7 @@ def state(conn, view: RoomView, after: Optional[int] = None) -> dict:
         "npcs": [{"ref": by_id[n.id], "name": n.name, "hp": n.hp, "max_hp": n.template.max_hp,
                   "status": n.status and n.status.label} for n in view.npcs]
                 # 武器桶这类物件跟 NPC 列在一起，点一下填"拿…"
-                + [{"ref": by_id[d.id], "name": d.container, "status": f"{d.item_name}，每人一件",
+                + [{"ref": by_id[d.id], "name": d.container, "status": f"{d.where}面有{d.item_name}",
                     "fill": f"拿{d.take_label}"} if d.available
                    else {"ref": by_id[d.id], "name": d.container, "fill": f"看{d.container}"}
                    for d in view.dispensers],

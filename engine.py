@@ -135,10 +135,13 @@ def load_dispensers(cur: Cursor, room: Room, player_id: UUID) -> list[Dispenser]
     names = {r["id"]: r["name"] for r in cur.fetchall()}
     cur.execute("select distinct template_id from item_instances where player_id = %s", (player_id,))
     owned = {r["template_id"] for r in cur.fetchall()}
-    return [Dispenser(id=uuid5(NAMESPACE_URL, f"newera:dispenser:{room.id}:{key}"), container=d["name"],
-                      description=d.get("description", ""), item=d["item"], item_name=names[d["item"]],
-                      unless=d.get("unless", []), where=d.get("where", "里"),
-                      available=not owned & {d["item"], *d.get("unless", [])})
+    cur.execute("select key from dispenser_log where player_id = %s and room_id = %s", (player_id, room.id))
+    taken = {r["key"] for r in cur.fetchall()}
+    return [Dispenser(id=uuid5(NAMESPACE_URL, f"newera:dispenser:{room.id}:{key}"), room=room.id, key=key,
+                      container=d["name"], description=d.get("description", ""), item=d["item"],
+                      item_name=names[d["item"]], unless=d.get("unless", []), where=d.get("where", "里"),
+                      once=d.get("once", False),
+                      available=not owned & {d["item"], *d.get("unless", [])} and not (d.get("once") and key in taken))
             for key, d in cfg.items()]
 
 
@@ -458,7 +461,7 @@ def do_look(cur: Cursor, player: Player, view: RoomView, a: Look) -> list[str]:
         if ground:
             facts.append("地上有：" + "、".join(ground))
         npcs = load_npcs(cur, "n.room_id = %s and n.alive", (player.room_id,))
-        here = [n.name + (f"（{n.status.describe()}）" if n.status else "") for n in npcs]             + [f"{d.container}（{d.where}面有{d.item_name}，每人一件）" if d.available else d.container
+        here = [n.name + (f"（{n.status.describe()}）" if n.status else "") for n in npcs]             + [f"{d.container}（{d.where}面有{d.item_name}）" if d.available else d.container
                for d in view.dispensers]
         if here:
             facts.append("这里有：" + "、".join(here))
@@ -494,7 +497,7 @@ def do_look(cur: Cursor, player: Player, view: RoomView, a: Look) -> list[str]:
 
     uid = _resolve(view, a.target)
     if d := next((d for d in view.dispensers if d.id == uid), None):
-        return [f"{d.container}：{d.description}".rstrip("：")]             + ([f"{d.container}{d.where}有{d.item_name}，每人能拿一件"] if d.available else [])
+        return [f"{d.container}：{d.description}".rstrip("：")]             + ([f"{d.container}{d.where}有{d.item_name}"] if d.available else [])
     items = load_items(cur, "i.id = %s and (i.room_id = %s or i.player_id = %s)",
                        (uid, player.room_id, player.id))
     if items:
@@ -525,7 +528,7 @@ def _give_player_new(cur: Cursor, player: Player, template_id: str) -> None:
 
 
 def _take_from(cur: Cursor, player: Player, d: Dispenser) -> list[str]:
-    """从武器桶这类地方拿一件：每人一件，身上已经有同类的（锈剑、磨亮的剑）就不能再拿"""
+    """从武器桶这类地方拿一件：身上已经有同类的（锈剑、磨亮的剑）就不能拿；once 的拿过一次就再也不能拿"""
     cur.execute(
         """select t.name from item_instances i join item_templates t on t.id = i.template_id
            where i.player_id = %s and i.template_id = any(%s) limit 1""",
@@ -533,6 +536,12 @@ def _take_from(cur: Cursor, player: Player, d: Dispenser) -> list[str]:
     )
     if row := cur.fetchone():
         raise ActionError(f"{player.name}身上已经有{row['name']}了，{d.container}{d.where}的留给别人")
+    if d.once:
+        # 拿过一次就没了：并发时靠主键挡住第二次
+        cur.execute("""insert into dispenser_log (player_id, room_id, key) values (%s, %s, %s)
+                       on conflict do nothing returning 1""", (player.id, d.room, d.key))
+        if not cur.fetchone():
+            raise ActionError(f"{d.container}{d.where}已经没有{player.name}能拿的东西了")
     _give_player_new(cur, player, d.item)
     return [f"{player.name}从{d.container}{d.where}拿了一件{d.item_name}"]
 
@@ -563,8 +572,10 @@ def do_drop(cur: Cursor, player: Player, view: RoomView, a: Drop) -> list[str]:
 def do_use(cur: Cursor, player: Player, view: RoomView, a: Use) -> list[str]:
     item = _inv_item(cur, view, player, a.item)
 
+    ex = _find_exit(cur, player.room_id, a.target, lock=True) if a.target is not None else None
+    if a.target is not None and ex is None and item.template.type == "consumable":
+        return _feed(cur, player, item, a.target)
     if a.target is not None:
-        ex = _find_exit(cur, player.room_id, a.target, lock=True)
         if ex is None:
             raise ActionError(f"不知道怎么对那个东西使用{item.name}")
         if not ex["locked"]:
@@ -578,20 +589,44 @@ def do_use(cur: Cursor, player: Player, view: RoomView, a: Use) -> list[str]:
     if item.template.type != "consumable":
         raise ActionError(f"{item.name}不能直接使用")
     _consume(cur, item)
-    facts = [f"{player.name}{'喝' if item.template.id == 'made_drink' else '吃'}掉了{item.name}"]
-    # 有毒的东西掉血，蒙汗药这类把人放倒；正常的回血
-    hp = max(0, min(player.max_hp, player.hp + item.heal - item.harm))
-    cur.execute("update players set hp = %s, updated_at = now() where id = %s", (hp, player.id))
+    return [f"{player.name}{_eat_verb(item)}掉了{item.name}"] + _eat_effect(cur, player, item)
+
+
+def _eat_verb(item: ItemInstance) -> str:
+    return "喝" if item.template.id == "made_drink" else "吃"
+
+
+def _eat_effect(cur: Cursor, eater: Player, item: ItemInstance) -> list[str]:
+    """吃喝下去的效果：有毒的掉血，蒙汗药这类把人放倒，正常的回血（倒下的人吃了回血药也能站起来）"""
+    facts = []
+    hp = max(0, min(eater.max_hp, eater.hp + item.heal - item.harm))
+    cur.execute("update players set hp = %s, updated_at = now() where id = %s", (hp, eater.id))
     if item.harm:
-        facts.append(f"{item.name}有毒，{player.name}掉了 {item.harm} 点 HP，当前 HP {hp}/{player.max_hp}")
+        facts.append(f"{item.name}有毒，{eater.name}掉了 {item.harm} 点 HP，当前 HP {hp}/{eater.max_hp}")
     elif item.heal:
-        facts.append(f"恢复 {hp - player.hp} 点 HP，当前 HP {hp}/{player.max_hp}")
+        facts.append(f"{eater.name}恢复 {hp - eater.hp} 点 HP，当前 HP {hp}/{eater.max_hp}")
+        if eater.hp <= 0 < hp:
+            facts.append(f"{eater.name}醒了过来")
     if hp == 0:
-        facts.append(f"{player.name}倒下了")
+        facts.append(f"{eater.name}倒下了")
     elif item.knockout:
-        _knock_out(cur, "players", player.id, item.knockout)
-        facts.append(f"{player.name}{item.knockout}，失去战斗能力")
+        _knock_out(cur, "players", eater.id, item.knockout)
+        facts.append(f"{eater.name}{item.knockout}，失去战斗能力")
     return facts
+
+
+def _feed(cur: Cursor, player: Player, item: ItemInstance, name: str) -> list[str]:
+    """喂同房间的玩家吃喝：倒下的、被放倒捆住的、队友都能喂。
+    有毒、下了药的东西，清醒的外人不会乖乖吃下去（想害人得泼、得骗他自己吃）"""
+    target, awake = _room_player(cur, player, name, lock=True)
+    if not awake:
+        raise ActionError(f"{target.name}睡着了，喂不进去")
+    helpless = target.hp <= 0 or target.status is not None
+    mate = bool(player.party_id and player.party_id == target.party_id)
+    if (item.harm or item.knockout) and not helpless and not mate:
+        raise ActionError(f"{target.name}不肯吃{player.name}递过来的{item.name}")
+    _consume(cur, item)
+    return [f"{player.name}喂{target.name}{_eat_verb(item)}了{item.name}"] + _eat_effect(cur, target, item)
 
 
 def _consume(cur: Cursor, item: ItemInstance) -> None:

@@ -212,6 +212,15 @@ create table spawns (
   check (num_nonnulls(room_id, npc_template) = 1)
 );
 
+-- 取用处拿过的记录：配了 once 的（地窖桌上的护符）拿过一次就再也不能拿，丢了也一样
+create table dispenser_log (
+  player_id   uuid not null references players(id) on delete cascade,
+  room_id     text not null references rooms(id) on delete cascade,
+  key         text not null,
+  taken_at    timestamptz not null default now(),
+  primary key (player_id, room_id, key)
+);
+
 -- 搜索找到东西的记录：每个人各算各的冷却，不再先到先得
 create table forage_log (
   player_id   uuid not null references players(id) on delete cascade,
@@ -258,6 +267,7 @@ alter table player_log     enable row level security;
 alter table quests         enable row level security;
 alter table player_quests  enable row level security;
 alter table forage_log     enable row level security;
+alter table dispenser_log  enable row level security;
 
 create policy "read static" on rooms          for select to authenticated using (true);
 create policy "read static" on room_exits     for select to authenticated using (true);
