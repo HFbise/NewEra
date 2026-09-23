@@ -252,7 +252,7 @@ INTENT_SYSTEM = """你是文字 MUD 游戏的指令解析器。读玩家的输�
   - push：把对方推、踹、扔、拖进某个出口时填那个出口的英文名，做成了对方就到了那边（只能对其他玩家，队友、倒下的人也行）。门锁着的话同一句里要先 use 钥匙开门，比如"开门把他踹进去"是 use 加 stunt（push 填 down）
   - skill 和 difficulty：必填，用哪个技能、难度几级，规则见下面"技能判定"。伤得越重引擎会自动抬高难度下限，你只管照实判
   - tier：做成时的伤害 none（不伤人，比如捆绑）/ light（轻伤）/ heavy（重伤）/ lethal（足以致命），照实判断，规则会按地形限幅
-  - status：做成时对方陷入的负面状态，不会就不填。incapacitated = 失去战斗能力（砸晕、打昏、呛晕）；restrained = 被束缚（捆住、压住、缠住）；prone = 倒地（绊倒、扫腿、掀翻、撞倒、推倒在地，站起来之前不能走也不能打）。玩家说了绊倒、放倒在地这类，就一定要填 prone，不能只写伤害；飞踢加绊倒这种是一个 stunt，tier 按踢的伤害、status 填 prone
+  - status：做成时对方陷入的负面状态，不会就不填。incapacitated = 失去战斗能力（砸晕、打昏、呛晕）；restrained = 被束缚（捆住、压住、缠住，让对方动不了；砍断手脚、砍伤这类是伤害，填 tier heavy 或 lethal，不是 restrained）；prone = 倒地（绊倒、扫腿、掀翻、撞倒、推倒在地，站起来之前不能走也不能打）。玩家说了绊倒、放倒在地这类，就一定要填 prone，不能只写伤害；飞踢加绊倒这种是一个 stunt，tier 按踢的伤害、status 填 prone
   - 捆人、缠住（restrained）必须用"可利用地形"或背包里真有、而且合理能拿来捆人的东西，填上 feature 或 item。你来判断合不合理：绳子、腰带、布条、锁链、藤蔓、皮带、布衣能捆；面包、硬币、钥匙、酒杯这种捆不了。玩家点名了用什么（"用绳子捆"），就得是背包或地形里的那样东西（"井上的麻绳"也算绳子），没有就 reject，不要拿别的东西顶替；只说"把他捆起来"没点名，就从背包、地形里挑一样合理的。环境描述里的东西拿不走，地形和背包里都没有能捆人的东西，就不能捆：输出 reject，reason 写没有能用来捆人的东西
   - status_label：状态的说法，简短，如"被石头砸晕了""被绳子捆住了"。泼酒、撒沙、撒石灰迷眼是短暂的 incapacitated，写"被迷了眼"这类，不要写成晕了，escape 填 1；escape：这个状态挣脱或醒来的难度 1 到 10（松松绕两圈是 1，捆得结结实实是 3，铁链锁住是 5）
 - struggle: description（第三人称简述怎么挣脱的），difficulty（这次挣脱或醒来的难度 1 到 10，看方法合不合理、状态有多严重）。玩家自己带着负面状态时想摆脱它就是 struggle；失去战斗能力时说什么做什么都算 struggle（挣扎着醒来）
@@ -386,6 +386,11 @@ def parse_intent(db, view: RoomView, text: str) -> tuple[Optional[list], dict]:
                 named = [i for i in weapons if any(ch in d["message"] for ch in set(i.name) - set("的"))]
                 pick = (named or sorted(weapons, key=lambda i: i.equipped_slot != "right_hand"))[0]
                 d = {"action": "upgrade", "item": by_id[pick.id], "target": d["target"]}
+            # 束缚得有能捆人的东西（地形、背包里的绳子腰带）；拿武器砍断手脚、砍伤是让对方失去战斗能力，不是捆住
+            weapon_refs = {by_id[i.id] for i in view.inventory if i.template.type == "weapon"}
+            if (d["action"] == "stunt" and d.get("status") == "restrained" and not d.get("feature")
+                    and (not d.get("item") or d["item"] in weapon_refs)):
+                d["status"] = "incapacitated"
             # 捆人、缠住一律是体操（模型常常不填技能，落到默认的运动上）
             if d["action"] == "stunt" and d.get("status") == "restrained":
                 d["skill"] = "acrobatics"

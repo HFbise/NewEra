@@ -53,7 +53,7 @@ PRONE_BLOCKED = {"move", "attack", "stunt", "maneuver", "dodge", "flee", "hide",
 PRONE_HIT_BONUS = 0.20                  # 打倒在地上的目标，近战命中率加这么多
 
 # 敌人发现玩家：进门时几率 DETECT_START，之后玩家每发一条消息掷一次骰，没被发现就涨 DETECT_STEP（躲着不涨）。
-# 被发现了，在场能动的敌人每条消息都打他一下（一句话拆成几个动作也只算一次，太长会被打断，见 INTERRUPT_AFTER）
+# 被发现了，在场能动的敌人每轮都打他一下（玩家每做 ENEMY_EVERY 个动作敌人行动一次，见 execute_all）
 DETECT_START = 0.05
 DETECT_STEP = 0.10
 DETECT_STEP_MIN = 0.02                  # 隐匿每级让每次上涨少 1%，最少涨这么多
@@ -69,12 +69,13 @@ MELEE_HIT = {0: 0.95, 1: 0.45, 2: 0.05}
 DODGE_BONUS = 0.15                      # 闪避动作让敌人这一下的命中率降低这么多，察觉每级再多降 DODGE_PER_LEVEL
 DODGE_PER_LEVEL = 0.05
 DISTANCE_WORDS = {0: "贴身", 1: "一步之遥", 2: "几步开外"}
-# 一句话拆出很多动作时，做完这么多个敌人就先行动；敌人有动静（发现、逼近、出手）就打断后面的，
-# 免得一条超长的消息一口气打出一串伤害
-INTERRUPT_AFTER = 2
+# 玩家每做这么多个动作，敌人行动一次（一句话结尾不够数也算一次）。敌人有动静（发现、逼近、出手）就打断后面的，
+# 免得一条超长的消息一口气打出一串伤害；被绊倒的敌人轮到时只是爬起来，不打断
+ENEMY_EVERY = 2
 
 # 徒手一击毙命、直接打晕：只有敌人没发现你时能偷袭，按隐匿判，难度至少这么高；对方有防备就不可能
 ASSASSINATE_DIFFICULTY = 4
+PRONE_DECISIVE_DIFFICULTY = 3           # 对刚被绊倒在地的下狠手（打晕、断手、一击毙命）难度至少这么高
 
 # 技能判定：难度减技能等级的差值 → 成功率，差值不超过 0 是 SKILL_SURE，比表里最大的还大就必定失败
 SKILL_SURE = 0.95
@@ -1268,16 +1269,17 @@ def do_search(cur: Cursor, player: Player, view: RoomView, a: Search) -> list[st
     return facts if len(facts) > 1 else facts + ["什么也没找到"]
 
 
-def enemy_turn(conn: Connection, player_id: UUID, actions: list[PlayerAction], results: list[ActionResult]) -> list[str]:
-    """玩家每发一条消息（一句话里可能有几个动作），同区域的敌人看一眼：没发现就掷骰，发现了就动手一次。
-    返回敌人这一下的 facts"""
+def enemy_turn(conn: Connection, player_id: UUID, actions: list[PlayerAction],
+               results: list[ActionResult]) -> tuple[list[str], bool]:
+    """敌人的一轮（玩家上一轮以来做的 actions）：没发现就掷骰，发现了就动手一次；被绊倒的这一轮用来爬起来。
+    返回 (facts, 有没有打断玩家的动静)"""
     done = list(zip(actions, results))
     with conn.transaction():
         cur = _cursor(conn)
         player = load_player(cur, player_id, lock=True)
         st = _stealth(player)
         if any(a.action == "move" and r.success for a, r in done) or all(a.action == "reject" for a, _ in done)                 or player.hp <= 0:
-            return []                   # 刚进门这一下不算；没做成的空话不算；倒下的不管
+            return [], False            # 刚进门这一下不算；没做成的空话不算；倒下的不管
         alive = _enemies(cur, player.room_id)
         if not alive:
             st = Stealth(room=player.room_id, chance=DETECT_START)   # 敌人都死了，下一只（搜出来、刷回来的）重新算
@@ -1293,9 +1295,10 @@ def enemy_turn(conn: Connection, player_id: UUID, actions: list[PlayerAction], r
                 st.hidden, st.detected, hid = True, False, True
             elif a.action == "dodge" and r.success:
                 dodge = True
+        stood = _enemies_stand(cur, alive)          # 倒地的这一轮爬起来，不算打断
         if not enemies or hid:
             _save_stealth(cur, player, st)
-            return _enemies_stand(cur, alive)
+            return stood, False
         facts = []
         if not st.detected:
             if _roll(st.chance):
@@ -1322,11 +1325,11 @@ def enemy_turn(conn: Connection, player_id: UUID, actions: list[PlayerAction], r
                 if player.hp <= 0:
                     break
         _save_stealth(cur, player, st)
-        return facts + _enemies_stand(cur, alive)
+        return stood + facts, bool(facts)
 
 
 def _enemies_stand(cur: Cursor, alive: list[Npc]) -> list[str]:
-    """被绊倒的敌人这条消息没法扑上来，消息结束时自己爬起来"""
+    """被绊倒的敌人轮到行动时只能爬起来，这一轮不扑上来"""
     facts = []
     for n in alive:
         if n.status and n.status.kind == "prone":
@@ -1395,7 +1398,9 @@ def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]
     if a.status == "restrained" and not feature and not item:
         raise ActionError(f"{player.name}手边没有能用来捆人的东西")
     # 捆上去的东西留在对方身上，泼出去、烧掉的也没了；钥匙、任务物品这类不能拿来当材料
-    material = item if item and (a.consume or a.status == "restrained" and not feature) else None
+    # 武器、护甲是拿来用的，不是材料（拿剑架住、压住人，剑还在手上）
+    material = (item if item and item.template.type not in ("weapon", "armor")
+                and (a.consume or a.status == "restrained" and not feature) else None)
     if material and _precious(cur, material):
         raise ActionError(f"{material.name}太要紧了，不能拿来这么用")
     tier = _cap(a.tier, cap, TIERS)
@@ -1460,12 +1465,19 @@ def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]
             finisher = is_npc
         else:
             sneak = is_npc and target.template.hostile and not _stealth(player).detected
-            if not sneak:
+            downed = target.status is not None and target.status.kind == "prone"
+            if downed and not sneak:
+                # 刚被绊倒在地：趁它爬起来之前下狠手，有机会但不容易
+                diff = max(diff, PRONE_DECISIVE_DIFFICULTY)
+                facts.append(f"{target.name}倒在地上，正好趁机下狠手")
+                tier, finisher = a.tier if is_npc else _lower(a.tier, TIERS), is_npc
+            elif not sneak:
                 facts.append(f"{target.name}有防备，想这样一下制住{'它' if is_npc else '他'}根本不可能")
                 return facts + (_npc_counter(cur, player, target) if is_npc else [])
-            skill, diff = "stealth", max(diff, ASSASSINATE_DIFFICULTY)
-            facts.append(f"{target.name}还没发现{player.name}，可以出其不意地偷袭")
-            tier, finisher = a.tier, True           # 偷袭得手不受徒手最多轻伤的限制
+            else:
+                skill, diff = "stealth", max(diff, ASSASSINATE_DIFFICULTY)
+                facts.append(f"{target.name}还没发现{player.name}，可以出其不意地偷袭")
+                tier, finisher = a.tier, True       # 偷袭得手不受徒手最多轻伤的限制
     if harmless_prank:
         tier = "none"
     # 伤得越重难度下限越高（轻伤 2、重伤 3、致命 4）；对无力反抗的补刀、下毒不算
@@ -1802,10 +1814,10 @@ def execute(conn: Connection, view: RoomView, action: PlayerAction) -> ActionRes
 
 
 def execute_all(conn: Connection, view: RoomView, actions: list[PlayerAction]) -> list[ActionResult]:
-    """按顺序执行，前一步失败就中断。同区域的敌人每条消息行动一次（发现、攻击），facts 接在最后执行的动作后面，
-    results 和执行了的 actions 一一对应。动作多于 INTERRUPT_AFTER 个时，敌人在第 INTERRUPT_AFTER 个之后就行动，
-    有动静就打断剩下的"""
-    results, enemy_done = [], False
+    """按顺序执行，前一步失败就中断。玩家每做 ENEMY_EVERY 个动作，同区域的敌人行动一次（发现、逼近、攻击、爬起来），
+    一句话结尾不够数也行动一次；facts 接在那一轮最后一个动作后面，results 和执行了的 actions 一一对应。
+    敌人有动静就打断剩下的"""
+    results, since = [], 0                  # since：上一轮敌人行动时玩家做到第几个动作
     for i, action in enumerate(actions, 1):
         # 喝醉了说话含糊：改的是原话本身，叙事、旁人、NPC 听到的都是醉话
         if view.player.drunk and action.action in ("say", "talk"):
@@ -1820,15 +1832,15 @@ def execute_all(conn: Connection, view: RoomView, actions: list[PlayerAction]) -
                 and any("点伤害" in f for f in result.facts) and (kicked := _keeper_eject(conn, view))):
             result.facts += kicked
             return results
-        if i == INTERRUPT_AFTER and len(actions) > i:
-            enemy_done = True
-            enemy = enemy_turn(conn, view.player.id, actions[:i], results)
+        if i - since == ENEMY_EVERY:
+            enemy, acted = enemy_turn(conn, view.player.id, actions[since:i], results[since:i])
+            since = i
             result.facts += enemy
-            if enemy:
+            if acted and i < len(actions):
                 result.facts.append(f"{view.player.name}被打断了，后面的动作没来得及做")
                 return results
-    if results and not enemy_done:
-        results[-1].facts += enemy_turn(conn, view.player.id, actions[:len(results)], results)
+    if since < len(results):
+        results[-1].facts += enemy_turn(conn, view.player.id, actions[since:len(results)], results[since:])[0]
     return results
 
 
