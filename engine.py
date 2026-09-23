@@ -1300,6 +1300,10 @@ def execute_all(conn: Connection, view: RoomView, actions: list[PlayerAction]) -
         results.append(result)
         if not result.success:
             break
+        # 在有看店 NPC 的地方对玩家动手：当场被轰出去，后面的动作不做了
+        if action.action in ("attack", "stunt") and action.target not in view.refs and (kicked := _keeper_eject(conn, view)):
+            result.facts += kicked
+            return results
         if i == INTERRUPT_AFTER and len(actions) > i:
             enemy_done = True
             enemy = enemy_turn(conn, view.player.id, actions[:i], results)
@@ -1310,6 +1314,21 @@ def execute_all(conn: Connection, view: RoomView, actions: list[PlayerAction]) -
     if results and not enemy_done:
         results[-1].facts += enemy_turn(conn, view.player.id, actions[:len(results)], results)
     return results
+
+
+def _keeper_eject(conn: Connection, view: RoomView) -> list[str]:
+    """房间里有能轰人的 NPC（麦琪、莉娜：配了 eject_to，醒着）就把动手打人的玩家轰出去，记进 NPC 对他的记忆。
+    NPC 被放倒、捆住了就管不了"""
+    keeper = next((n for n in view.npcs if can_eject(n) and not n.template.hostile), None)
+    if keeper is None:
+        return []
+    with conn.transaction():
+        cur = _cursor(conn)
+        fresh = load_npcs(cur, "n.id = %s and n.alive and n.status is null", (keeper.id,))
+    if not fresh or not (kicked := npc_eject(conn, view.player.id, fresh[0])):
+        return []
+    add_npc_log(conn, view.player.id, fresh[0], f"{view.player.name}在你这里对别的客人动手，你把他轰了出去")
+    return [f"{keeper.name}看见{view.player.name}动手打人"] + kicked.facts
 
 
 # ============ NPC 给予（对话步骤调用） ============
