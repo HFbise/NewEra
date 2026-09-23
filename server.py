@@ -5,6 +5,7 @@
 - 一回合的链路：规则解析（commands.py）→ 有认不出的再交给 AI 解析 → 规则引擎执行
   → AI 叙事（含 NPC 对话、给东西、好感度提议，规则引擎再校验）→ 写 events
 - AI 后端见 ai.py（默认智谱 glm-4.7-flash），没配 key 时退回纯规则模式：没有叙事，talk 用占位逻辑给 requires 物品
+- 管理后台在 admin.py（/admin.html），要设 ADMIN_PASSWORD
 
 用法: python server.py  然后打开 http://127.0.0.1:8000
 """
@@ -16,27 +17,22 @@ import secrets
 from typing import Optional
 from uuid import UUID, uuid4
 
-from dotenv import load_dotenv
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from psycopg.types.json import Jsonb
-from psycopg_pool import ConnectionPool
 from pydantic import BaseModel
-import yaml
 
+import admin
 import ai
 import commands
 import engine
-import seed as seeding
+from db import pool
 from schema import ActionResult, RoomView, dir_name
 
-load_dotenv(os.path.join(os.path.dirname(__file__), ".env"))
-# 回合只在读写库时借连接，等 AI 时不占（见 run_turn）
-pool = ConnectionPool(os.environ["DATABASE_URL"], min_size=1, max_size=10, open=True)
 app = FastAPI()
+app.include_router(admin.router)
 
-START_ROOM = "square"
 # 这些动作的回合不调叙事 AI：facts 已经说清楚了，AI 反而容易替别的玩家编动作
 NO_NARRATION = {"say", "follow", "unfollow", "invite", "join", "leave_party"}
 
@@ -160,7 +156,7 @@ def login(req: LoginReq):
             conn.execute(
                 """insert into players (id, name, room_id, hp, max_hp, attack, defense, password_hash)
                    values (%s, %s, %s, 20, 20, 2, 0, %s)""",
-                (pid, name, START_ROOM, _hash_password(req.password)),
+                (pid, name, engine.START_ROOM, _hash_password(req.password)),
             )
         return {"player_id": pid}
 
@@ -261,37 +257,6 @@ def history(player_id: UUID, limit: int = 200):
     return [{"kind": k, "event_id": e, **d} for k, e, d in rows]
 
 
-# ============ 斜杠命令 ============
-
-WORLD_FILE = os.path.join(os.path.dirname(__file__), "world.yaml")
-
-
-def _admins() -> set[str]:
-    """能用管理命令（/reset）的角色名，环境变量 ADMIN_PLAYERS 逗号分隔"""
-    return {n.strip() for n in os.environ.get("ADMIN_PLAYERS", "").split(",") if n.strip()}
-
-
-def slash_command(view: RoomView, text: str) -> list[ActionResult]:
-    cmd = text.split()[0].lower()
-    if cmd != "/reset":
-        return [ActionResult(action="command", success=False, facts=[f"不认识的命令 {cmd}，可用：/reset"])]
-    if view.player.name not in _admins():
-        return [ActionResult(action="reset", success=False, facts=["只有管理员能重置世界（ADMIN_PLAYERS）"])]
-    # 按 world.yaml 重新布置 NPC、地上物品、门锁、地形；玩家的位置、背包、标记、NPC 记忆和好感度都不动
-    with open(WORLD_FILE, encoding="utf-8") as f:
-        world = yaml.safe_load(f)
-    with pool.connection() as conn:
-        seeding.seed(conn, world)
-        with conn.transaction():
-            conn.cursor().executemany(
-                "insert into events (room_id, player_id, kind, observer) values (%s, %s, 'reset', %s)",
-                [(rid, view.player.id, f"【系统】{view.player.name}重置了世界：NPC、物品、门锁和地形都恢复了初始状态。")
-                 for rid in world["rooms"]],
-            )
-    return [ActionResult(action="reset", success=True,
-                         facts=["世界已重置：NPC、物品、门锁和地形都恢复了初始状态，玩家的位置和背包没动"])]
-
-
 def run_turn(req: CommandReq):
     # 数据库连接只在读写的那一小段借用，等 AI 的十几秒里还回池子，
     # 否则几个人同时说话就会把池子占满，别人的轮询和心跳跟着卡住
@@ -303,16 +268,6 @@ def run_turn(req: CommandReq):
             return
         engine.touch(conn, view.player.id)
     pid = view.player.id
-
-    # 斜杠命令不走解析和叙事
-    if req.text.strip().startswith("/"):
-        yield {"stage": "execute"}
-        results = slash_command(view, req.text.strip())
-        with pool.connection() as conn:
-            final_state = state(conn, engine.load_view(conn, pid), req.after)
-        yield {"done": {"actions": [], "source": "command", "results": [r.model_dump() for r in results],
-                        "narrative": None, "usage": {"input": 0, "output": 0}, "notes": [], "state": final_state}}
-        return
 
     usage = {"input": 0, "output": 0}
     notes = []                            # 给前端看的调试信息
@@ -394,10 +349,12 @@ def run_turn(req: CommandReq):
                 engine.set_npc_memory(conn, pid, npc_id, out.npc_memory)
         with conn.transaction():
             conn.execute(
-                """insert into events (room_id, player_id, kind, facts, narrative, observer)
-                   values (%s, %s, %s, %s, %s, %s)""",
+                """insert into events (room_id, player_id, kind, facts, narrative, observer, input, meta)
+                   values (%s, %s, %s, %s, %s, %s, %s, %s)""",
                 (view.room.id, pid, ",".join(a.action for a in actions),
-                 Jsonb([f for r in results for f in r.facts]), narrative, observer),
+                 Jsonb([f for r in results for f in r.facts]), narrative, observer, req.text,
+                 # 后台排查用：解析来源、解析出的动作、提示
+                 Jsonb({"source": source, "actions": [a.model_dump() for a in actions], "notes": notes})),
             )
             if moved:
                 # 跟着他一起过来的人也写上（engine.do_move 里一起移动的）

@@ -149,6 +149,8 @@ create table events (
   facts       jsonb not null default '[]',       -- 规则引擎输出的客观事实
   narrative   text,                              -- AI 生成的叙事（给行动者本人，第二人称）
   observer    text,                              -- 给同房间其他人看的第三人称描述
+  input       text,                              -- 玩家输入原话（后台排查用）
+  meta        jsonb,                             -- 解析来源、解析出的动作、提示（后台排查用）
   created_at  timestamptz not null default now()
 );
 

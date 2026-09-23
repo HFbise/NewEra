@@ -1,0 +1,337 @@
+<!doctype html>
+<html lang="zh">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NewEra 后台</title>
+<style>
+  :root {
+    --bg: #15171c; --panel: #1d2027; --border: #2c313b; --text: #d8dce4; --dim: #8a92a0;
+    --accent: #7fb3ff; --ok: #8fd18f; --bad: #ff8a80; --warn: #e6c07b; --other: #c3a6ee;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.6 system-ui, "Microsoft YaHei", sans-serif; }
+  header { display: flex; align-items: center; gap: 4px; padding: 10px 16px; border-bottom: 1px solid var(--border);
+           background: var(--panel); position: sticky; top: 0; z-index: 1; flex-wrap: wrap; }
+  header b { margin-right: 12px; }
+  .tab { background: none; color: var(--dim); border: 0; padding: 6px 12px; border-radius: 6px; cursor: pointer; font: inherit; }
+  .tab.on { background: var(--border); color: var(--text); }
+  header .right { margin-left: auto; color: var(--dim); font-size: 12px; }
+  main { padding: 16px; max-width: 1200px; margin: 0 auto; }
+  button.act { background: var(--border); color: var(--text); border: 0; border-radius: 5px; padding: 3px 9px;
+               font: inherit; font-size: 12px; cursor: pointer; margin: 1px; }
+  button.act:hover { background: #3a414e; }
+  button.danger { color: var(--bad); }
+  button.primary { background: var(--accent); color: #0d1117; font-weight: 600; padding: 6px 14px; font-size: 14px; }
+  input, select { background: var(--bg); color: var(--text); border: 1px solid var(--border); border-radius: 6px;
+                  padding: 6px 10px; font: inherit; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 12px; }
+  .card { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 12px 14px; }
+  .card h3 { margin: 0 0 6px; font-size: 15px; }
+  .card h3 small { color: var(--dim); font-weight: 400; margin-left: 6px; }
+  .row { margin: 2px 0; }
+  .label { color: var(--dim); font-size: 12px; margin-right: 6px; }
+  .dim { color: var(--dim); }
+  .ok { color: var(--ok); } .bad { color: var(--bad); } .warn { color: var(--warn); } .other { color: var(--other); }
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: 13px; }
+  th, td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  th { color: var(--dim); font-weight: 600; white-space: nowrap; }
+  .dot { display: inline-block; width: 8px; height: 8px; border-radius: 50%; margin-right: 6px; background: var(--dim); }
+  .dot.on { background: var(--ok); }
+  .tiles { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; margin-bottom: 16px; }
+  .tile { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; }
+  .tile .v { font-size: 22px; font-weight: 700; }
+  .tile .k { color: var(--dim); font-size: 12px; }
+  .ev { background: var(--panel); border: 1px solid var(--border); border-radius: 8px; padding: 10px 12px; margin-bottom: 8px; }
+  .ev .meta { color: var(--dim); font-size: 12px; }
+  .ev .input { color: var(--warn); }
+  .ev .fact { padding-left: 10px; border-left: 2px solid var(--border); color: var(--dim); font-size: 13px; }
+  .ev pre { white-space: pre-wrap; word-break: break-all; margin: 4px 0; font: 12px/1.5 ui-monospace, Consolas, monospace; color: var(--dim); }
+  .toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
+  h2 { font-size: 14px; color: var(--dim); margin: 20px 0 8px; }
+  #login { display: flex; justify-content: center; align-items: center; min-height: 80vh; }
+  #login form { display: flex; flex-direction: column; gap: 10px; width: 280px; }
+</style>
+</head>
+<body>
+<div id="login" hidden>
+  <form id="login-form" class="card">
+    <b>NewEra 后台</b>
+    <input id="pw" type="password" placeholder="后台密码（ADMIN_PASSWORD）" autocomplete="current-password" autofocus>
+    <button class="act primary">进入</button>
+    <div id="login-err" class="bad"></div>
+  </form>
+</div>
+
+<div id="app" hidden>
+  <header>
+    <b>NewEra 后台</b>
+    <button class="tab" data-tab="world">世界</button>
+    <button class="tab" data-tab="players">玩家</button>
+    <button class="tab" data-tab="events">动态</button>
+    <button class="tab" data-tab="ai">AI 用量</button>
+    <span class="right"><span id="updated"></span>　<a href="#" id="logout" class="dim">退出</a></span>
+  </header>
+  <main id="main"></main>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const esc = s => String(s ?? "").replace(/[&<>"]/g, c => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
+const time = t => t ? new Date(t).toLocaleString() : "";
+const ago = t => {
+  if (!t) return "从没上线";
+  const s = (Date.now() - new Date(t)) / 1000;
+  return s < 60 ? `${Math.floor(s)} 秒前` : s < 3600 ? `${Math.floor(s / 60)} 分钟前`
+    : s < 86400 ? `${Math.floor(s / 3600)} 小时前` : `${Math.floor(s / 86400)} 天前`;
+};
+const TIERS = { light: "轻伤", heavy: "重伤", lethal: "致命" };
+const DIRS = { north: "北", south: "南", east: "东", west: "西", up: "上", down: "下" };
+
+let token = null;
+try { token = localStorage.getItem("newera.admin"); } catch {}
+let tab = "world";
+try { tab = localStorage.getItem("newera.admin.tab") || "world"; } catch {}
+
+async function api(path, body) {
+  const res = await fetch("/api/admin" + path, {
+    method: body ? "POST" : "GET",
+    headers: { "Content-Type": "application/json", "X-Admin-Token": token || "" },
+    body: body ? JSON.stringify(body) : undefined,
+  });
+  const data = await res.json().catch(() => ({}));
+  if (res.status === 401 || res.status === 403) { showLogin(data.detail); throw new Error(data.detail); }
+  if (!res.ok) throw new Error(data.detail || res.statusText);
+  return data;
+}
+
+function showLogin(msg) {
+  token = null;
+  try { localStorage.removeItem("newera.admin"); } catch {}
+  $("#app").hidden = true;
+  $("#login").hidden = false;
+  $("#login-err").textContent = msg || "";
+}
+
+$("#login-form").onsubmit = async e => {
+  e.preventDefault();
+  try {
+    const res = await fetch("/api/admin/login", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ password: $("#pw").value }) });
+    const data = await res.json().catch(() => ({}));
+    if (!res.ok) throw new Error(data.detail || res.statusText);
+    token = data.token;
+    try { localStorage.setItem("newera.admin", token); } catch {}
+    $("#pw").value = "";
+    start();
+  } catch (err) { $("#login-err").textContent = err.message; }
+};
+
+$("#logout").onclick = e => { e.preventDefault(); showLogin(); };
+
+document.querySelectorAll(".tab").forEach(b => b.onclick = () => { switchTab(b.dataset.tab); });
+
+function switchTab(t) {
+  tab = t;
+  try { localStorage.setItem("newera.admin.tab", t); } catch {}
+  document.querySelectorAll(".tab").forEach(b => b.classList.toggle("on", b.dataset.tab === t));
+  evBefore = null;
+  $("#main").onclick = null;        // 玩家页的按钮处理挂在 main 上
+  $("#main").innerHTML = '<div class="dim">加载中…</div>';
+  load();
+}
+
+// ============ 世界 ============
+
+async function loadWorld() {
+  const rooms = await api("/world");
+  const list = (label, arr) => arr.length ? `<div class="row"><span class="label">${label}</span>${arr.join("、")}</div>` : "";
+  $("#main").innerHTML = `
+    <div class="toolbar">
+      <button class="act danger" id="reset">重置世界</button>
+      <span class="dim">按 world.yaml 恢复 NPC、地上物品、门锁和地形；玩家的位置、背包、标记、NPC 记忆都不动</span>
+    </div>
+    <div class="grid">${rooms.map(r => `
+      <div class="card">
+        <h3>${esc(r.name)}<small>${esc(r.id)}</small></h3>
+        ${list("玩家", r.players.map(p => `<span class="dot${p.awake ? " on" : ""}"></span>${esc(p.name)} <span class="dim">${p.hp}/${p.max_hp}</span>`))}
+        ${list("NPC", r.npcs.map(n => n.alive
+          ? `${esc(n.name)}${n.max_hp ? ` <span class="dim">${n.hp}/${n.max_hp}</span>` : ""}${n.status ? ` <span class="warn">${esc(n.status.label)}</span>` : ""}`
+          : `<span class="bad">${esc(n.name)}（死了，${ago(n.died_at)}）</span>`))}
+        ${list("地上", r.ground.map(i => esc(i.name) + (i.quantity > 1 ? ` x${i.quantity}` : "")))}
+        ${list("NPC 身上", r.carried.map(i => `${esc(i.npc)}：${esc(i.name)}`))}
+        ${list("出口", r.exits.map(e => `${DIRS[e.direction] || esc(e.direction)}→${esc(e.to_name)}${e.locked ? ' <span class="warn">锁</span>' : ""}`))}
+        ${list("地形", r.features.map(f => `${esc(f.name)} <span class="dim">${TIERS[f.max_tier] || f.max_tier} · 剩 ${f.uses_left}/${f.max_uses}</span>`))}
+      </div>`).join("")}
+    </div>`;
+  $("#reset").onclick = async () => {
+    if (!confirm("确定重置整个世界？所有房间都会收到一条系统提示。")) return;
+    await api("/reset", {});
+    load();
+  };
+}
+
+// ============ 玩家 ============
+
+async function loadPlayers() {
+  const ps = await api("/players");
+  $("#main").innerHTML = `<div class="scroll"><table>
+    <tr><th>玩家</th><th>位置</th><th>HP</th><th>状态</th><th>队伍 / 跟随</th><th>背包</th><th>标记</th><th>最后活跃</th><th>操作</th></tr>
+    ${ps.map(p => `<tr data-id="${p.id}" data-name="${esc(p.name)}">
+      <td><span class="dot${p.awake ? " on" : ""}"></span>${esc(p.name)}</td>
+      <td>${esc(p.room_name)}</td>
+      <td class="${p.hp <= 0 ? "bad" : ""}">${p.hp}/${p.max_hp}<div class="dim">攻 ${p.attack} 防 ${p.defense}</div></td>
+      <td>${p.hp <= 0 ? '<span class="bad">倒下</span> ' : ""}${p.status ? `<span class="warn">${esc(p.status.label)}</span>` : ""}</td>
+      <td>${p.party.length ? "队友：" + p.party.map(esc).join("、") : ""}${p.following ? `<div>跟着 ${esc(p.following)}</div>` : ""}</td>
+      <td>${p.inventory.map(i => esc(i.name) + (i.quantity > 1 ? ` x${i.quantity}` : "") + (i.equipped_slot ? '<span class="dim">[装]</span>' : "")).join("、")}</td>
+      <td class="dim">${Object.keys(p.flags).map(esc).join("、")}</td>
+      <td class="dim">${ago(p.last_active_at)}</td>
+      <td>
+        <button class="act" data-op="revive">治好</button>
+        <button class="act" data-op="home">传送回广场</button>
+        <button class="act" data-op="clear_status">清状态</button>
+        <button class="act" data-op="set_hp">改 HP</button>
+        <button class="act danger" data-op="delete">删除</button>
+      </td>
+    </tr>`).join("")}
+  </table></div>`;
+  $("#main").onclick = async e => {
+    const b = e.target.closest("button[data-op]");
+    if (!b) return;
+    const tr = b.closest("tr");
+    const op = b.dataset.op, name = tr.dataset.name;
+    const body = { op };
+    if (op === "delete" && !confirm(`确定删除「${name}」？身上的东西会掉在原地，不能恢复。`)) return;
+    if (op === "set_hp") {
+      const v = prompt(`把 ${name} 的 HP 改成多少？`);
+      if (v === null || v.trim() === "" || isNaN(+v)) return;
+      body.hp = Math.round(+v);
+    }
+    try { await api(`/players/${tr.dataset.id}`, body); load(); } catch (err) { alert(err.message); }
+  };
+}
+
+// ============ 动态 ============
+
+let evBefore = null;                // 翻页：这一页最后一条的 id；第一页时为空，自动刷新
+let evFilter = { player: "", room: "" };
+
+function renderEvent(e) {
+  const m = e.meta || {};
+  return `<div class="ev">
+    <div class="meta">#${e.id} · ${time(e.created_at)} · ${esc(e.player || "系统")} @ ${esc(e.room_name)} · ${esc(e.kind)}
+      ${m.source ? ` · ${m.source === "ai" ? "AI 解析" : "规则解析"}` : ""}</div>
+    ${e.input ? `<div class="input">&gt; ${esc(e.input)}</div>` : ""}
+    ${m.actions && m.actions.length ? `<pre>${esc(m.actions.map(a => JSON.stringify(a)).join("\n"))}</pre>` : ""}
+    ${(e.facts || []).map(f => `<div class="fact">${esc(f)}</div>`).join("")}
+    ${e.narrative ? `<div>${esc(e.narrative)}</div>` : ""}
+    ${e.observer ? `<div class="other">旁人：${esc(e.observer)}</div>` : ""}
+    ${(m.notes || []).map(n => `<div class="warn">${esc(n)}</div>`).join("")}
+  </div>`;
+}
+
+async function loadEvents(more = false) {
+  const q = new URLSearchParams({ limit: 50 });
+  if (evFilter.player) q.set("player", evFilter.player);
+  if (evFilter.room) q.set("room", evFilter.room);
+  if (more && evBefore) q.set("before", evBefore);
+  const rows = await api("/events?" + q);
+  if (!more) {
+    $("#main").innerHTML = `
+      <div class="toolbar">
+        <input id="f-player" placeholder="玩家名" value="${esc(evFilter.player)}">
+        <input id="f-room" placeholder="房间 id（如 tavern）" value="${esc(evFilter.room)}">
+        <button class="act" id="f-go">筛选</button>
+        <span class="dim">第一页每 5 秒自动刷新</span>
+      </div>
+      <div id="ev-list"></div>
+      <button class="act" id="ev-more">加载更早的</button>`;
+    $("#f-go").onclick = () => {
+      evFilter = { player: $("#f-player").value.trim(), room: $("#f-room").value.trim() };
+      evBefore = null;
+      loadEvents();
+    };
+    $("#ev-more").onclick = () => loadEvents(true);
+    $("#ev-list").innerHTML = "";
+  }
+  $("#ev-list").insertAdjacentHTML("beforeend", rows.map(renderEvent).join("") ||
+    (more ? "" : '<div class="dim">没有动态</div>'));
+  if (rows.length) evBefore = rows[rows.length - 1].id;
+  $("#ev-more").hidden = rows.length < 50;
+  if (more) paged = true;
+}
+let paged = false;                  // 翻过页就不自动刷新，免得把翻出来的内容冲掉
+
+// ============ AI 用量 ============
+
+let aiDays = 7;
+async function loadAI() {
+  const tz = Intl.DateTimeFormat().resolvedOptions().timeZone || "UTC";
+  const d = await api(`/ai?days=${aiDays}&tz=${encodeURIComponent(tz)}`);
+  const t = d.totals;
+  const pct = x => (x * 100).toFixed(0) + "%";
+  const num = x => Number(x || 0).toLocaleString();
+  $("#main").innerHTML = `
+    <div class="toolbar">
+      最近 <select id="days">${[1, 7, 30, 90].map(n => `<option ${n === aiDays ? "selected" : ""}>${n}</option>`).join("")}</select> 天
+      <button class="act" id="ai-refresh">刷新</button>
+      <span class="dim">按 ${esc(d.tz)} 分天</span>
+    </div>
+    <div class="tiles">
+      <div class="tile"><div class="v">${num(t.calls)}</div><div class="k">调用次数</div></div>
+      <div class="tile"><div class="v ${t.ok_rate < 0.9 ? "warn" : ""}">${pct(t.ok_rate)}</div><div class="k">通过校验</div></div>
+      <div class="tile"><div class="v">${num(t.input)}</div><div class="k">输入 token</div></div>
+      <div class="tile"><div class="v">${num(t.output)}</div><div class="k">输出 token</div></div>
+      <div class="tile"><div class="v">${(t.avg_ms / 1000).toFixed(1)}s</div><div class="k">平均耗时</div></div>
+      <div class="tile"><div class="v">${(t.p95_ms / 1000).toFixed(1)}s</div><div class="k">P95 耗时</div></div>
+    </div>
+    <h2>按天</h2>
+    <div class="scroll"><table><tr><th>日期</th><th>类型</th><th>次数</th><th>通过</th><th>平均耗时</th><th>输入</th><th>输出</th></tr>
+      ${d.daily.map(r => `<tr><td>${r.day}</td><td>${esc(r.kind)}</td><td>${r.calls}</td>
+        <td class="${r.ok_rate < 0.9 ? "warn" : ""}">${pct(r.ok_rate)}</td><td>${(r.avg_ms / 1000).toFixed(1)}s</td>
+        <td>${num(r.input)}</td><td>${num(r.output)}</td></tr>`).join("")}</table></div>
+    <h2>按玩家</h2>
+    <div class="scroll"><table><tr><th>玩家</th><th>次数</th><th>输入</th><th>输出</th><th>平均耗时</th></tr>
+      ${d.by_player.map(r => `<tr><td>${esc(r.player)}</td><td>${r.calls}</td><td>${num(r.input)}</td>
+        <td>${num(r.output)}</td><td>${(r.avg_ms / 1000).toFixed(1)}s</td></tr>`).join("")}</table></div>
+    <h2>最近 50 次</h2>
+    <div class="scroll"><table><tr><th>时间</th><th>玩家</th><th>类型</th><th>模型</th><th>输入</th><th>输出</th><th>耗时</th><th>结果</th></tr>
+      ${d.recent.map(r => `<tr><td class="dim">${time(r.created_at)}</td><td>${esc(r.player)}</td><td>${esc(r.kind)}</td>
+        <td class="dim">${esc(r.model)}</td><td>${num(r.input_tokens)}</td><td>${num(r.output_tokens)}</td>
+        <td>${(r.latency_ms / 1000).toFixed(1)}s</td><td class="${r.ok ? "ok" : "bad"}">${r.ok ? "通过" : "没通过"}</td></tr>`).join("")}</table></div>`;
+  $("#days").onchange = e => { aiDays = +e.target.value; loadAI(); };
+  $("#ai-refresh").onclick = () => loadAI();
+}
+
+// ============ 刷新 ============
+
+async function load() {
+  try {
+    if (tab === "world") await loadWorld();
+    else if (tab === "players") await loadPlayers();
+    else if (tab === "events") { paged = false; await loadEvents(); }
+    else await loadAI();
+    $("#updated").textContent = "更新于 " + new Date().toLocaleTimeString();
+  } catch (err) {
+    if (token) $("#updated").textContent = "出错：" + err.message;
+  }
+}
+
+// 世界和玩家每 5 秒刷新；动态只刷新没翻页的第一页，而且输入框有焦点时不刷，免得打断输入；AI 用量手动刷新
+setInterval(() => {
+  if (!token || document.hidden) return;
+  if (tab === "world" || tab === "players") load();
+  else if (tab === "events" && !paged && !document.activeElement?.matches("input")) load();
+}, 5000);
+
+function start() {
+  $("#login").hidden = true;
+  $("#app").hidden = false;
+  switchTab(tab);
+}
+
+if (token) start(); else showLogin();
+</script>
+</body>
+</html>

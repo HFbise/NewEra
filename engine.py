@@ -26,6 +26,7 @@ from schema import (
 )
 
 
+START_ROOM = "square"                   # 新角色出生、后台传送回去的地方
 ONLINE_WINDOW = "15 seconds"            # 超过这么久没有心跳的玩家算睡着
 AFFINITY_STEP = 5                       # 对话 AI 每次最多调整的好感度
 AFFINITY_RANGE = (-100, 100)
