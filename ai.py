@@ -182,7 +182,8 @@ def _call(db, player_id: UUID, kind: str, system: str, user: str, fmt: type[Base
 class AIAction(BaseModel):
     """给 AI 的扁平格式，比嵌套 union 好填；回来再转成 PlayerAction 校验"""
     action: Literal["move", "look", "take", "drop", "use", "equip", "unequip", "attack", "talk", "give", "say",
-                    "revive", "invite", "join", "leave_party", "follow", "unfollow", "stunt", "struggle",
+                    "revive", "invite", "join", "leave_party", "follow", "unfollow", "challenge", "accept_duel",
+                    "decline_duel", "flee", "stunt", "struggle",
                     "maneuver", "dodge", "hide", "search", "freeform", "reject"]
     direction: Optional[str] = None
     item: Optional[str] = None
@@ -222,7 +223,7 @@ INTENT_SYSTEM = """你是文字 MUD 游戏的指令解析器。读玩家的输�
 - use: item（背包物品的 ref），target 可空。只用于吃喝（自己吃 target 不填；喂别人吃、把药草嚼碎喂给倒下的人、给人灌药 target 填"其他玩家"里的名字）和用钥匙开门（target 填出口英文名）。拿东西打人、砸人、抽人是 stunt（item 填那样东西），不是 use
 - equip: item（背包物品的 ref），slot 可空。穿上、戴上、装备、拿在手里当武器都是 equip。玩家说了哪只手就填 slot：左手 left_hand、右手 right_hand（第二个戒指位 ring2）；没说就不填。武器两只手都能拿，可以双持。换手（"把斧子换到左手"）就是一个 equip 填 slot，不要先 unequip：两只手会自动互换
 - unequip: item（已装备的背包物品 ref）。卸下、脱下、摘下、收起武器
-- attack: target（NPC 的 ref；打其他玩家时填"其他玩家"里的名字）
+- attack: target（NPC 的 ref；打其他玩家时填"其他玩家"里的名字。玩家之间只有决斗中才会受伤，没在决斗也照样输出 attack，由引擎拒绝）
 - talk: target（NPC 的 ref），message（玩家说的话，保留原话）。找 NPC 买东西、问价、砍价、点菜、要东西都是 talk
 - give: item（背包物品的 ref），target（NPC 的 ref；给其他玩家时填"其他玩家"里的名字）。给、递、交、送、塞到他手里是 give：东西到了对方手上，吃不吃是他的事。喂他吃、塞进他嘴里（强行的也算）、给他灌下去是 use 不是 give
 - say: message（说的话，保留原话），target 可空（对某个玩家说时填"其他玩家"里的名字，对大家说不填）
@@ -232,6 +233,10 @@ INTENT_SYSTEM = """你是文字 MUD 游戏的指令解析器。读玩家的输�
 - leave_party: 不用填字段。离开、退出队伍
 - follow: target（"其他玩家"里的名字）。跟着、跟随、跟上某人：之后对方走到哪就自动跟到哪，这一回合本身不移动
 - unfollow: 不用填字段。不再跟着别人
+- challenge: target（"其他玩家"里的名字）。申请决斗、约架、pvp、挑战某人、要跟他单挑
+- accept_duel: target（"向你申请决斗的人"里的名字，只有一个人时可不填）。接受决斗、应战
+- decline_duel: target（同上）。拒绝决斗、不打
+- flee: description。在决斗中逃跑、脱身、撤出战斗。"逃跑然后往北走"是 flee 加 move
 - stunt: 借环境或创意动作去伤害、制住某个 NPC 或玩家（推石头砸、用铁叉捅、绊倒、用绳子捆、泼东西迷眼）。拿吃的喝的去砸、扔、泼人也是 stunt（item 填那样东西）；喂进嘴里、灌下去是 use 不是 stunt。你是裁判，要填：
   - target（NPC 的 ref 或其他玩家的名字），description（第三人称简述怎么做的）
   - feature：用到"可利用地形"里的东西就填它的 ref（如 f1）；只用环境描述里随手的东西就不填
@@ -245,7 +250,7 @@ INTENT_SYSTEM = """你是文字 MUD 游戏的指令解析器。读玩家的输�
   - 捆人、缠住（restrained）必须用"可利用地形"或背包里真有、而且合理能拿来捆人的东西，填上 feature 或 item。你来判断合不合理：绳子、腰带、布条、锁链、藤蔓、皮带、布衣能捆；面包、硬币、钥匙、酒杯这种捆不了。玩家点名了用什么（"用绳子捆"），就得是背包或地形里的那样东西（"井上的麻绳"也算绳子），没有就 reject，不要拿别的东西顶替；只说"把他捆起来"没点名，就从背包、地形里挑一样合理的。环境描述里的东西拿不走，地形和背包里都没有能捆人的东西，就不能捆：输出 reject，reason 写没有能用来捆人的东西
   - status_label：状态的说法，简短，如"被石头砸晕了""被绳子捆住了"。泼酒、撒沙、撒石灰迷眼是短暂的 incapacitated，写"被迷了眼"这类，不要写成晕了，escape 填 easy；escape：这个状态挣脱或醒来的难度 easy / normal / hard
 - struggle: description（第三人称简述怎么挣脱的），difficulty（这次挣脱或醒来的难度 easy / normal / hard，看方法合不合理、状态有多严重）。玩家自己带着负面状态时想摆脱它就是 struggle；失去战斗能力时说什么做什么都算 struggle（挣扎着醒来）
-- maneuver: target（NPC 的 ref），steps（整数格数，靠近填正数、退开填负数，每次最多 2 格：后退一步、挪开一点是 -1，拔腿往后跑、拉开距离是 -2，凑近一步是 1，冲上去是 2），description。同一个区域里走近、退开某个 NPC 都是 maneuver，不是 move；"冲上去砍它"是 maneuver 加 attack，"悄悄摸到它背后扭断脖子""绕过去把它打晕"是 maneuver（steps 填把距离缩到 0 的格数，最多 2）加 stunt。看"敌人"那行的距离，扭脖子、打晕、掐、割喉这类贴身动作，玩家说了摸过去、凑近、绕到背后，就先 maneuver
+- maneuver: target（NPC 的 ref；决斗中靠近、退开对手就填对手的名字，距离看"决斗"那行），steps（整数格数，靠近填正数、退开填负数，每次最多 2 格：后退一步、挪开一点是 -1，拔腿往后跑、拉开距离是 -2，凑近一步是 1，冲上去是 2），description。同一个区域里走近、退开某个 NPC 都是 maneuver，不是 move；"冲上去砍它"是 maneuver 加 attack，"悄悄摸到它背后扭断脖子""绕过去把它打晕"是 maneuver（steps 填把距离缩到 0 的格数，最多 2）加 stunt。看"敌人"那行的距离，扭脖子、打晕、掐、割喉这类贴身动作，玩家说了摸过去、凑近、绕到背后，就先 maneuver
 - dodge: description。闪避、闪躲、侧身躲开、护住要害准备挨打：这一下敌人更难打中
 - hide: description（第三人称简述怎么躲的），difficulty（easy / normal / hard，看环境里有没有好藏身的地方、敌人离得多近）。躲起来、藏到树后、趴进草丛、屏住呼吸不让敌人发现
 - search: description（第三人称简述怎么找的）。四处搜寻、找找有没有哥布林、在草丛里翻找、采药、找药草、找找有没有能用的东西都是 search：能不能找到由引擎判定。地上已经列出来的东西直接 take，只是看看环境细节是 look
@@ -297,7 +302,21 @@ def room_context(view: RoomView) -> str:
             f"出口：{exits}\n地上：{items}\n取用处：{dispensers}\nNPC：{npcs}\n其他玩家：{players}\n背包：{inv}\n"
             f"队友：{'、'.join(view.party) or '无'}\n邀请你组队的人：{'、'.join(view.invites) or '无'}\n"
             f"你的状态：{me}\n正在跟着：{view.following or '没有'}"
+            + (f"\n决斗：{duel_text(view)}" if duel_text(view) else "")
             + (f"\n敌人：{stealth_text(view)}" if stealth_text(view) else ""))
+
+
+def duel_text(view: RoomView) -> str:
+    """决斗情况，给解析、叙事和界面看；没有就空"""
+    parts = []
+    if d := view.duel:
+        parts.append(f"正在和{d.opponent}决斗，相隔 {engine.distance_word(d.distance)}；"
+                     + ("你是发起者，要离开得先逃跑成功" if d.challenger else "你是被挑战的一方，随时可以走开"))
+    if view.challenges:
+        parts.append(f"{'、'.join(view.challenges)}向你申请了决斗，还没回应")
+    if view.challenging:
+        parts.append(f"你向{view.challenging}申请了决斗，等对方接受")
+    return "；".join(parts)
 
 
 def stealth_text(view: RoomView) -> str:
@@ -691,6 +710,7 @@ def narrate(db, view: RoomView, text: str, results: list[ActionResult],
              f"<player>角色名：{name}（只是称呼，不代表天气、环境或任何设定）；HP {view.player.hp}/{view.player.max_hp}"
              + (f"；状态：{view.player.status.describe()}" if view.player.status else "")
              + (f"；{stealth_text(view)}" if stealth_text(view) else "")
+             + (f"；{duel_text(view)}" if duel_text(view) else "")
              + f"\n装备着：{held}\n身上带着：{carried}\n金币：{view.player.gold}（这回合买卖之后剩下的，付了多少看 facts）</player>"]
     if npc:
         deeds = "、".join(view.player.flags) or "无"

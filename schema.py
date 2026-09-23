@@ -104,6 +104,29 @@ class Unfollow(BaseModel):
     action: Literal["unfollow"]
 
 
+# PvP 得先申请决斗、对方接受才能造成伤害；没开决斗时对玩家只能做不伤血的整人动作（捆住、迷眼）
+class Challenge(BaseModel):
+    """向同房间的玩家发起决斗申请"""
+    action: Literal["challenge"]
+    target: str                         # 玩家名字
+
+
+class AcceptDuel(BaseModel):
+    action: Literal["accept_duel"]
+    target: Optional[str] = None        # 发起决斗的玩家名字；只有一个人申请时可以不填
+
+
+class DeclineDuel(BaseModel):
+    action: Literal["decline_duel"]
+    target: Optional[str] = None
+
+
+class Flee(BaseModel):
+    """逃跑：决斗的发起者要离开这里得先逃跑成功，被挑战的一方随时能走"""
+    action: Literal["flee"]
+    description: str = ""
+
+
 # 借环境、创意动作打人：AI 当裁判给出难度、伤害档位、负面状态，规则引擎掷骰、限幅后执行。
 # AI 只能选档位，具体数字在 engine.TIER_DAMAGE，说得再夸张也超不过上限
 Difficulty = Literal["easy", "normal", "hard"]
@@ -135,9 +158,9 @@ class Struggle(BaseModel):
 
 
 class Maneuver(BaseModel):
-    """同一区域里走近、退开某个 NPC。格数由 AI 看玩家怎么说来判，引擎限在每次最多 engine.MAX_STEP 格"""
+    """同一区域里走近、退开某个 NPC 或决斗对手。格数由 AI 看玩家怎么说来判，引擎限在每次最多 engine.MAX_STEP 格"""
     action: Literal["maneuver"]
-    target: str                         # NPC 的 ref
+    target: str                         # NPC 的 ref，或者决斗对手的名字
     steps: int                          # 正数是靠近，负数是退开
     description: str = ""
 
@@ -182,7 +205,8 @@ class Reject(BaseModel):
 
 PlayerAction = Annotated[
     Union[Move, Look, Take, Drop, Use, Equip, Unequip, Attack, Talk, Give, Say, Revive, Invite, Join, LeaveParty,
-          Follow, Unfollow, Stunt, Struggle, Maneuver, Dodge, Hide, Search, Freeform, Reject],
+          Follow, Unfollow, Challenge, AcceptDuel, DeclineDuel, Flee, Stunt, Struggle, Maneuver, Dodge, Hide, Search,
+          Freeform, Reject],
     Field(discriminator="action"),
 ]
 
@@ -406,6 +430,13 @@ class OtherPlayer(BaseModel):
     status: Optional[Status] = None
 
 
+class Duel(BaseModel):
+    """自己正在打的决斗（已接受的）"""
+    opponent: str
+    challenger: bool                    # 自己是不是发起的一方（发起者要逃跑成功才能离开）
+    distance: int
+
+
 class RoomView(BaseModel):
     player: Player
     room: Room
@@ -420,6 +451,9 @@ class RoomView(BaseModel):
     dispensers: list[Dispenser] = []    # 取用处
     forage: list[str] = []              # 搜索能找到的东西，带几率："药草（搜索，60%）"
     following: Optional[str] = None     # 正在跟着的玩家名字
+    duel: Optional[Duel] = None         # 正在进行的决斗
+    challenges: list[str] = []          # 向自己申请决斗、还没回应的玩家名字
+    challenging: Optional[str] = None   # 自己申请了、对方还没接受的
     refs: dict[str, UUID] = {}
 
     def assign_refs(self) -> None:

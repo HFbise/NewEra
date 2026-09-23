@@ -24,6 +24,7 @@ from schema import (
     ActionResult, Attack, Drop, Equip, Feature, Follow, Freeform, Give, Invite, ItemInstance, Join, LeaveParty, Look,
     Move, Npc, OtherPlayer, Player, PlayerAction, Reject, Revive, Room, RoomExit, RoomView, Say, Status, Struggle,
     Stunt, Take, Talk, Unfollow, Unequip, Use, dir_name, Dispenser, SLOT_CHOICES, SLOT_NAMES, Dodge, Hide, Maneuver, Search, Stealth,
+    AcceptDuel, Challenge, DeclineDuel, Duel, Flee,
 )
 
 
@@ -47,7 +48,7 @@ ESCAPE_BONUS = 0.15                     # 每挣脱失败一次，下次成功�
 STATUS_MAX = "3 minutes"                # 负面状态最长多久自动解除，防止 AI 一直判醒不过来把人卡死
 # 被束缚时做不了的动作；失去战斗能力时只能挣脱（醒来）
 RESTRAINED_BLOCKED = {"move", "attack", "stunt", "take", "drop", "equip", "unequip", "use", "give", "revive", "hide", "search",
-                      "maneuver", "dodge"}
+                      "maneuver", "dodge", "flee"}
 
 # 敌人发现玩家：进门时几率 DETECT_START，之后玩家每发一条消息掷一次骰，没被发现就涨 DETECT_STEP（躲着不涨）。
 # 被发现了，在场能动的敌人每条消息都打他一下（一句话拆成几个动作也只算一次，太长会被打断，见 INTERRUPT_AFTER）
@@ -74,6 +75,14 @@ ASSASSINATE_CHANCE = 0.10
 # 搜索找东西（world.yaml 房间 forage）的默认几率和冷却秒数：默认一搜就有、不冷却，房间里可以单独配
 FORAGE_CHANCE = 1.0
 FORAGE_COOLDOWN = 0
+
+# 决斗（PvP）：申请多久内有效；接受后双方隔几格开打；发起者逃跑按当时的距离掷骰，逃掉了才能离开
+DUEL_WINDOW = "5 minutes"
+DUEL_DISTANCE = 3
+FLEE_CHANCE = {0: 0.4, 1: 0.6, 2: 0.8}  # 更远的是 FLEE_FAR
+FLEE_FAR = 0.95
+DUEL_RULES = ("决斗规则：对方接受后才开打，只有决斗中才会对彼此造成伤害；双方起始相隔 3 格；"
+              "任何一方离开这里决斗就结束，但发起者必须先逃跑成功才能离开，被挑战的一方随时可以走开")
 
 
 class ActionError(Exception):
@@ -324,6 +333,15 @@ def load_view(conn: Connection, player_id: UUID) -> RoomView:
             cur.execute("select name from players where id = %s", (player.following,))
             following = cur.fetchone()["name"]
         room = load_room(cur, player.room_id)
+        _end_stale_duels(cur)
+        duel = _active_duel(cur, player.id)
+        cur.execute(
+            """select p.name from duels d join players p on p.id = d.challenger
+               where d.target = %s and not d.accepted order by d.created_at""", (player.id,))
+        challenges = [r["name"] for r in cur.fetchall()]
+        cur.execute("select p.name from duels d join players p on p.id = d.target where d.challenger = %s and not d.accepted",
+                    (player.id,))
+        challenging = (cur.fetchone() or {}).get("name")
         view = RoomView(
             player=player,
             room=room,
@@ -338,9 +356,117 @@ def load_view(conn: Connection, player_id: UUID) -> RoomView:
             dispensers=load_dispensers(cur, room, player.id),
             forage=forage_labels(cur, room),
             following=following,
+            duel=duel and Duel(opponent=duel["opponent"], challenger=duel["challenger"] == player.id,
+                               distance=duel["distance"]),
+            challenges=challenges,
+            challenging=challenging,
         )
     view.assign_refs()
     return view
+
+
+# ============ 决斗 ============
+
+def _end_stale_duels(cur: Cursor) -> list[str]:
+    """清掉已经结束的决斗：有一方离开了决斗的地方、倒下了，或者申请过期了。返回结束了的决斗说明"""
+    cur.execute(
+        f"""delete from duels d using players a, players b
+            where a.id = d.challenger and b.id = d.target
+              and (a.room_id <> d.room_id or b.room_id <> d.room_id or a.hp <= 0 or b.hp <= 0
+                   or not d.accepted and d.created_at < now() - interval '{DUEL_WINDOW}')
+            returning d.accepted, a.name as a, b.name as b""")
+    return [f"{r['a']}和{r['b']}的决斗结束了" for r in cur.fetchall() if r["accepted"]]
+
+
+def _active_duel(cur: Cursor, player_id: UUID, other_id: Optional[UUID] = None) -> Optional[dict]:
+    """player 正在打的决斗（已接受）：challenger、target、distance、opponent（对手名字）；
+    给了 other_id 就只认跟这个人的"""
+    cur.execute(
+        """select d.challenger, d.target, d.distance, o.name as opponent from duels d
+           join players o on o.id = case when d.challenger = %(p)s then d.target else d.challenger end
+           where d.accepted and (d.challenger = %(p)s or d.target = %(p)s)
+             and (%(o)s::uuid is null or o.id = %(o)s::uuid)""",
+        {"p": player_id, "o": other_id})
+    return cur.fetchone()
+
+
+def _duel_over(cur: Cursor, down: bool) -> list[str]:
+    """有人被打倒了：决斗当场结束"""
+    return _end_stale_duels(cur) if down else []
+
+
+def _keeper_here(cur: Cursor, room_id: str) -> Optional[Npc]:
+    """这里有管事的 NPC（能把人轰出去的麦琪、莉娜，醒着）就不许决斗"""
+    return next((n for n in load_npcs(cur, "n.room_id = %s and n.alive and n.status is null", (room_id,))
+                 if can_eject(n) and not n.template.hostile), None)
+
+
+def do_challenge(cur: Cursor, player: Player, view: RoomView, a: Challenge) -> list[str]:
+    target, awake = _room_player(cur, player, a.target)
+    if keeper := _keeper_here(cur, player.room_id):
+        raise ActionError(f"这里是{keeper.name}的地盘，她不许有人在这里决斗")
+    if not awake:
+        raise ActionError(f"{target.name}睡着了，没法接受决斗")
+    if target.hp <= 0 or player.hp <= 0:
+        raise ActionError(f"{target.name}已经倒下了")
+    if player.party_id and player.party_id == target.party_id:
+        raise ActionError(f"{target.name}是{player.name}的队友，要决斗得先退队")
+    if _active_duel(cur, player.id):
+        raise ActionError(f"{player.name}正在决斗，打完才能再申请")
+    cur.execute(
+        """insert into duels (challenger, target, room_id) values (%s, %s, %s)
+           on conflict (challenger) do update set target = excluded.target, room_id = excluded.room_id,
+                                                  accepted = false, created_at = now()""",
+        (player.id, target.id, player.room_id))
+    return [f"{player.name}向{target.name}申请决斗，等{target.name}接受", DUEL_RULES]
+
+
+def _pending_from(cur: Cursor, player: Player, name: Optional[str]) -> dict:
+    """别人向自己发起、还没回应的决斗申请；没给名字就只能有一个"""
+    cur.execute(
+        f"""select d.challenger, p.name from duels d join players p on p.id = d.challenger
+            where d.target = %s and not d.accepted and d.created_at > now() - interval '{DUEL_WINDOW}'
+              and (%s::text is null or p.name = %s)""",
+        (player.id, name, name))
+    rows = cur.fetchall()
+    if not rows:
+        raise ActionError(f"{name}没有向{player.name}申请决斗，或者申请已经过期" if name
+                          else f"没有人向{player.name}申请决斗，或者申请已经过期")
+    if len(rows) > 1:
+        raise ActionError(f"好几个人都向{player.name}申请了决斗（{'、'.join(r['name'] for r in rows)}），得说清楚是谁")
+    return rows[0]
+
+
+def do_accept_duel(cur: Cursor, player: Player, view: RoomView, a: AcceptDuel) -> list[str]:
+    row = _pending_from(cur, player, a.target)
+    challenger, _ = _room_player(cur, player, row["name"], lock=True)
+    if _active_duel(cur, player.id) or _active_duel(cur, challenger.id):
+        raise ActionError("已经有一方在决斗了，打完才能再接受")
+    if keeper := _keeper_here(cur, player.room_id):
+        raise ActionError(f"这里是{keeper.name}的地盘，她不许有人在这里决斗")
+    cur.execute("update duels set accepted = true, distance = %s, room_id = %s, created_at = now() where challenger = %s",
+                (DUEL_DISTANCE, player.room_id, challenger.id))
+    return [f"{player.name}接受了{challenger.name}的决斗，两人相隔 {distance_word(DUEL_DISTANCE)}", DUEL_RULES]
+
+
+def do_decline_duel(cur: Cursor, player: Player, view: RoomView, a: DeclineDuel) -> list[str]:
+    row = _pending_from(cur, player, a.target)
+    cur.execute("delete from duels where challenger = %s", (row["challenger"],))
+    return [f"{player.name}拒绝了{row['name']}的决斗申请"]
+
+
+def do_flee(cur: Cursor, player: Player, view: RoomView, a: Flee) -> list[str]:
+    """逃跑：决斗的发起者按距离掷骰，逃掉了决斗就结束，可以离开；被挑战的一方不用判定"""
+    duel = _active_duel(cur, player.id)
+    if duel is None:
+        raise ActionError(f"{player.name}没有在决斗，用不着逃跑")
+    facts = [f"{player.name}尝试：{a.description or '逃跑'}"]
+    if duel["target"] == player.id:
+        return facts + [f"{player.name}是被挑战的一方，随时可以直接走开，离开这里决斗就结束"]
+    if not _roll(FLEE_CHANCE.get(duel["distance"], FLEE_FAR)):
+        return facts + [f"隔着 {distance_word(duel['distance'])}，{player.name}没能从{duel['opponent']}面前脱身，决斗还在继续"]
+    cur.execute("delete from duels where challenger = %s", (player.id,))
+    return facts + [f"{player.name}从{duel['opponent']}面前脱身了，决斗结束，可以离开了"]
 
 
 # ============ 通用校验 ============
@@ -444,6 +570,12 @@ def do_move(cur: Cursor, player: Player, view: RoomView, a: Move) -> list[str]:
     if ex is None:
         raise ActionError(f"这里没有往{dir_name(a.direction)}的路")
     facts = []
+    # 决斗中：发起者得先逃跑成功才能走；被挑战的一方走开，决斗就结束
+    if duel := _active_duel(cur, player.id):
+        if duel["challenger"] == player.id:
+            raise ActionError(f"{player.name}发起的决斗还没结束，得先逃跑成功才能离开")
+        cur.execute("delete from duels where challenger = %s", (duel["challenger"],))
+        facts.append(f"{player.name}走开了，和{duel['opponent']}的决斗结束了")
     if ex["locked"]:
         # 身上带着对应的钥匙就顺手打开，不用玩家专门说"用钥匙开门"
         keys = load_items(cur, "i.player_id = %s and i.template_id = %s", (player.id, ex["key_item"])) \
@@ -465,6 +597,7 @@ def do_move(cur: Cursor, player: Player, view: RoomView, a: Move) -> list[str]:
         f"""update players set room_id = %s, updated_at = now()
             where following = %s and room_id = %s and hp > 0 and status is null
               and last_active_at > now() - interval '{ONLINE_WINDOW}'
+              and id not in (select challenger from duels where accepted)
             returning name""",
         (ex["to_room"], player.id, player.room_id),
     )
@@ -669,6 +802,9 @@ def _feed(cur: Cursor, player: Player, item: ItemInstance, name: str) -> list[st
     if (item.harm or item.knockout) and not helpless and not mate:
         # 强行塞嘴里也一样：清醒的人会挣扎吐掉，得先把他放倒、捆住
         raise ActionError(f"{target.name}清醒着，不肯吃{item.name}，硬塞也会被吐掉，得先把他制住")
+    # 喂毒掉血也是伤害，得在决斗里；只把人药倒不掉血的算整人
+    if item.harm and not _active_duel(cur, player.id, target.id):
+        raise ActionError(f"{item.name}有毒，{player.name}和{target.name}没有在决斗，不能拿它害人")
     _consume(cur, item)
     return [f"{player.name}喂{target.name}{_eat_verb(item)}了{item.name}"] + _eat_effect(cur, target, item)
 
@@ -887,10 +1023,19 @@ def _enemies(cur: Cursor, room_id: str) -> list[Npc]:
 
 
 def do_maneuver(cur: Cursor, player: Player, view: RoomView, a: Maneuver) -> list[str]:
-    """在同一区域里走近、退开某个 NPC"""
+    """在同一区域里走近、退开某个 NPC 或决斗对手"""
+    steps = max(-MAX_STEP, min(MAX_STEP, a.steps))
+    if a.target not in view.refs:
+        other, _ = _room_player(cur, player, a.target)
+        duel = _active_duel(cur, player.id, other.id)
+        if duel is None:
+            raise ActionError(f"{player.name}没有在跟{other.name}决斗，用不着拉开或拉近距离")
+        d = max(0, min(MAX_DISTANCE, duel["distance"] - steps))
+        cur.execute("update duels set distance = %s where challenger = %s", (d, duel["challenger"]))
+        how = f"朝{other.name}靠近了 {steps} 格" if steps > 0 else f"从{other.name}身边退开了 {-steps} 格" if steps else f"在{other.name}附近挪了挪"
+        return [f"{player.name}{how}，现在离{other.name} {distance_word(d)}"]
     npc = _room_npc(cur, view, player, a.target)
     st = _stealth(player)
-    steps = max(-MAX_STEP, min(MAX_STEP, a.steps))
     d = _set_distance(st, npc, _distance(st, npc) - steps)
     _save_stealth(cur, player, st)
     how = f"朝{npc.name}靠近了 {steps} 格" if steps > 0 else f"从{npc.name}身边退开了 {-steps} 格" if steps else f"在{npc.name}附近挪了挪"
@@ -1005,9 +1150,16 @@ def do_attack(cur: Cursor, player: Player, view: RoomView, a: Attack) -> list[st
     power = player.attack + sum(w.damage for w in weapons)
     if a.target not in view.refs:
         target = _pvp_target(cur, player, a.target)
+        duel = _active_duel(cur, player.id, target.id)
+        if duel is None:
+            raise ActionError(f"{player.name}和{target.name}没有在决斗，不能伤害对方（先申请决斗，对方接受了才行）")
+        d = duel["distance"]
+        if not _roll(MELEE_HIT.get(d, 0)):
+            return [f"{player.name}用{how}攻击{target.name}，" + (f"隔着 {distance_word(d)}够不着" if d not in MELEE_HIT
+                                                                else f"隔着 {distance_word(d)}，没打中")]
         dmg = max(1, power - _defense(cur, target))
-        facts, _ = _hurt_player(cur, target, dmg)
-        return [f"{player.name}用{how}攻击{target.name}，造成 {dmg} 点伤害"] + facts
+        facts, down = _hurt_player(cur, target, dmg)
+        return [f"{player.name}用{how}攻击{target.name}，造成 {dmg} 点伤害"] + facts + _duel_over(cur, down)
 
     npc = _room_npc(cur, view, player, a.target)
     if not npc.combatable:
@@ -1074,6 +1226,11 @@ def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]
         target = _pvp_target(cur, player, a.target)
         tier, escape = _lower(tier, TIERS), _lower(escape, DIFFICULTIES)
     is_npc = isinstance(target, Npc)
+    # 玩家之间没开决斗：整人可以（捆住、迷眼、推出门），但不掉血
+    duel = None if is_npc else _active_duel(cur, player.id, target.id)
+    harmless_prank = not is_npc and duel is None
+    if harmless_prank:
+        tier = "none"
 
     if feature:
         cur.execute("update room_features set uses_left = uses_left - 1, used_at = coalesce(used_at, now()) where id = %s",
@@ -1096,6 +1253,8 @@ def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]
         # 扭脖子、打晕都是贴身的事，敌人离着几格就得先摸过去
         if is_npc and target.template.hostile and (d := _distance(_stealth(player), target)) > 0:
             raise ActionError(f"离{target.name}还有 {distance_word(d)}，够不着，得先靠近")
+        if duel and duel["distance"] > 0:
+            raise ActionError(f"离{target.name}还有 {distance_word(duel['distance'])}，够不着，得先靠近")
         if helpless:
             # 对无力反抗的补刀不受徒手最多轻伤的限制（打玩家照旧降一档）
             tier = a.tier if is_npc else _lower(a.tier, TIERS)
@@ -1107,6 +1266,8 @@ def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]
             chance = ASSASSINATE_CHANCE
             facts.append(f"{target.name}还没发现{player.name}，出其不意，只有一成把握")
             tier = a.tier                           # 偷袭得手不受徒手最多轻伤的限制
+    if harmless_prank:
+        tier = "none"
     # 重伤以上（推大石头、铁叉捅）一律按困难；对无力反抗的补刀不算
     if not poison and TIERS.index(tier) >= TIERS.index("heavy") and not helpless:
         chance = min(chance, STUNT_CHANCE["hard"])
@@ -1116,9 +1277,9 @@ def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]
 
     facts.append("成功了")
     down = stunned = False
-    if dmg := (poison.harm if poison else TIER_DAMAGE[tier]):
+    if dmg := (0 if harmless_prank else poison.harm if poison else TIER_DAMAGE[tier]):
         hurt, down = _hurt_npc(cur, player, target, dmg) if is_npc else _hurt_player(cur, target, dmg)
-        facts += [f"{target.name}受到 {dmg} 点伤害"] + hurt
+        facts += [f"{target.name}受到 {dmg} 点伤害"] + hurt + ([] if is_npc else _duel_over(cur, down))
     if poison and poison.knockout and not down:
         _knock_out(cur, "npcs" if is_npc else "players", target.id, poison.knockout)
         facts.append(f"{target.name}{poison.knockout}，失去战斗能力")
@@ -1138,6 +1299,10 @@ def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]
         d = _set_distance(pst, target, _distance(pst, target) + min(MAX_STEP, a.knockback))
         _save_stealth(cur, player, pst)
         facts.append(f"{target.name}被弄开了，离{player.name} {distance_word(d)}")
+    elif duel and not down and a.knockback > 0:
+        d = min(MAX_DISTANCE, duel["distance"] + min(MAX_STEP, a.knockback))
+        cur.execute("update duels set distance = %s where challenger = %s", (d, duel["challenger"]))
+        facts.append(f"{target.name}被弄开了，离{player.name} {distance_word(d)}")
     if exit_:
         room = load_room(cur, exit_["to_room"])
         cur.execute("update players set room_id = %s, following = null, updated_at = now() where id = %s",
@@ -1146,6 +1311,7 @@ def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]
         # 那边的人（包括被推的人自己）看到他进来；player_id 记推人的，被推的人自己才收得到这条
         cur.execute("insert into events (room_id, player_id, kind, observer) values (%s, %s, 'pushed', %s)",
                     (exit_["to_room"], player.id, f"{target.name}被{player.name}从{load_room(cur, player.room_id).name}弄了进来。"))
+        facts += _end_stale_duels(cur)                # 被推走的是决斗对手，决斗就结束了
     elif is_npc and not down and not stunned:
         facts += _npc_counter(cur, player, target)
     return facts
@@ -1310,6 +1476,7 @@ HANDLERS: dict[str, Callable[..., list[str]]] = {
     "say": do_say, "revive": do_revive, "stunt": do_stunt, "struggle": do_struggle,
     "follow": do_follow, "unfollow": do_unfollow, "invite": do_invite, "join": do_join, "leave_party": do_leave_party,
     "maneuver": do_maneuver, "dodge": do_dodge, "hide": do_hide, "search": do_search, "reject": do_reject,
+    "challenge": do_challenge, "accept_duel": do_accept_duel, "decline_duel": do_decline_duel, "flee": do_flee,
 }
 
 
@@ -1347,8 +1514,10 @@ def execute_all(conn: Connection, view: RoomView, actions: list[PlayerAction]) -
         results.append(result)
         if not result.success:
             break
-        # 在有看店 NPC 的地方对玩家动手：当场被轰出去，后面的动作不做了
-        if action.action in ("attack", "stunt") and action.target not in view.refs and (kicked := _keeper_eject(conn, view)):
+        # 在有看店 NPC 的地方伤了人：当场被轰出去，后面的动作不做了。那里不许决斗，一般伤不了人，
+        # 整人（捆住、迷眼）不算
+        if (action.action in ("attack", "stunt") and action.target not in view.refs
+                and any("点伤害" in f for f in result.facts) and (kicked := _keeper_eject(conn, view))):
             result.facts += kicked
             return results
         if i == INTERRUPT_AFTER and len(actions) > i:

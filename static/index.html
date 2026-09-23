@@ -157,6 +157,11 @@ function render(s) {
       : `<li data-name="对${esc(o.name)} ">${esc(o.name)}<span class="tag">${o.status ? esc(o.status) : o.awake ? "HP " + o.hp : "睡着了"}</span></li>`).join("")}</ul>` : ""}
     ${s.following ? `<div class="sys">正跟着${esc(s.following)}（输入"停止跟随"不跟了）</div>` : ""}
     ${s.party.length ? `<h2>队伍</h2><ul>${s.party.map(n => `<li>${esc(n)}</li>`).join("")}</ul>` : ""}
+    ${s.duel ? `<h2>决斗</h2><div class="sys">正和${esc(s.duel.opponent)}决斗，相隔 ${s.duel.distance} 格。${s.duel.challenger
+      ? "你是发起者，要离开得先输入“逃跑”并成功" : "你是被挑战的一方，随时可以走开，走开决斗就结束"}</div>` : ""}
+    ${s.challenges.length ? `<h2>决斗申请</h2><ul>${s.challenges.map(n => `<li data-name="接受${esc(n)}的决斗">${esc(n)}<span class="tag">向你申请决斗</span></li>`).join("")}</ul>
+      <div class="sys">${esc(s.duel_rules)}。输入“接受决斗”或“拒绝决斗”</div>` : ""}
+    ${s.challenging ? `<div class="sys">你向${esc(s.challenging)}申请了决斗，等对方接受</div>` : ""}
     ${s.invites.length ? `<h2>组队邀请</h2><ul>${s.invites.map(n => `<li data-name="${esc(n)}">${esc(n)}<span class="tag">邀请你组队</span></li>`).join("")}</ul>` : ""}
     ${s.items.length ? `<h2>地上</h2><ul>${s.items.map(i => li(i.ref, i.name,
       i.quantity > 1 ? `<span class="tag">x${i.quantity}</span>` : "", i.fill)).join("")}</ul>` : ""}
@@ -174,6 +179,7 @@ function render(s) {
       打 · 躲起来 · 搜索 · 说 · 对某人说<br>
       邀请组队 · 加入队伍 · 离开队伍<br>
       跟着 · 停止跟随 · 急救 · 挣脱<br>
+      决斗某人 · 接受决斗 · 拒绝决斗 · 逃跑<br>
       其他想做的事直接写，AI 判定
     </div>
     <h2></h2>

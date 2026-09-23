@@ -224,6 +224,18 @@ create table npc_memory_log (
 );
 create index on npc_memory_log (player_id, npc_template, id);
 
+-- 玩家决斗（PvP）：没接受前是申请，接受了才能互相造成伤害。每人同时只发起一场。
+-- 双方不在 room_id 这里了、有人倒下了就算结束（engine._end_stale_duels 清掉）
+create table duels (
+  challenger  uuid primary key references players(id) on delete cascade,
+  target      uuid not null references players(id) on delete cascade,
+  room_id     text not null references rooms(id) on delete cascade,
+  accepted    boolean not null default false,
+  distance    int not null default 3,
+  created_at  timestamptz not null default now()
+);
+create index on duels (target);
+
 -- 取用处拿过的记录：配了 once 的（地窖桌上的护符）拿过一次就再也不能拿，丢了也一样
 create table dispenser_log (
   player_id   uuid not null references players(id) on delete cascade,
@@ -281,6 +293,7 @@ alter table player_quests  enable row level security;
 alter table forage_log     enable row level security;
 alter table dispenser_log  enable row level security;
 alter table npc_memory_log enable row level security;
+alter table duels          enable row level security;
 
 create policy "read static" on rooms          for select to authenticated using (true);
 create policy "read static" on room_exits     for select to authenticated using (true);

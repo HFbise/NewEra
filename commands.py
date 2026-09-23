@@ -169,6 +169,18 @@ def _parse_one(view: RoomView, t: str) -> dict:
              or re.fullmatch(r"invite\s+(.+)", t, re.I)):
         return {"action": "invite", "target": _player_or_unsure(view, m[1])}
 
+    # 决斗（PvP）：申请、接受、拒绝、逃跑
+    if re.fullmatch(r"逃跑|逃走|逃|跑路|撤退|脱战|脱身|flee", t, re.I):
+        return {"action": "flee", "description": "转身逃跑"}
+    duel = r"(?:决斗|pvp|单挑|挑战)(?:申请|邀请)?"
+    if m := re.fullmatch(rf"(?:接受|同意)\s*(?:(.+?)\s*的)?\s*{duel}|应战", t, re.I):
+        return {"action": "accept_duel", "target": _player_or_unsure(view, m[1]) if m[1] else None}
+    if m := re.fullmatch(rf"拒绝\s*(?:(.+?)\s*的)?\s*{duel}", t, re.I):
+        return {"action": "decline_duel", "target": _player_or_unsure(view, m[1]) if m[1] else None}
+    if m := (re.fullmatch(r"(?:申请|发起)?(?:决斗|pvp|单挑|挑战)\s*(.+)", t, re.I)
+             or re.fullmatch(r"(?:向|跟|和|与|对)\s*(.+?)\s*(?:申请|发起)?(?:决斗|pvp|单挑|挑战)", t, re.I)):
+        return {"action": "challenge", "target": _player_or_unsure(view, m[1])}
+
     # 打的是玩家就是 PvP，target 填名字；否则是 NPC 的 ref。
     # 先认准确的玩家名，再找 NPC，最后才模糊匹配玩家，免得有人叫"布"时"打哥布林"打到他
     if m := re.fullmatch(r"(?:attack|kill|hit|攻击|杀|打)\s*(.+)", t, re.I):
