@@ -217,7 +217,7 @@ def ai_usage(days: int = 7, tz: str = "UTC"):
             where {since} group by 1 order by 2 desc""", params)
         recent = _rows(conn, """
             select a.created_at, coalesce(p.name, '（已删除）') as player, a.kind, a.model, a.input_tokens,
-                   a.output_tokens, a.latency_ms, a.ok
+                   a.output_tokens, a.latency_ms, a.ok, a.error
             from ai_calls a left join players p on p.id = a.player_id order by a.id desc limit 50""")
     return {"tz": params["tz"], "totals": totals, "daily": daily, "by_player": by_player, "recent": recent}
 

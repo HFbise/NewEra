@@ -299,7 +299,7 @@ async function loadAI() {
     <div class="scroll"><table><tr><th>时间</th><th>玩家</th><th>类型</th><th>模型</th><th>输入</th><th>输出</th><th>耗时</th><th>结果</th></tr>
       ${d.recent.map(r => `<tr><td class="dim">${time(r.created_at)}</td><td>${esc(r.player)}</td><td>${esc(r.kind)}</td>
         <td class="dim">${esc(r.model)}</td><td>${num(r.input_tokens)}</td><td>${num(r.output_tokens)}</td>
-        <td>${(r.latency_ms / 1000).toFixed(1)}s</td><td class="${r.ok ? "ok" : "bad"}">${r.ok ? "通过" : "没通过"}</td></tr>`).join("")}</table></div>`;
+        <td>${(r.latency_ms / 1000).toFixed(1)}s</td><td class="${r.ok ? "ok" : "bad"}">${r.ok ? "通过" : r.error ? "报错：" + esc(r.error) : "没通过校验"}</td></tr>`).join("")}</table></div>`;
   $("#days").onchange = e => { aiDays = +e.target.value; loadAI(); };
   $("#ai-refresh").onclick = () => loadAI();
 }

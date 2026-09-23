@@ -195,6 +195,7 @@ create table ai_calls (
   cache_write     int not null default 0,
   latency_ms      int not null,
   ok              boolean not null,              -- 输出是否通过校验
+  error           text,                          -- 调用本身报错时的错误类型（限流、超时），这时 token 为 0
   created_at      timestamptz not null default now()
 );
 
