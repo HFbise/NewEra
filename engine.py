@@ -67,6 +67,9 @@ DISTANCE_WORDS = {0: "贴身", 1: "一步之遥", 2: "几步开外"}
 # 免得一条超长的消息一口气打出一串伤害
 INTERRUPT_AFTER = 2
 
+# 徒手一击毙命、直接打晕：敌人没发现你时的偷袭成功率；对方有防备就是 0
+ASSASSINATE_CHANCE = 0.10
+
 # 搜索找东西（world.yaml 房间 forage）的默认几率和冷却秒数：每个人找到一次后隔一阵才能再找到
 FORAGE_CHANCE = 0.6
 FORAGE_COOLDOWN = 120
@@ -962,7 +965,26 @@ def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]
     if poison:
         _consume(cur, poison)
     facts = [f"{player.name}尝试：{a.description}"]
-    if not _roll(SUCCESS_CHANCE[a.difficulty]):
+    chance = SUCCESS_CHANCE[a.difficulty]
+    # 一击毙命、直接打晕（扭断脖子、一拳打晕）：不借地形、不用药，对方又有防备，这种事不可能成。
+    # 对方已经倒下、被放倒、被捆住就照常补刀；敌人还没发现你是偷袭，给一成把握，得手就照判的档位来
+    if not feature and not poison and (a.tier == "lethal" or a.status == "incapacitated"):
+        helpless = (target.status is not None) if is_npc else (target.status is not None or target.hp <= 0)
+        # 扭脖子、打晕都是贴身的事，敌人离着几格就得先摸过去
+        if is_npc and target.template.hostile and (d := _distance(_stealth(player), target)) > 0:
+            raise ActionError(f"离{target.name}还有 {distance_word(d)}，够不着，得先靠近")
+        if helpless:
+            # 对无力反抗的补刀不受徒手最多轻伤的限制（打玩家照旧降一档）
+            tier = a.tier if is_npc else _lower(a.tier, TIERS)
+        else:
+            sneak = is_npc and target.template.hostile and not _stealth(player).detected
+            if not sneak:
+                facts.append(f"{target.name}有防备，想这样一下制住{'它' if is_npc else '他'}根本不可能")
+                return facts + (_npc_counter(cur, player, target) if is_npc else [])
+            chance = ASSASSINATE_CHANCE
+            facts.append(f"{target.name}还没发现{player.name}，出其不意，只有一成把握")
+            tier = a.tier                           # 偷袭得手不受徒手最多轻伤的限制
+    if not _roll(chance):
         facts.append("没有成功")
         return facts + (_npc_counter(cur, player, target) if is_npc else [])
 
