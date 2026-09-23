@@ -21,6 +21,9 @@ rooms:
       east: {to: smithy}
       south: {to: path}
     items: [{item: bread, respawn: 120}]
+    # 井上的麻绳能解下来捆人（捆人必须用地形或背包里的东西），用一次后过一阵才有新的
+    features:
+      well_rope: {name: 井上的麻绳, max_tier: light, uses: 1, respawn: 300}
 
   tavern:
     name: 野猪酒馆
@@ -90,7 +93,7 @@ rooms:
       north: {to: path}
     npcs: [goblin]
     # 可利用地形：玩家拿它做文章（推、砸、绊）时最多打出 max_tier 档伤害（light/heavy/lethal），
-    # 用 uses 次后 respawn 秒恢复。details 里写到但没列在这的东西也能用，最多轻伤
+    # 用 uses 次后 respawn 秒恢复。details 里写到但没列在这的东西也能用，最多轻伤，而且不能拿来捆人
     features:
       boulder: {name: 松动的大石头, max_tier: lethal, uses: 1, respawn: 300}
 

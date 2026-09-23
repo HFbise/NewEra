@@ -62,7 +62,7 @@ class Talk(BaseModel):
 class Give(BaseModel):
     action: Literal["give"]
     item: str
-    target: str
+    target: str                         # NPC 的 ref，或者同房间玩家的名字
 
 
 class Revive(BaseModel):
@@ -109,6 +109,7 @@ class Stunt(BaseModel):
     target: str                         # NPC 的 ref，或者同房间玩家的名字
     description: str                    # 第三人称简述怎么做的
     feature: Optional[str] = None       # 用到的可利用地形 ref（f1）；只用环境里随手的东西就空，最多轻伤
+    item: Optional[str] = None          # 用到的背包物品 ref（绳子、武器）；捆人（restrained）必须有 feature 或 item
     difficulty: Difficulty = "normal"   # 做成的难度，引擎按它掷骰
     tier: Tier = "none"                 # 做成时的伤害档位
     status: Optional[StatusKind] = None # 做成时给对方加的负面状态

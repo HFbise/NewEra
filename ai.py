@@ -186,13 +186,13 @@ INTENT_SYSTEM = """你是文字 MUD 游戏的指令解析器。读玩家的输�
 - look: target 可空（空=看整个房间；也可以是 ref 或出口英文名）
 - take: item（地上物品的 ref）
 - drop: item（背包物品的 ref）
-- use: item（背包物品的 ref），target 可空。只用于吃喝（target 不填）和用钥匙开门（target 填出口英文名）
+- use: item（背包物品的 ref），target 可空。只用于吃喝（target 不填）和用钥匙开门（target 填出口英文名）。拿东西打人、砸人、抽人是 stunt（item 填那样东西），不是 use
 - equip: item（背包物品的 ref）。穿上、戴上、装备、拿在手里当武器都是 equip
 - attack: target（NPC 的 ref；打其他玩家时填"其他玩家"里的名字）
 - talk: target（NPC 的 ref），message（玩家说的话，保留原话）
-- give: item（背包物品的 ref），target（NPC 的 ref）
+- give: item（背包物品的 ref），target（NPC 的 ref；给其他玩家时填"其他玩家"里的名字）
 - say: message（说的话，保留原话），target 可空（对某个玩家说时填"其他玩家"里的名字，对大家说不填）
-- revive: target（"其他玩家"里倒下的人的名字）。对标着"倒下了"的玩家做任何救治都是 revive，不是 freeform：急救、包扎、止血、扶起、喂药、叫醒、做人工呼吸
+- revive: target（"其他玩家"里的名字）。帮倒下的、被捆住的、被打晕的其他玩家都是 revive，不是 freeform 也不是 struggle：急救、包扎、止血、扶起、喂药、叫醒、松绑、解开绳子、割断绳子、把人拉出来。struggle 只用于玩家自己摆脱自己身上的状态
 - invite: target（"其他玩家"里的名字）。邀请对方组队
 - join: target（"邀请你组队的人"里的名字）。接受邀请、加入对方的队伍
 - leave_party: 不用填字段。离开、退出队伍
@@ -201,9 +201,11 @@ INTENT_SYSTEM = """你是文字 MUD 游戏的指令解析器。读玩家的输�
 - stunt: 借环境或创意动作去伤害、制住某个 NPC 或玩家（推石头砸、用铁叉捅、绊倒、用绳子捆、泼东西迷眼）。你是裁判，要填：
   - target（NPC 的 ref 或其他玩家的名字），description（第三人称简述怎么做的）
   - feature：用到"可利用地形"里的东西就填它的 ref（如 f1）；只用环境描述里随手的东西就不填
+  - item：用到背包里的东西（绳子、武器等）就填它的 ref，只能填"背包"列表里的；地上的东西要先 take；没用就不填
   - difficulty：做成的难度 easy / normal / hard，看动作合不合理、对方有没有防备
   - tier：做成时的伤害 none（不伤人，比如捆绑）/ light（轻伤）/ heavy（重伤）/ lethal（足以致命），照实判断，规则会按地形限幅
   - status：做成时对方陷入的负面状态，不会就不填。incapacitated = 失去战斗能力（砸晕、打昏、呛晕）；restrained = 被束缚（捆住、压住、缠住）
+  - 捆人、缠住（restrained）必须用"可利用地形"或背包里真有的东西，填上 feature 或 item。比如玩家说"用绳子捆人"，可利用地形里有"井上的麻绳"就填它的 feature ref。环境描述里的东西拿不走，地形和背包里都没有能捆人的东西，就不能捆：输出 reject，reason 写没有能用来捆人的东西
   - status_label：状态的说法，简短，如"被石头砸晕了""被绳子捆住了"；escape：这个状态挣脱或醒来的难度 easy / normal / hard
 - struggle: description（第三人称简述怎么挣脱的），difficulty（这次挣脱或醒来的难度 easy / normal / hard，看方法合不合理、状态有多严重）。玩家自己带着负面状态时想摆脱它就是 struggle；失去战斗能力时说什么做什么都算 struggle（挣扎着醒来）
 - freeform: description（第三人称简述玩家想做的事）
@@ -268,12 +270,14 @@ def parse_intent(db, view: RoomView, text: str) -> tuple[Optional[list], dict]:
             for field in ("difficulty", "escape", "tier", "status"):
                 if field in d:
                     d[field] = JUDGE_WORDS.get(d[field].strip().lower(), d[field].strip().lower())
-            # 对倒下、被困的玩家包扎、止血这类，模型常归成 freeform，按急救处理
-            if d["action"] == "freeform":
-                helpable = [p.name for p in view.others if p.downed or p.status]
-                who = [n for n in helpable if n in d.get("description", "")]
-                if who and re.search(r"包扎|急救|止血|扶|救|喂|叫醒|唤醒|治疗|人工呼吸|松绑|解开", d["description"]):
-                    d = {"action": "revive", "target": who[0]}
+            # 帮倒下、被困的玩家（包扎、松绑）模型常归成 freeform，或者错当成自己 struggle，按急救处理
+            helpable = [p.name for p in view.others if p.downed or p.status]
+            said = d.get("description", "") + text
+            who = [n for n in helpable if n in said]
+            if who and (d["action"] == "freeform" and re.search(
+                    r"包扎|急救|止血|扶|救|喂|叫醒|唤醒|治疗|人工呼吸|松绑|解开|割开|割断", said)
+                    or d["action"] == "struggle" and view.player.status is None):
+                d = {"action": "revive", "target": who[0]}
             for field in ("item", "target", "direction", "feature"):
                 if field not in d:
                     continue
@@ -285,6 +289,15 @@ def parse_intent(db, view: RoomView, text: str) -> tuple[Optional[list], dict]:
                 if d["action"] != "say" and m and (m[1] in view.refs or m[1].lower() in DIR_NAMES):
                     v = m[1].lower() if field == "direction" else m[1]
                 d[field] = v
+            by_id = {uid: ref for ref, uid in view.refs.items()}
+            carried = {by_id[i.id] for i in view.inventory}
+            # stunt 的 item 只能是背包里的（模型会把地上的面包填成捆人的绳子），不是就去掉，交给引擎判"手边没东西"
+            if d["action"] == "stunt" and d.get("item") not in carried:
+                d.pop("item", None)
+            # 拿东西打人，模型常写成 use（对人使用面包），改成借东西打人
+            if d["action"] == "use" and d.get("target") and d["target"] not in DIR_NAMES:
+                d = {"action": "stunt", "target": d["target"], "item": d["item"], "description": text,
+                     "difficulty": "normal", "tier": "light"}
             actions.append(_action(d))
         return actions
 
@@ -313,7 +326,7 @@ NARRATE_SYSTEM = """你是文字 MUD 游戏的叙事者，用中文第二人称�
 - 场景里的东西只能来自 <room> 的描述和环境细节、以及 facts。不要添加没写到的家具、物件、人物、动物
 - 可以加一点氛围点缀让文字有味道：光影、微风、气味、细小的声响、人物的神态和姿势。但不要定死天气、时间、季节（不写晴天雨天、清晨黄昏、酷暑寒冬）
 - 可以从环境细节里挑一两样写进叙事，让场景更具体；freeform 动作就围绕环境细节里的东西来写它的反应（敲空桶是咚咚声，敲满桶声音发闷）
-- 玩家和其他角色的名字只是称呼，不要从名字联想环境。<names> 里列的都是人名，就算像"寒风""烈日"也绝不能当成风、阳光、天气来写
+- 玩家和其他角色的名字只是称呼，不要从名字联想环境。其他玩家用【玩家1】这样的代号表示，写到他们时照原样写代号（"【玩家1】站在井边"），不要改成别的称呼
 - 其他玩家是真人在操作，只能写 facts 和 <recent> 里他们确实做过的事；不要替他们编动作、神态、手势、台词（"某某朝你点头示意跟上"这种都不行），最多写他们站在哪里
 - 名字后面标"（睡着了）"的玩家正在原地睡觉，不会回应也不会行动；标"倒下了""倒在地上"的玩家 HP 归零躺在地上，等人急救
 - 玩家之间动手（攻击其他玩家）照 facts 写伤害和结果，被打的人这回合不会还手，除非 facts 里写了
@@ -404,6 +417,27 @@ def narrate(db, view: RoomView, text: str, results: list[ActionResult],
               + ([npc.name] if npc else []) + must)
     if not any(name in o for o in others):
         facts = facts.replace(name, "你")
+
+    # 别的玩家的名字换成【玩家1】这类代号，写完再换回来。光靠 prompt 压不住，"寒风"照样被写成吹过发梢的风。
+    # 名字是场景里别的东西的一部分时不换（玩家叫"野猪"遇上"野猪酒馆"），免得把场景换坏
+    scenery = ([view.room.name, view.room.description, view.room.details, name] + [n.name for n in view.npcs]
+               + [i.name for i in view.items + view.inventory] + ([npc.name] if npc else []))
+    people = {p.name for p in view.others} | set(view.party) | ({view.following} if view.following else set())
+    alias = {n: f"【玩家{i}】" for i, n in enumerate(sorted(people, key=len, reverse=True), 1)
+             if not any(n in s for s in scenery)}
+
+    def hide(s: str) -> str:
+        for n, a in alias.items():                # 长名字先换，免得"寒风"把"寒风测试"换坏
+            s = s.replace(n, a)
+        return s
+
+    def show(s: Optional[str]) -> Optional[str]:
+        for n, a in alias.items():
+            s = s.replace(a, n) if s else s
+        return s
+
+    facts, text, must = hide(facts), hide(text), [hide(m) for m in must]
+    recent = [hide(r) for r in recent or []]
     parts = [f"<room>\n{view.room.name}：{view.room.description}\n环境细节：{view.room.details}\n</room>",
              f"<player>角色名：{name}（只是称呼，不代表天气、环境或任何设定）；HP {view.player.hp}/{view.player.max_hp}"
              + (f"；状态：{view.player.status.describe()}" if view.player.status else "") + "</player>"]
@@ -415,12 +449,13 @@ def narrate(db, view: RoomView, text: str, results: list[ActionResult],
             f"玩家做过的事：{deeds}\n</npc>"
         )
     # 其他玩家的名字，告诉模型这些是人名，别当成天气环境；在场的带上状态，免得模型替睡着的人编动作
-    here = [p.name + ("（倒在地上）" if p.downed else f"（{p.status.describe()}）" if p.status
+    here = [hide(p.name) + ("（倒在地上）" if p.downed else f"（{p.status.describe()}）" if p.status
                       else "（醒着，但这回合没做任何事）" if p.awake else "（睡着了，一动不动）")
             for p in view.others]
-    away = sorted((set(view.party) | ({view.following} if view.following else set())) - {p.name for p in view.others})
+    away = sorted(hide(n) for n in (set(view.party) | ({view.following} if view.following else set()))
+                  - {p.name for p in view.others})
     if here or away:
-        parts.append("<names>\n以下都是人名，不是天气或环境。\n"
+        parts.append("<names>\n以下都是其他玩家，【玩家N】是他们的代号，叙事和 observer 里照原样写代号。\n"
                      + (f"在这里的其他玩家：{'、'.join(here)}\n" if here else "")
                      + (f"不在这里的：{'、'.join(away)}\n" if away else "") + "</names>")
     if recent:
@@ -454,4 +489,7 @@ def narrate(db, view: RoomView, text: str, results: list[ActionResult],
                                      for d, dest, locked in missing_exits)
         return out
 
-    return _call(db, view.player.id, "narrate", NARRATE_SYSTEM, "\n\n".join(parts), Narration, 1024, check)
+    out, usage = _call(db, view.player.id, "narrate", NARRATE_SYSTEM, "\n\n".join(parts), Narration, 1024, check)
+    if out:
+        out.narrative, out.observer, out.npc_memory = show(out.narrative), show(out.observer), show(out.npc_memory)
+    return out, usage

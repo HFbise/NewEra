@@ -42,7 +42,8 @@ def _dir(text: str) -> Optional[str]:
 def _find(view: RoomView, text: str, where: str = "all") -> str:
     """名字 → 短编号。先在 where（room 地上 / inv 背包 / npc）里找，找不到再全范围找，
     因为"拿短剑；装备短剑"解析时短剑还在地上。位置对不对由引擎查库判断。
-    都找不到就抛 _Unsure，整句交给 AI"""
+    只认整个名字或名字的一部分（"短剑"认得出"生锈的短剑"）；反过来名字只是句子一部分的
+    （"面包塞在寒风嘴里"）不认，否则后半句会被吞掉。都找不到就抛 _Unsure，整句交给 AI"""
     text = text.strip()
     if text in view.refs:
         return text
@@ -50,7 +51,7 @@ def _find(view: RoomView, text: str, where: str = "all") -> str:
     preferred = {"room": view.items, "inv": view.inventory, "npc": view.npcs, "all": everything}[where]
     by_id = {uid: ref for ref, uid in view.refs.items()}
     for pool in (preferred, everything):
-        for match in (lambda n: n == text, lambda n: text in n or n in text):
+        for match in (lambda n: n == text, lambda n: text in n):
             for obj in pool:
                 if match(obj.name):
                     return by_id[obj.id]
@@ -60,7 +61,7 @@ def _find(view: RoomView, text: str, where: str = "all") -> str:
 def _player(view: RoomView, text: str) -> Optional[str]:
     """同房间其他玩家的名字匹配，先精确后模糊"""
     text = text.strip()
-    for match in (lambda n: n == text, lambda n: text in n or n in text):
+    for match in (lambda n: n == text, lambda n: text in n):
         for p in view.others:
             if match(p.name):
                 return p.name
@@ -73,7 +74,7 @@ def _player_or_unsure(view: RoomView, text: str, invites: bool = False) -> str:
         return name
     if invites:
         text = text.strip()
-        for match in (lambda n: n == text, lambda n: text in n or n in text):
+        for match in (lambda n: n == text, lambda n: text in n):
             for name in view.invites:
                 if match(name):
                     return name
@@ -81,8 +82,8 @@ def _player_or_unsure(view: RoomView, text: str, invites: bool = False) -> str:
 
 
 def _target(view: RoomView, text: str) -> str:
-    """use / look 的目标：先当方向，再当名字"""
-    return _dir(text) or _find(view, text)
+    """use / look 的目标：先当方向，再当玩家名字，再当物品、NPC"""
+    return _dir(text) or next((p.name for p in view.others if p.name == text.strip()), None) or _find(view, text)
 
 
 def parse_one(view: RoomView, text: str) -> dict:
@@ -133,7 +134,7 @@ def _parse_one(view: RoomView, t: str) -> dict:
                 "target": _target(view, m[2]) if m[2] else None}
 
     # 急救、组队只对玩家，名字对不上就交给 AI
-    if m := (re.fullmatch(r"(?:revive|急救|救起|扶起|救醒|叫醒|松绑|救)\s*(.+)", t, re.I)
+    if m := (re.fullmatch(r"(?:revive|急救|救起|扶起|救醒|叫醒|喊醒|松绑|救)\s*(.+)", t, re.I)
              or re.fullmatch(r"(?:给|帮)\s*(.+?)\s*(?:松绑|解开)", t)):
         return {"action": "revive", "target": _player_or_unsure(view, m[1])}
     if re.fullmatch(r"停止跟随|不跟了|别跟了|不再跟着.*|unfollow", t, re.I):
@@ -175,10 +176,11 @@ def _parse_one(view: RoomView, t: str) -> dict:
     if m := re.fullmatch(r"(?:说|喊|say)[:：]?\s*(.+)", t, re.I):
         return {"action": "say", "message": m[1]}
 
-    if m := re.fullmatch(r"把\s*(.+?)\s*(?:给|交给|递给)\s*(.+)", t):
-        return {"action": "give", "item": _find(view, m[1], "inv"), "target": _find(view, m[2], "npc")}
-    if m := re.fullmatch(r"give\s+(\S+)\s+(?:to\s+)?(\S+)", t, re.I):
-        return {"action": "give", "item": _find(view, m[1], "inv"), "target": _find(view, m[2], "npc")}
+    # 给东西：对方是玩家就填名字，是 NPC 就填 ref
+    if m := (re.fullmatch(r"把\s*(.+?)\s*(?:给|交给|递给)\s*(.+)", t)
+             or re.fullmatch(r"give\s+(\S+)\s+(?:to\s+)?(\S+)", t, re.I)):
+        who = next((p.name for p in view.others if p.name == m[2].strip()), None)
+        return {"action": "give", "item": _find(view, m[1], "inv"), "target": who or _find(view, m[2], "npc")}
 
     return {"action": "freeform", "description": t}
 

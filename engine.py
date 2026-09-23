@@ -27,7 +27,7 @@ from schema import (
 
 
 START_ROOM = "square"                   # 新角色出生、后台传送回去的地方
-ONLINE_WINDOW = "15 seconds"            # 超过这么久没有心跳的玩家算睡着
+ONLINE_WINDOW = "90 seconds"            # 超过这么久没有心跳的玩家算睡着。后台标签页浏览器会降低定时器频率，给宽一点
 AFFINITY_STEP = 5                       # 对话 AI 每次最多调整的好感度
 AFFINITY_RANGE = (-100, 100)
 PARTY_MAX = 5                           # 一支队伍最多几个人
@@ -400,6 +400,18 @@ def do_look(cur: Cursor, player: Player, view: RoomView, a: Look) -> list[str]:
         room = load_room(cur, ex["to_room"])
         return [f"往{dir_name(a.target)}通往{room.name}" + ("，门锁着" if ex["locked"] else "")]
 
+    # 看同房间的玩家：HP、倒下、负面状态、手里拿着什么（背包里别的东西看不到）
+    if a.target not in view.refs:
+        other, awake = _room_player(cur, player, a.target)
+        weapon, armor = _equipped(cur, other, "weapon"), _equipped(cur, other, "armor")
+        facts = [f"{other.name}：HP {other.hp}/{other.max_hp}"
+                 + ("，倒在地上" if other.hp <= 0 else "") + ("" if awake else "，睡着了")]
+        if other.status:
+            facts.append(f"{other.name}{other.status.describe()}")
+        if weapon or armor:
+            facts.append(f"{other.name}身上带着" + "、".join(i.name for i in (weapon, armor) if i))
+        return facts
+
     uid = _resolve(view, a.target)
     items = load_items(cur, "i.id = %s and (i.room_id = %s or i.player_id = %s)",
                        (uid, player.room_id, player.id))
@@ -616,8 +628,13 @@ def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]
         if feature["uses_left"] <= 0:
             raise ActionError(f"{feature['name']}已经被用过了，暂时没法再用")
         cap = feature["max_tier"]
+    # 背包里的东西（绳子、武器）也算真东西：能拿来捆人，挣脱难度照 AI 判的，伤害仍按随手的算
+    item = _inv_item(cur, view, player, a.item) if a.item else None
+    # 捆人得有真东西：环境描述里的东西拿不走，只用它们捆不了人
+    if a.status == "restrained" and not feature and not item:
+        raise ActionError(f"{player.name}手边没有能用来捆人的东西")
     tier = _cap(a.tier, cap, TIERS)
-    escape = a.escape if feature else "easy"      # 随手的东西弄出来的状态都好挣脱
+    escape = a.escape if feature or item else "easy"   # 随手的东西弄出来的状态都好挣脱
 
     if a.target in view.refs:
         target = _room_npc(cur, view, player, a.target)
@@ -753,6 +770,11 @@ def do_talk(cur: Cursor, player: Player, view: RoomView, a: Talk) -> list[str]:
 
 def do_give(cur: Cursor, player: Player, view: RoomView, a: Give) -> list[str]:
     item = _inv_item(cur, view, player, a.item)
+    if a.target not in view.refs:
+        # 给同房间的玩家：target 是名字。睡着、倒下的也能收（东西放进他背包）
+        other, _ = _room_player(cur, player, a.target, lock=True)
+        _move_item(cur, item, player_id=other.id)          # 装备着的会自动卸下
+        return [f"{player.name}把{_label(item)}交给了{other.name}"]
     npc = _room_npc(cur, view, player, a.target)
     _move_item(cur, item, npc_id=npc.id)
     return [f"{player.name}把{_label(item)}交给了{npc.name}"]
