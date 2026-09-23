@@ -197,9 +197,10 @@ def delete_player(conn: Connection, player_id: UUID) -> None:
 
 
 def _refresh_room(cur: Cursor, room_id: str) -> None:
-    """刷新：NPC 复活、门自动锁回、物品重新出现。
+    """刷新：NPC 复活、门自动锁回、物品重新出现、看店的 NPC 扶起倒下的人。
     不用后台任务，有人在这个房间（发命令或页面轮询）时顺手检查，没人的房间不用管"""
     _respawn_npcs(cur, room_id)
+    _keeper_revive(cur, room_id)
     # 负面状态到点自动解除
     for table in ("players", "npcs"):
         cur.execute(
@@ -247,6 +248,29 @@ def _refresh_room(cur: Cursor, room_id: str) -> None:
             if cur.fetchone():
                 cur.execute(f"insert into item_instances (template_id, {col}) values (%s, %s)",
                             (sp["template_id"], val))
+
+
+def _keeper_revive(cur: Cursor, room_id: str) -> list[str]:
+    """看店的 NPC（配了 eject_to、不敌对、醒着）把自己店里倒下的人扶起来，回满血。
+    房间里的人会看到一条动态；返回 facts 给当回合用"""
+    cur.execute(
+        """select t.name from npcs n join npc_templates t on t.id = n.template_id
+           where n.room_id = %s and n.alive and n.status is null and not t.hostile and t.props ? 'eject_to'
+           order by t.name limit 1""",
+        (room_id,),
+    )
+    keeper = cur.fetchone()
+    if keeper is None:
+        return []
+    cur.execute("""update players set hp = max_hp, updated_at = now() where room_id = %s and hp <= 0
+                   returning id, name, max_hp""", (room_id,))
+    facts = []
+    for r in cur.fetchall():
+        fact = f"{keeper['name']}把倒在地上的{r['name']}扶了起来，照料了一番，{r["name"]}缓过劲来，HP {r['max_hp']}/{r['max_hp']}"
+        # 不记在谁名下，房间里所有人（包括被扶起来的本人）都看得到
+        cur.execute("insert into events (room_id, kind, observer) values (%s, 'keeper_revive', %s)", (room_id, fact + "。"))
+        facts.append(fact)
+    return facts
 
 
 def _respawn_npcs(cur: Cursor, room_id: str, found: bool = False) -> list[str]:
@@ -1328,7 +1352,9 @@ def _keeper_eject(conn: Connection, view: RoomView) -> list[str]:
     if not fresh or not (kicked := npc_eject(conn, view.player.id, fresh[0])):
         return []
     add_npc_log(conn, view.player.id, fresh[0], f"{view.player.name}在你这里对别的客人动手，你把他轰了出去")
-    return [f"{keeper.name}看见{view.player.name}动手打人"] + kicked.facts
+    with conn.transaction():
+        revived = _keeper_revive(_cursor(conn), view.room.id)      # 被打倒的客人当场扶起来
+    return [f"{keeper.name}看见{view.player.name}动手打人"] + kicked.facts + revived
 
 
 # ============ NPC 给予（对话步骤调用） ============
