@@ -331,7 +331,16 @@ function logTurn(d, secs) {
     d.notes.map(n => `<div class="sys">${esc(n)}</div>`).join(""));
 }
 
+// 这一回合判定完之前输入框锁住，不能接着发
+function lockInput(locked) {
+  $("#cmd").disabled = locked;
+  $("#cmd-form button").disabled = locked;
+  $("#cmd").placeholder = locked ? "等待判定结果…" : "比如：拿面包；北；对麦琪 来杯黑啤";
+  if (!locked) $("#cmd").focus();
+}
+
 async function send(text) {
+  lockInput(true);
   log(`<div class="you">&gt; ${esc(text)}</div>`);
   // 等待提示：显示当前步骤和已等待秒数，结果出来后移除
   const pending = document.createElement("div");
@@ -353,13 +362,14 @@ async function send(text) {
   } finally {
     clearInterval(timer);
     pending.remove();
+    lockInput(false);
   }
 }
 
 $("#cmd-form").onsubmit = e => {
   e.preventDefault();
   const text = $("#cmd").value.trim();
-  if (!text) return;
+  if (!text || $("#cmd").disabled) return;
   $("#cmd").value = "";
   if (cmdHistory.at(-1) !== text) cmdHistory.push(text);
   if (cmdHistory.length > HISTORY_MAX) cmdHistory.shift();

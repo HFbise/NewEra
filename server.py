@@ -14,6 +14,7 @@ import hmac
 import json
 import os
 import secrets
+import threading
 from typing import Optional
 from uuid import UUID, uuid4
 
@@ -236,11 +237,21 @@ def _load_npc(conn, npc_id: UUID):
     return npcs[0] if npcs else None
 
 
+_busy: set[UUID] = set()               # 正在判定的玩家
+_busy_lock = threading.Lock()
+
+
 @app.post("/api/command")
 def command(req: CommandReq):
     """流式返回（NDJSON，一行一个事件），让前端能显示进行到哪一步：
     {"stage": "parse" | "execute" | "narrate"} ... 最后 {"done": {...}} 或 {"error": "..."}"""
     def events():
+        # 同一个玩家上一句还没判定完就不接新的（前端会锁输入框，这里防开两个标签页连发）
+        with _busy_lock:
+            if req.player_id in _busy:
+                yield {"error": "上一句还在判定，等结果出来再发"}
+                return
+            _busy.add(req.player_id)
         try:
             for ev in run_turn(req):
                 if "done" in ev:
@@ -249,6 +260,9 @@ def command(req: CommandReq):
         except Exception as e:           # 流已经开始了，没法再改状态码，报成一个事件
             yield {"error": f"服务器出错：{e.__class__.__name__}"}
             raise
+        finally:
+            with _busy_lock:
+                _busy.discard(req.player_id)
 
     return StreamingResponse((json.dumps(e, ensure_ascii=False, default=str) + "\n" for e in events()),
                              media_type="application/x-ndjson")
