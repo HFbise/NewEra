@@ -24,7 +24,7 @@ from schema import (
     ActionResult, Attack, Drop, Equip, Feature, Follow, Freeform, Give, Invite, ItemInstance, Join, LeaveParty, Look,
     Move, Npc, OtherPlayer, Player, PlayerAction, Reject, Revive, Room, RoomExit, RoomView, Say, Status, Struggle,
     Stunt, Take, Talk, Unfollow, Unequip, Use, dir_name, Dispenser, SLOT_CHOICES, SLOT_NAMES, Dodge, Hide, Maneuver, Search, Stealth,
-    AcceptDuel, Challenge, DeclineDuel, Duel, Flee,
+    AcceptDuel, Challenge, DeclineDuel, Duel, Flee, SKILL_NAMES,
 )
 
 
@@ -38,13 +38,10 @@ DOWNED_ALLOWED = {"look", "say"}        # 倒下的人只能看和说话（喊�
 
 # 创意攻击（stunt）和负面状态。AI 只选档位和难度，数字都在这里
 TIERS = ["none", "light", "heavy", "lethal"]
-TIER_DAMAGE = {"none": 0, "light": 3, "heavy": 8, "lethal": 15}
+# 伤害在区间里随机：自由动作是控场用的，新手拿它打伤害不如老老实实砍一刀
+TIER_RANGE = {"none": (0, 0), "light": (1, 3), "heavy": (3, 6), "lethal": (5, 9)}
+TIER_MIN_DIFFICULTY = {"none": 1, "light": 2, "heavy": 3, "lethal": 4}   # 伤得越重难度越高（对无力反抗的补刀不算）
 IMPROVISED_MAX_TIER = "light"           # 没在 world.yaml 声明成可利用地形的东西最多轻伤
-DIFFICULTIES = ["easy", "normal", "hard"]
-SUCCESS_CHANCE = {"easy": 0.9, "normal": 0.65, "hard": 0.35}      # 躲藏这类不伤人的动作
-STUNT_CHANCE = {"easy": 0.7, "normal": 0.4, "hard": 0.1}          # 自由动作攻击；重伤以上一律按困难
-ESCAPE_CHANCE = {"easy": 0.7, "normal": 0.45, "hard": 0.2}
-ESCAPE_BONUS = 0.15                     # 每挣脱失败一次，下次成功率加这么多
 STATUS_MAX = "3 minutes"                # 负面状态最长多久自动解除，防止 AI 一直判醒不过来把人卡死
 # 被束缚时做不了的动作；失去战斗能力时只能挣脱（醒来）
 RESTRAINED_BLOCKED = {"move", "attack", "stunt", "take", "drop", "equip", "unequip", "use", "give", "revive", "hide", "search",
@@ -54,6 +51,7 @@ RESTRAINED_BLOCKED = {"move", "attack", "stunt", "take", "drop", "equip", "unequ
 # 被发现了，在场能动的敌人每条消息都打他一下（一句话拆成几个动作也只算一次，太长会被打断，见 INTERRUPT_AFTER）
 DETECT_START = 0.05
 DETECT_STEP = 0.10
+DETECT_STEP_MIN = 0.02                  # 隐匿每级让每次上涨少 1%，最少涨这么多
 
 # 同一区域里的距离（格）：刚发现时隔 START_DISTANCE 格。近战（普通攻击，玩家打敌人、敌人打玩家）按距离算命中，
 # 够不着的格数命中率是 0。扔东西、推石头这类 stunt 不看距离。
@@ -63,14 +61,23 @@ MAX_DISTANCE = 4
 MAX_STEP = 2
 ENEMY_STEP = 1
 MELEE_HIT = {0: 0.95, 1: 0.45, 2: 0.05}
-DODGE_BONUS = 0.15                      # 闪避动作让敌人这一下的命中率降低这么多
+DODGE_BONUS = 0.15                      # 闪避动作让敌人这一下的命中率降低这么多，察觉每级再多降 DODGE_PER_LEVEL
+DODGE_PER_LEVEL = 0.05
 DISTANCE_WORDS = {0: "贴身", 1: "一步之遥", 2: "几步开外"}
 # 一句话拆出很多动作时，做完这么多个敌人就先行动；敌人有动静（发现、逼近、出手）就打断后面的，
 # 免得一条超长的消息一口气打出一串伤害
 INTERRUPT_AFTER = 2
 
-# 徒手一击毙命、直接打晕：敌人没发现你时的偷袭成功率；对方有防备就是 0
-ASSASSINATE_CHANCE = 0.10
+# 徒手一击毙命、直接打晕：只有敌人没发现你时能偷袭，按隐匿判，难度至少这么高；对方有防备就不可能
+ASSASSINATE_DIFFICULTY = 4
+
+# 技能判定：难度减技能等级的差值 → 成功率，差值不超过 0 是 SKILL_SURE，比表里最大的还大就必定失败
+SKILL_SURE = 0.95
+SKILL_GAP_CHANCE = {1: 0.9, 2: 0.6, 3: 0.3}
+# 从 n 级升到 n+1 级要攒 SKILL_STEP * (n+1) 次熟练；只有难度高于当前等级的成功才算熟练
+SKILL_STEP = 3
+FLEE_DIFFICULTY = {0: 3, 1: 2, 2: 1}    # 决斗逃跑（运动）按距离的难度，更远不用判定
+REVIVE_DIFFICULTY = 1                   # 急救倒下的人（医药）
 
 # 搜索找东西（world.yaml 房间 forage）的默认几率和冷却秒数：默认一搜就有、不冷却，房间里可以单独配
 FORAGE_CHANCE = 1.0
@@ -79,8 +86,6 @@ FORAGE_COOLDOWN = 0
 # 决斗（PvP）：申请多久内有效；接受后双方隔几格开打；发起者逃跑按当时的距离掷骰，逃掉了才能离开
 DUEL_WINDOW = "5 minutes"
 DUEL_DISTANCE = 3
-FLEE_CHANCE = {0: 0.4, 1: 0.6, 2: 0.8}  # 更远的是 FLEE_FAR
-FLEE_FAR = 0.95
 DUEL_RULES = ("决斗规则：对方接受后才开打，只有决斗中才会对彼此造成伤害；双方起始相隔 3 格；"
               "任何一方离开这里决斗就结束，但发起者必须先逃跑成功才能离开，被挑战的一方随时可以走开")
 
@@ -109,7 +114,7 @@ def _cursor(conn: Connection) -> Cursor:
 
 def load_player(cur: Cursor, player_id: UUID, lock: bool = False) -> Player:
     cur.execute(
-        "select id, name, room_id, hp, max_hp, attack, defense, flags, party_id, status, following, gold, stealth"
+        "select id, name, room_id, hp, max_hp, attack, defense, flags, party_id, status, following, gold, stealth, skills"
         " from players where id = %s"
         + (" for update" if lock else ""),
         (player_id,),
@@ -456,15 +461,18 @@ def do_decline_duel(cur: Cursor, player: Player, view: RoomView, a: DeclineDuel)
 
 
 def do_flee(cur: Cursor, player: Player, view: RoomView, a: Flee) -> list[str]:
-    """逃跑：决斗的发起者按距离掷骰，逃掉了决斗就结束，可以离开；被挑战的一方不用判定"""
+    """逃跑：决斗的发起者按距离判运动，逃掉了决斗就结束，可以离开；被挑战的一方不用判定"""
     duel = _active_duel(cur, player.id)
     if duel is None:
         raise ActionError(f"{player.name}没有在决斗，用不着逃跑")
     facts = [f"{player.name}尝试：{a.description or '逃跑'}"]
     if duel["target"] == player.id:
         return facts + [f"{player.name}是被挑战的一方，随时可以直接走开，离开这里决斗就结束"]
-    if not _roll(FLEE_CHANCE.get(duel["distance"], FLEE_FAR)):
-        return facts + [f"隔着 {distance_word(duel['distance'])}，{player.name}没能从{duel['opponent']}面前脱身，决斗还在继续"]
+    if diff := FLEE_DIFFICULTY.get(duel["distance"]):
+        ok, rolled = _check(cur, player, view, "athletics", diff)
+        facts += rolled
+        if not ok:
+            return facts + [f"隔着 {distance_word(duel['distance'])}，{player.name}没能从{duel['opponent']}面前脱身，决斗还在继续"]
     cur.execute("delete from duels where challenger = %s", (player.id,))
     return facts + [f"{player.name}从{duel['opponent']}面前脱身了，决斗结束，可以离开了"]
 
@@ -765,17 +773,19 @@ def do_use(cur: Cursor, player: Player, view: RoomView, a: Use) -> list[str]:
     if item.template.type != "consumable":
         raise ActionError(f"{item.name}不能直接使用")
     _consume(cur, item)
-    return [f"{player.name}{_eat_verb(item)}掉了{item.name}"] + _eat_effect(cur, player, item)
+    return [f"{player.name}{_eat_verb(item)}掉了{item.name}"] + _eat_effect(cur, player, item, player)
 
 
 def _eat_verb(item: ItemInstance) -> str:
     return "喝" if item.template.id == "made_drink" else "吃"
 
 
-def _eat_effect(cur: Cursor, eater: Player, item: ItemInstance) -> list[str]:
-    """吃喝下去的效果：有毒的掉血，蒙汗药这类把人放倒，正常的回血（倒下的人吃了回血药也能站起来）"""
+def _eat_effect(cur: Cursor, eater: Player, item: ItemInstance, user: Player) -> list[str]:
+    """吃喝下去的效果：有毒的掉血，蒙汗药这类把人放倒，正常的回血（倒下的人吃了回血药也能站起来）。
+    药草（模板 props.herbal）按用药的人（自己吃是自己，喂别人是喂的人）的自然等级多回血"""
     facts = []
-    hp = max(0, min(eater.max_hp, eater.hp + item.heal - item.harm))
+    heal = item.heal + (skill_level(user.skills.get("nature", 0)) if item.heal and item.template.props.get("herbal") else 0)
+    hp = max(0, min(eater.max_hp, eater.hp + heal - item.harm))
     cur.execute("update players set hp = %s, updated_at = now() where id = %s", (hp, eater.id))
     if item.harm:
         facts.append(f"{item.name}有毒，{eater.name}掉了 {item.harm} 点 HP，当前 HP {hp}/{eater.max_hp}")
@@ -806,7 +816,7 @@ def _feed(cur: Cursor, player: Player, item: ItemInstance, name: str) -> list[st
     if item.harm and not _active_duel(cur, player.id, target.id):
         raise ActionError(f"{item.name}有毒，{player.name}和{target.name}没有在决斗，不能拿它害人")
     _consume(cur, item)
-    return [f"{player.name}喂{target.name}{_eat_verb(item)}了{item.name}"] + _eat_effect(cur, target, item)
+    return [f"{player.name}喂{target.name}{_eat_verb(item)}了{item.name}"] + _eat_effect(cur, target, item, player)
 
 
 def _consume(cur: Cursor, item: ItemInstance) -> None:
@@ -882,6 +892,55 @@ def do_unequip(cur: Cursor, player: Player, view: RoomView, a: Unequip) -> list[
 def _roll(chance: float) -> bool:
     """掷骰，测试时可以换掉"""
     return random.random() < chance
+
+
+# ============ 技能判定 ============
+
+def _skill_total(level: int) -> int:
+    """升到 level 级一共要攒几次熟练：3、9、18、30……"""
+    return SKILL_STEP * level * (level + 1) // 2
+
+
+def skill_level(count: int) -> int:
+    level = 0
+    while count >= _skill_total(level + 1):
+        level += 1
+    return level
+
+
+def skill_progress(count: int) -> tuple[int, int, int]:
+    """(等级, 这一级攒了几次, 升下一级要几次)"""
+    level = skill_level(count)
+    return level, count - _skill_total(level), SKILL_STEP * (level + 1)
+
+
+def skill_chance(level: int, difficulty: int) -> float:
+    gap = difficulty - level
+    return SKILL_SURE if gap <= 0 else SKILL_GAP_CHANCE.get(gap, 0.0)
+
+
+def _check(cur: Cursor, player: Player, view: RoomView, skill: Optional[str], difficulty: int) -> tuple[bool, list[str]]:
+    """按技能掷骰，返回 (成没成, facts)。skill 为空是不靠本事的判定（昏过去醒来），按 0 级算、不涨熟练。
+    成功而且难度高于当前等级才算一次熟练，一条消息里同一个技能最多涨一次"""
+    count = player.skills.get(skill, 0) if skill else 0
+    level = skill_level(count)
+    chance = skill_chance(level, difficulty)
+    ok = _roll(chance)
+    name = SKILL_NAMES[skill] if skill else "判定"
+    facts = [f"（{name} {level} 级对难度 {difficulty}，成功率 {round(chance * 100)}%：{'成功' if ok else '失败'}）"]
+    if ok and skill and difficulty > level and skill not in view.trained:
+        view.trained.append(skill)
+        player.skills[skill] = count + 1
+        cur.execute("update players set skills = skills || jsonb_build_object(%s::text, %s::int) where id = %s",
+                    (skill, count + 1, player.id))
+        new, have, need = skill_progress(count + 1)
+        facts.append(f"{player.name}的{name}升到了 {new} 级" if new > level else f"{name}熟练 +1（{have}/{need}）")
+    return ok, facts
+
+
+def _escape_chance(escape: int, attempts: int) -> float:
+    """挣脱、醒来不靠技能等级的那种（NPC 的、昏过去的）：施加时的难度，每失败一次降一级"""
+    return skill_chance(0, max(1, escape - attempts))
 
 
 def _cap(value: str, cap: str, scale: list[str]) -> str:
@@ -968,7 +1027,7 @@ def _npc_counter(cur: Cursor, player: Player, npc: Npc) -> list[str]:
     """NPC 挨打后反击。身上有负面状态就不还手，按施加时的挣脱难度看这回合能不能恢复"""
     if npc.status:
         st = npc.status
-        if _roll(ESCAPE_CHANCE[st.escape] + ESCAPE_BONUS * st.attempts):
+        if _roll(_escape_chance(st.escape, st.attempts)):
             _set_status(cur, "npcs", npc.id, None)
             return [f"{npc.name}摆脱了“{st.label}”的状态，但这回合来不及还手"]
         st.attempts += 1
@@ -1047,11 +1106,11 @@ def do_dodge(cur: Cursor, player: Player, view: RoomView, a: Dodge) -> list[str]
 
 
 def do_hide(cur: Cursor, player: Player, view: RoomView, a: Hide) -> list[str]:
-    """躲起来：成功了几率不再上涨；已经被发现的，躲成功就甩掉了（难度高一档）"""
+    """躲起来（隐匿）：成功了几率不再上涨；已经被发现的，躲成功就甩掉了（难度高一级）"""
     st = _stealth(player)
-    diff = DIFFICULTIES[min(len(DIFFICULTIES) - 1, DIFFICULTIES.index(a.difficulty) + st.detected)]
-    facts = [f"{player.name}尝试：{a.description or '躲起来'}"]
-    if not _roll(SUCCESS_CHANCE[diff]):
+    ok, rolled = _check(cur, player, view, "stealth", min(10, a.difficulty + st.detected))
+    facts = [f"{player.name}尝试：{a.description or '躲起来'}"] + rolled
+    if not ok:
         return facts + [f"{player.name}没能藏好"]
     st.hidden, st.detected = True, False
     _save_stealth(cur, player, st)
@@ -1123,7 +1182,11 @@ def enemy_turn(conn: Connection, player_id: UUID, actions: list[PlayerAction], r
                 st.detected, st.hidden = True, False
                 facts.append(f"{'、'.join(n.name for n in enemies)}发现了{player.name}")
             elif not st.hidden:
-                st.chance = round(min(1.0, st.chance + DETECT_STEP), 2)
+                # 隐匿越高，被发现的几率涨得越慢
+                step = max(DETECT_STEP_MIN, DETECT_STEP - 0.01 * skill_level(player.skills.get("stealth", 0)))
+                st.chance = round(min(1.0, st.chance + step), 2)
+        # 闪避：察觉越高躲得越好
+        dodge_bonus = DODGE_BONUS + DODGE_PER_LEVEL * skill_level(player.skills.get("perception", 0)) if dodge else 0.0
         if st.detected:
             for npc in enemies:
                 # 挨打那一下刚摆脱状态的，这回合来不及还手
@@ -1135,7 +1198,7 @@ def enemy_turn(conn: Connection, player_id: UUID, actions: list[PlayerAction], r
                     facts.append(f"{npc.name}逼近过来，离{player.name} {distance_word(d)}")
                 if d not in MELEE_HIT:
                     continue
-                facts += _npc_strike(cur, player, npc, "扑上来攻击", max(0.0, MELEE_HIT[d] - (DODGE_BONUS if dodge else 0)))
+                facts += _npc_strike(cur, player, npc, "扑上来攻击", max(0.0, MELEE_HIT[d] - dodge_bonus))
                 if player.hp <= 0:
                     break
         _save_stealth(cur, player, st)
@@ -1200,7 +1263,7 @@ def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]
     if material and _precious(cur, material):
         raise ActionError(f"{material.name}太要紧了，不能拿来这么用")
     tier = _cap(a.tier, cap, TIERS)
-    escape = a.escape if feature or item else "easy"   # 随手的东西弄出来的状态都好挣脱
+    escape = a.escape if feature or item else 1       # 随手的东西弄出来的状态都好挣脱
 
     # 把人推、踹、扔进某个出口：门得开着（同一句里先开门就行）
     exit_ = None
@@ -1219,12 +1282,12 @@ def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]
             raise ActionError(f"{target.name}不肯挪窝，推不走")      # NPC 暂时不能挪房间
     elif exit_:
         target, harmless = _push_target(cur, player, a.target)
-        tier, escape = _lower(tier, TIERS), _lower(escape, DIFFICULTIES)
+        tier, escape = _lower(tier, TIERS), max(1, escape - 1)
         if harmless:                                              # 推队友、拖倒下的人：只挪位置不伤人
             tier, a.status = "none", None
     else:
         target = _pvp_target(cur, player, a.target)
-        tier, escape = _lower(tier, TIERS), _lower(escape, DIFFICULTIES)
+        tier, escape = _lower(tier, TIERS), max(1, escape - 1)
     is_npc = isinstance(target, Npc)
     # 玩家之间没开决斗：整人可以（捆住、迷眼、推出门），但不掉血
     duel = None if is_npc else _active_duel(cur, player.id, target.id)
@@ -1244,10 +1307,10 @@ def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]
     if material and material is not poison and a.status != "restrained":
         _consume(cur, material)
         facts.append(f"{material.name}用掉了")
-    chance = STUNT_CHANCE[a.difficulty]
+    skill, diff, finisher = a.skill, a.difficulty, False
     helpless = (target.status is not None) if is_npc else (target.status is not None or target.hp <= 0)
     # 一击毙命、直接打晕（扭断脖子、一拳打晕）：不借地形、不用药，对方又有防备，这种事不可能成。
-    # 对方已经倒下、被放倒、被捆住就照常补刀；敌人还没发现你是偷袭，给一成把握，得手就照判的档位来
+    # 对方已经倒下、被放倒、被捆住就照常补刀；敌人还没发现你是偷袭，按隐匿判，难度至少 4，得手就照判的档位来
     # 泼出去、撒出去的东西（酒迷眼、石灰）跟下毒一样是实打实的手段，不算徒手一招制敌
     if not feature and not poison and not material and (a.tier == "lethal" or a.status == "incapacitated"):
         # 扭脖子、打晕都是贴身的事，敌人离着几格就得先摸过去
@@ -1258,26 +1321,32 @@ def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]
         if helpless:
             # 对无力反抗的补刀不受徒手最多轻伤的限制（打玩家照旧降一档）
             tier = a.tier if is_npc else _lower(a.tier, TIERS)
+            finisher = is_npc
         else:
             sneak = is_npc and target.template.hostile and not _stealth(player).detected
             if not sneak:
                 facts.append(f"{target.name}有防备，想这样一下制住{'它' if is_npc else '他'}根本不可能")
                 return facts + (_npc_counter(cur, player, target) if is_npc else [])
-            chance = ASSASSINATE_CHANCE
-            facts.append(f"{target.name}还没发现{player.name}，出其不意，只有一成把握")
-            tier = a.tier                           # 偷袭得手不受徒手最多轻伤的限制
+            skill, diff = "stealth", max(diff, ASSASSINATE_DIFFICULTY)
+            facts.append(f"{target.name}还没发现{player.name}，可以出其不意地偷袭")
+            tier, finisher = a.tier, True           # 偷袭得手不受徒手最多轻伤的限制
     if harmless_prank:
         tier = "none"
-    # 重伤以上（推大石头、铁叉捅）一律按困难；对无力反抗的补刀不算
-    if not poison and TIERS.index(tier) >= TIERS.index("heavy") and not helpless:
-        chance = min(chance, STUNT_CHANCE["hard"])
-    if not _roll(chance):
+    # 伤得越重难度下限越高（轻伤 2、重伤 3、致命 4）；对无力反抗的补刀、下毒不算
+    if not poison and not helpless:
+        diff = max(diff, TIER_MIN_DIFFICULTY[tier])
+    ok, rolled = _check(cur, player, view, skill, diff)
+    facts += rolled
+    if not ok:
         facts.append("没有成功")
         return facts + (_npc_counter(cur, player, target) if is_npc else [])
 
     facts.append("成功了")
     down = stunned = False
-    if dmg := (0 if harmless_prank else poison.harm if poison else TIER_DAMAGE[tier]):
+    # 偷袭、补刀判成致命就是一击毙命（扭断脖子），其余按档位的区间随机
+    lethal_blow = finisher and tier == "lethal"
+    if dmg := (0 if harmless_prank else poison.harm if poison else target.hp if lethal_blow
+               else random.randint(*TIER_RANGE[tier])):
         hurt, down = _hurt_npc(cur, player, target, dmg) if is_npc else _hurt_player(cur, target, dmg)
         facts += [f"{target.name}受到 {dmg} 点伤害"] + hurt + ([] if is_npc else _duel_over(cur, down))
     if poison and poison.knockout and not down:
@@ -1328,13 +1397,15 @@ def _push_target(cur: Cursor, player: Player, name: str) -> tuple[Player, bool]:
 
 
 def do_struggle(cur: Cursor, player: Player, view: RoomView, a: Struggle) -> list[str]:
-    """挣脱、醒来。AI 看玩家怎么做判这次的难度，但不能比施加时判的容易超过一档；每失败一次下次更容易"""
+    """挣脱（体操）、醒来（不靠技能）。AI 看玩家怎么做判这次的难度，但不能比施加时判的容易超过一级；
+    每失败一次难度降一级"""
     st = player.status
     if st is None:
         raise ActionError(f"{player.name}没有被困住，用不着挣脱")
-    diff = DIFFICULTIES[max(DIFFICULTIES.index(a.difficulty), DIFFICULTIES.index(st.escape) - 1)]
-    facts = [f"{player.name}尝试：{a.description or '挣脱'}"]
-    if _roll(ESCAPE_CHANCE[diff] + ESCAPE_BONUS * st.attempts):
+    diff = max(1, max(a.difficulty, st.escape - 1) - st.attempts)
+    ok, rolled = _check(cur, player, view, "acrobatics" if st.kind == "restrained" else None, diff)
+    facts = [f"{player.name}尝试：{a.description or '挣脱'}"] + rolled
+    if ok:
         _set_status(cur, "players", player.id, None)
         return facts + [f"{player.name}摆脱了“{st.label}”的状态"]
     st.attempts += 1
@@ -1349,8 +1420,13 @@ def do_revive(cur: Cursor, player: Player, view: RoomView, a: Revive) -> list[st
         raise ActionError(f"{target.name}没有倒下也没被困住，用不着急救")
     facts = []
     if target.hp <= 0:
-        cur.execute("update players set hp = 1, updated_at = now() where id = %s", (target.id,))
-        facts += [f"{player.name}给{target.name}做了急救，{target.name}醒了过来", f"{target.name} HP 1/{target.max_hp}"]
+        # 医药判定：救醒回 1 点血，医药每级多回 1 点
+        ok, facts = _check(cur, player, view, "medicine", REVIVE_DIFFICULTY)
+        if not ok:
+            return facts + [f"{player.name}给{target.name}做了急救，但没能救醒"]
+        hp = min(target.max_hp, 1 + skill_level(player.skills.get("medicine", 0)))
+        cur.execute("update players set hp = %s, updated_at = now() where id = %s", (hp, target.id))
+        facts += [f"{player.name}给{target.name}做了急救，{target.name}醒了过来", f"{target.name} HP {hp}/{target.max_hp}"]
     if target.status:
         _set_status(cur, "players", target.id, None)
         facts.append(f"{player.name}帮{target.name}摆脱了“{target.status.label}”的状态")
@@ -1462,8 +1538,12 @@ def do_say(cur: Cursor, player: Player, view: RoomView, a: Say) -> list[str]:
 
 
 def do_freeform(cur: Cursor, player: Player, view: RoomView, a: Freeform) -> list[str]:
-    # 不改任何状态，叙事 AI 自由发挥
-    return [f"{player.name}尝试：{a.description}"]
+    # 不改任何状态，叙事 AI 自由发挥；需要本事的（辨认草药、翻墙、查线索）判一次技能，叙事照成败写
+    facts = [f"{player.name}尝试：{a.description}"]
+    if a.skill and a.difficulty:
+        ok, rolled = _check(cur, player, view, a.skill, a.difficulty)
+        facts += rolled + ["成功了" if ok else "没有成功"]
+    return facts
 
 
 def do_reject(cur: Cursor, player: Player, view: RoomView, a: Reject) -> list[str]:

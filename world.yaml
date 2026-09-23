@@ -125,6 +125,7 @@ items:
     description: 散发清香的绿色草叶，据说能止血。
     type: consumable
     heal: 6
+    props: {herbal: true}          # 药草：用药的人自然等级越高回血越多
   rusty_sword:
     name: 生锈的短剑
     description: 剑刃布满锈迹，但还算锋利。

@@ -11,7 +11,7 @@ import json
 import os
 import re
 import time
-from typing import Literal, Optional
+from typing import Literal, Optional, Union
 from uuid import UUID
 
 import anthropic
@@ -23,7 +23,9 @@ from zai import ZhipuAiClient
 from zai.core import ZaiError
 
 import engine
-from schema import DIR_NAMES, SLOT_NAMES, ActionResult, ItemInstance, Npc, PlayerAction, RoomView, dir_name
+from schema import DIR_NAMES, SKILL_NAMES, SLOT_NAMES, ActionResult, ItemInstance, Npc, PlayerAction, RoomView, dir_name
+
+SKILL_KEYS = {v: k for k, v in SKILL_NAMES.items()}
 
 DEFAULT_MODELS = {"zhipu": "glm-4.7-flash", "gemini": "gemini-3.1-flash-lite", "claude": "claude-haiku-4-5"}
 KEY_VARS = {"zhipu": "ZAI_API_KEY", "gemini": "GEMINI_API_KEY", "claude": "ANTHROPIC_API_KEY"}
@@ -193,11 +195,12 @@ class AIAction(BaseModel):
     reason: Optional[str] = None
     # stunt / struggle 的裁判字段，取值见 schema.Stunt
     feature: Optional[str] = None
-    difficulty: Optional[str] = None
+    difficulty: Optional[Union[int, str]] = None
+    skill: Optional[str] = None
     tier: Optional[str] = None
     status: Optional[str] = None
     status_label: Optional[str] = None
-    escape: Optional[str] = None
+    escape: Optional[Union[int, str]] = None
     push: Optional[str] = None
     slot: Optional[str] = None
     knockback: Optional[int] = None
@@ -244,18 +247,23 @@ INTENT_SYSTEM = """你是文字 MUD 游戏的指令解析器。读玩家的输�
   - consume：item 这一下会被用掉就填 true（泼出去的油和酒、点着的布条、撒出去的石灰、扔出去砸碎的瓶子）；拿刀比划、用铲子撬、挥武器这种用完还在手上的填 false。捆人用的东西引擎会自动用掉，不用管
   - knockback：把 NPC 踹开、撞退、推远时填推出去几格（1 或 2），不推开不填
   - push：把对方推、踹、扔、拖进某个出口时填那个出口的英文名，做成了对方就到了那边（只能对其他玩家，队友、倒下的人也行）。门锁着的话同一句里要先 use 钥匙开门，比如"开门把他踹进去"是 use 加 stunt（push 填 down）
-  - difficulty：做成的难度（引擎按 easy 70% / normal 40% / hard 10% 掷骰），看动作合不合理、对方有没有防备：有地形或道具帮忙、对方没防备、动作简单可行是 easy；普通的临场发挥是 normal；花哨离谱、要一连串巧合、对方正盯着你的是 hard。重伤以上引擎一律按 hard 算
+  - skill 和 difficulty：必填，用哪个技能、难度几级，规则见下面"技能判定"。伤得越重引擎会自动抬高难度下限，你只管照实判
   - tier：做成时的伤害 none（不伤人，比如捆绑）/ light（轻伤）/ heavy（重伤）/ lethal（足以致命），照实判断，规则会按地形限幅
   - status：做成时对方陷入的负面状态，不会就不填。incapacitated = 失去战斗能力（砸晕、打昏、呛晕）；restrained = 被束缚（捆住、压住、缠住）
   - 捆人、缠住（restrained）必须用"可利用地形"或背包里真有、而且合理能拿来捆人的东西，填上 feature 或 item。你来判断合不合理：绳子、腰带、布条、锁链、藤蔓、皮带、布衣能捆；面包、硬币、钥匙、酒杯这种捆不了。玩家点名了用什么（"用绳子捆"），就得是背包或地形里的那样东西（"井上的麻绳"也算绳子），没有就 reject，不要拿别的东西顶替；只说"把他捆起来"没点名，就从背包、地形里挑一样合理的。环境描述里的东西拿不走，地形和背包里都没有能捆人的东西，就不能捆：输出 reject，reason 写没有能用来捆人的东西
-  - status_label：状态的说法，简短，如"被石头砸晕了""被绳子捆住了"。泼酒、撒沙、撒石灰迷眼是短暂的 incapacitated，写"被迷了眼"这类，不要写成晕了，escape 填 easy；escape：这个状态挣脱或醒来的难度 easy / normal / hard
-- struggle: description（第三人称简述怎么挣脱的），difficulty（这次挣脱或醒来的难度 easy / normal / hard，看方法合不合理、状态有多严重）。玩家自己带着负面状态时想摆脱它就是 struggle；失去战斗能力时说什么做什么都算 struggle（挣扎着醒来）
+  - status_label：状态的说法，简短，如"被石头砸晕了""被绳子捆住了"。泼酒、撒沙、撒石灰迷眼是短暂的 incapacitated，写"被迷了眼"这类，不要写成晕了，escape 填 1；escape：这个状态挣脱或醒来的难度 1 到 10（松松绕两圈是 1，捆得结结实实是 3，铁链锁住是 5）
+- struggle: description（第三人称简述怎么挣脱的），difficulty（这次挣脱或醒来的难度 1 到 10，看方法合不合理、状态有多严重）。玩家自己带着负面状态时想摆脱它就是 struggle；失去战斗能力时说什么做什么都算 struggle（挣扎着醒来）
 - maneuver: target（NPC 的 ref；决斗中靠近、退开对手就填对手的名字，距离看"决斗"那行），steps（整数格数，靠近填正数、退开填负数，每次最多 2 格：后退一步、挪开一点是 -1，拔腿往后跑、拉开距离是 -2，凑近一步是 1，冲上去是 2），description。同一个区域里走近、退开某个 NPC 都是 maneuver，不是 move；"冲上去砍它"是 maneuver 加 attack，"悄悄摸到它背后扭断脖子""绕过去把它打晕"是 maneuver（steps 填把距离缩到 0 的格数，最多 2）加 stunt。看"敌人"那行的距离，扭脖子、打晕、掐、割喉这类贴身动作，玩家说了摸过去、凑近、绕到背后，就先 maneuver
 - dodge: description。闪避、闪躲、侧身躲开、护住要害准备挨打：这一下敌人更难打中
-- hide: description（第三人称简述怎么躲的），difficulty（easy / normal / hard，看环境里有没有好藏身的地方、敌人离得多近）。躲起来、藏到树后、趴进草丛、屏住呼吸不让敌人发现
+- hide: description（第三人称简述怎么躲的），difficulty（隐匿的难度 1 到 10，看环境里有没有好藏身的地方、敌人离得多近）。躲起来、藏到树后、趴进草丛、屏住呼吸不让敌人发现
 - search: description（第三人称简述怎么找的）。四处搜寻、找找有没有哥布林、在草丛里翻找、采药、找药草、找找有没有能用的东西都是 search：能不能找到由引擎判定。地上已经列出来的东西直接 take，只是看看环境细节是 look
-- freeform: description（第三人称简述玩家想做的事）
+- freeform: description（第三人称简述玩家想做的事）。需要本事、可能失败的（翻墙、辨认草药有没有毒、查看有没有机关、找线索、安抚动物）再填 skill 和 difficulty，引擎掷骰；唱歌、做表情、随便摸摸看看这种不用填
 - reject: reason（第三人称简述为什么做不到）
+
+技能判定（stunt、hide、struggle、有难度的 freeform 用）：
+- skill 从这十个里挑最贴切的：acrobatics 体操（挣脱、捆绑、绊倒、滑铲、要求精细的动作）；animal 驯兽（安抚、驱使动物）；athletics 运动（跳远、攀爬、游泳、撞人、推重物、幅度极大的动作）；sleight 巧手（扒窃、开锁、解除或布置陷阱、手上的小把戏）；stealth 隐匿（潜行、躲藏、偷袭、暗杀）；investigation 调查（找线索、看出破绽、打听）；nature 自然（辨认动植物、有没有毒）；perception 察觉（发现异常、听动静）；survival 生存（觅食、追踪、辨方向）；medicine 医药（治伤、处理病痛）
+- difficulty 是 1 到 10 的整数，只看动作本身多难，不要考虑玩家练到几级（引擎会比）。参照：1 很容易（绊倒一个没防备的人、躲进浓密的草丛）；2 普通（用绳子捆住挣扎的人、翻过齐腰的栅栏）；3 有难度（翻过一人高的墙、把正盯着你的人绊倒）；4 很难（从清醒的人腰间偷东西、在光秃秃的地方躲过盯着你的敌人）；5 到 6 是老手才做得到的；7 以上是传说级的
+- 旧写法 easy / normal / hard 分别等于 1 / 2 / 3
 
 什么时候用 freeform：唱歌、跳舞、闻味道、做表情、自言自语，或者对"描述""环境"里写到的东西动手动眼（看细节、摸、敲、闻、坐、靠、摆弄），但不指望从中得到物品。环境里的东西不能拿走，想拿走就是 reject
 什么时候用 reject：
@@ -359,9 +367,17 @@ def parse_intent(db, view: RoomView, text: str) -> tuple[Optional[list], dict]:
         for a in out.actions:
             d = {k: v for k, v in a.model_dump(exclude_none=True).items() if v != ""}
             # 裁判字段偶尔写成中文，换回 key；认不出的交给 Pydantic 校验失败重来
+            # 技能偶尔写成中文，换成 key；认不出的去掉，stunt 按默认的运动算
+            if "skill" in d:
+                d["skill"] = SKILL_KEYS.get(d["skill"].strip(), d["skill"].strip().lower())
+                if d["skill"] not in SKILL_NAMES:
+                    d.pop("skill")
             for field in ("difficulty", "escape", "tier", "status"):
-                if field in d:
+                if isinstance(d.get(field), str):
                     d[field] = JUDGE_WORDS.get(d[field].strip().lower(), d[field].strip().lower())
+            # 捆人、缠住一律是体操（模型常常不填技能，落到默认的运动上）
+            if d["action"] == "stunt" and d.get("status") == "restrained":
+                d["skill"] = "acrobatics"
             # 帮倒下、被困的玩家（包扎、松绑）模型常归成 freeform，或者错当成自己 struggle，按急救处理
             helpable = [p.name for p in view.others if p.downed or p.status]
             said = d.get("description", "") + text
@@ -484,6 +500,7 @@ NARRATE_SYSTEM = """你是文字 MUD 游戏的叙事者，用中文第二人称�
 - 其他玩家是真人在操作，只能写 facts 和 <recent> 里他们确实做过的事；不要替他们编动作、神态、手势、台词（"某某朝你点头示意跟上"这种都不行），最多写他们站在哪里
 - 名字后面标"（睡着了）"的玩家正在原地睡觉，不会回应也不会行动；标"倒下了""倒在地上"的玩家 HP 归零躺在地上，等人急救
 - 玩家之间动手（攻击其他玩家）照 facts 写伤害和结果，被打的人这回合不会还手，除非 facts 里写了
+- 括号里的技能判定（"（体操 1 级对难度 2，成功率 95%：成功）"）是给你看的，叙事里不要照抄等级、难度、百分比，照成败写就行；"熟练 +1""升到了 N 级"可以用一句话自然带过（手法熟练了些）
 - "尝试：……"后面跟"成功了"就写成功的过程和效果，跟"没有成功"就写失手（石头滚偏、没捆住），伤害和状态只照 facts 写
 - 名字后面带着状态（被砸晕、被捆住）的角色照状态描写；<player> 里写了玩家自己的状态也要照着写
 - 简洁：2 到 5 句，不要列表，不要标题，不要复述数值以外的系统信息。HP 等数字可以自然地带出来

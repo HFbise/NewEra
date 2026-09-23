@@ -8,7 +8,7 @@ AI MUD 核心数据结构
 from typing import Annotated, Any, Literal, Optional, Union
 from uuid import UUID
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, BeforeValidator, Field, model_validator
 
 
 # ============ 玩家动作（意图解析输出） ============
@@ -129,7 +129,20 @@ class Flee(BaseModel):
 
 # 借环境、创意动作打人：AI 当裁判给出难度、伤害档位、负面状态，规则引擎掷骰、限幅后执行。
 # AI 只能选档位，具体数字在 engine.TIER_DAMAGE，说得再夸张也超不过上限
-Difficulty = Literal["easy", "normal", "hard"]
+def _difficulty(v: Any) -> Any:
+    """难度是 1 到 10 的整数；老数据、老写法的 easy / normal / hard 换成 1 / 2 / 3"""
+    if isinstance(v, str):
+        v = {"easy": 1, "normal": 2, "hard": 3}.get(v.strip().lower(), v.strip())
+    return v
+
+
+Difficulty = Annotated[int, BeforeValidator(_difficulty), Field(ge=1, le=10)]
+
+# 生活技能：AI 判一个动作用哪个技能、难度几级，引擎拿难度和技能等级比掷骰（engine.skill_chance）
+SKILL_NAMES = {"acrobatics": "体操", "animal": "驯兽", "athletics": "运动", "sleight": "巧手", "stealth": "隐匿",
+               "investigation": "调查", "nature": "自然", "perception": "察觉", "survival": "生存", "medicine": "医药"}
+Skill = Literal["acrobatics", "animal", "athletics", "sleight", "stealth", "investigation", "nature", "perception",
+                "survival", "medicine"]
 Tier = Literal["none", "light", "heavy", "lethal"]      # 无伤 / 轻伤 / 重伤 / 致命
 StatusKind = Literal["incapacitated", "restrained"]     # 失去战斗能力（昏迷、砸晕） / 束缚（捆住、压住）
 
@@ -143,18 +156,19 @@ class Stunt(BaseModel):
     consume: bool = False               # item 会被用掉（泼出去的油、点着的布条）；拿来捆人的东西成功了一定用掉
     push: Optional[str] = None          # 把对方推、踹、扔进哪个出口（英文方向），成功就挪到那个房间；只能推玩家
     knockback: int = 0                  # 把 NPC 踹开、撞退几格（0 到 2），成功就拉开距离
-    difficulty: Difficulty = "normal"   # 做成的难度，引擎按它掷骰
+    skill: Skill = "athletics"          # 用哪个技能判定（捆人、绊人是体操，推石头、撞人是运动，偷袭是隐匿）
+    difficulty: Difficulty = 2          # 1 到 10，引擎拿它跟技能等级比；伤害档位越高引擎会抬高下限
     tier: Tier = "none"                 # 做成时的伤害档位
     status: Optional[StatusKind] = None # 做成时给对方加的负面状态
     status_label: Optional[str] = None  # 状态的说法，如"被石头砸晕了""被绳子捆住了"
-    escape: Difficulty = "normal"       # 这个状态挣脱或醒来的难度
+    escape: Difficulty = 2              # 这个状态挣脱或醒来的难度
 
 
 class Struggle(BaseModel):
     """挣脱束缚、从昏迷里醒来。难度由 AI 看玩家怎么做来判，引擎掷骰"""
     action: Literal["struggle"]
     description: str = ""
-    difficulty: Difficulty = "normal"
+    difficulty: Difficulty = 2
 
 
 class Maneuver(BaseModel):
@@ -175,7 +189,7 @@ class Hide(BaseModel):
     """躲起来，不让敌人发现。难度由 AI 看藏身的地方判，引擎掷骰"""
     action: Literal["hide"]
     description: str = ""               # 第三人称简述怎么躲的
-    difficulty: Difficulty = "normal"
+    difficulty: Difficulty = 2          # 隐匿的难度
 
 
 class Search(BaseModel):
@@ -185,9 +199,12 @@ class Search(BaseModel):
 
 
 class Freeform(BaseModel):
-    """规则引擎覆盖不到的动作，交给 AI 自由叙事，但不能改关键状态"""
+    """规则引擎覆盖不到的动作，交给 AI 自由叙事，但不能改关键状态。
+    需要本事的（辨认草药有没有毒、翻墙、查线索）AI 填技能和难度，引擎掷骰，叙事照成败写"""
     action: Literal["freeform"]
     description: str
+    skill: Optional[Skill] = None
+    difficulty: Optional[Difficulty] = None
 
 
 class Say(BaseModel):
@@ -374,7 +391,7 @@ class Status(BaseModel):
     """负面状态，存在 players.status / npcs.status（jsonb），一次只有一个"""
     kind: StatusKind
     label: str                          # AI 起的说法，叙事和界面显示用
-    escape: Difficulty = "normal"       # 施加时 AI 判的挣脱难度
+    escape: Difficulty = 2              # 施加时 AI 判的挣脱难度
     attempts: int = 0                   # 挣脱失败过几次，每次失败下次更容易
     since: Optional[str] = None         # 施加时间（ISO），超过 engine.STATUS_MAX 自动解除
 
@@ -405,6 +422,7 @@ class Player(BaseModel):
     status: Optional[Status] = None     # 负面状态
     following: Optional[UUID] = None    # 正在跟着谁
     stealth: Optional["Stealth"] = None # 在有敌人的地方有没有被发现
+    skills: dict[str, int] = {}         # 每个技能攒了几次熟练（有风险的成功），等级由它算出来
 
 
 class Stealth(BaseModel):
@@ -454,6 +472,7 @@ class RoomView(BaseModel):
     duel: Optional[Duel] = None         # 正在进行的决斗
     challenges: list[str] = []          # 向自己申请决斗、还没回应的玩家名字
     challenging: Optional[str] = None   # 自己申请了、对方还没接受的
+    trained: list[str] = []             # 这条消息里已经涨过熟练的技能，一条消息每个技能最多涨一次
     refs: dict[str, UUID] = {}
 
     def assign_refs(self) -> None:

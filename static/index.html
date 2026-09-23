@@ -165,6 +165,8 @@ function render(s) {
     ${s.invites.length ? `<h2>组队邀请</h2><ul>${s.invites.map(n => `<li data-name="${esc(n)}">${esc(n)}<span class="tag">邀请你组队</span></li>`).join("")}</ul>` : ""}
     ${s.items.length ? `<h2>地上</h2><ul>${s.items.map(i => li(i.ref, i.name,
       i.quantity > 1 ? `<span class="tag">x${i.quantity}</span>` : "", i.fill)).join("")}</ul>` : ""}
+    <h2>技能</h2>
+    <ul class="equip">${s.skills.map(k => `<li class="empty" title="这一级攒了 ${k.have}/${k.need} 次熟练">${k.name} ${k.level}<span class="tag">${k.have}/${k.need}</span></li>`).join("")}</ul>
     <h2>装备</h2>
     <ul class="equip">${s.equipment.map(e => e.item
       ? `<li data-name="卸下${esc(e.item.name)}"><span class="tag slot">${e.label}</span>${esc(e.item.name)}</li>`

@@ -69,6 +69,7 @@ create table players (
   status      jsonb,                             -- 负面状态 {kind, label, escape, attempts, since}，见 schema.Status
   following   uuid references players(id) on delete set null,  -- 正在跟着的玩家，对方移动时一起走
   stealth     jsonb,                             -- 在有敌人的区域里有没有被发现（schema.Stealth），换区域作废
+  skills      jsonb not null default '{}',       -- 生活技能的熟练次数 {技能: 次数}，等级由次数算（engine.skill_level）
   gold        int not null default 0 check (gold >= 0),       -- 金币：打怪掉，跟 NPC 买东西花
   created_at  timestamptz not null default now(),
   updated_at  timestamptz not null default now()

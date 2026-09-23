@@ -28,7 +28,7 @@ import ai
 import commands
 import engine
 from db import pool
-from schema import SLOT_NAMES, ActionResult, RoomView, dir_name
+from schema import SKILL_NAMES, SLOT_NAMES, ActionResult, RoomView, dir_name
 
 app = FastAPI()
 app.include_router(admin.router)
@@ -132,6 +132,9 @@ def state(conn, view: RoomView, after: Optional[int] = None) -> dict:
         "following": view.following,
         "stealth": ai.stealth_text(view),
         "duel": view.duel and view.duel.model_dump(),
+        # 技能：等级、这一级攒了几次、升下一级要几次
+        "skills": [dict(zip(("level", "have", "need"), engine.skill_progress(view.player.skills.get(k, 0))), name=n)
+                   for k, n in SKILL_NAMES.items()],
         "challenges": view.challenges,
         "challenging": view.challenging,
         "duel_rules": engine.DUEL_RULES,
