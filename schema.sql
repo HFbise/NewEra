@@ -212,6 +212,17 @@ create table spawns (
   check (num_nonnulls(room_id, npc_template) = 1)
 );
 
+-- NPC 对每个玩家的完整来往记录（他说了什么、NPC 回了什么、结果如何），全部留着；
+-- player_npc_relations.memory 是 AI 写的长期总结，给 AI 看的是总结 + 最近几条
+create table npc_memory_log (
+  id           bigserial primary key,
+  player_id    uuid not null references players(id) on delete cascade,
+  npc_template text not null references npc_templates(id) on delete cascade,
+  entry        text not null,
+  created_at   timestamptz not null default now()
+);
+create index on npc_memory_log (player_id, npc_template, id);
+
 -- 取用处拿过的记录：配了 once 的（地窖桌上的护符）拿过一次就再也不能拿，丢了也一样
 create table dispenser_log (
   player_id   uuid not null references players(id) on delete cascade,
@@ -268,6 +279,7 @@ alter table quests         enable row level security;
 alter table player_quests  enable row level security;
 alter table forage_log     enable row level security;
 alter table dispenser_log  enable row level security;
+alter table npc_memory_log enable row level security;
 
 create policy "read static" on rooms          for select to authenticated using (true);
 create policy "read static" on room_exits     for select to authenticated using (true);

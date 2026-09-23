@@ -1488,13 +1488,13 @@ def base_price(stats: dict) -> int:
     return max(1, sum(stats.get(k, 0) * v for k, v in PRICE_PER.items()) + (KNOCKOUT_PRICE if stats.get("knockout") else 0))
 
 
-# 白送的门槛：值钱的东西（超过一杯小酒的价）只白送给交情够的人，不然模型第一次见面就把剑白送了
-GIFT_FREE_MAX = 3
-GIFT_AFFINITY = 30
+# 白送的门槛：NPC 现做的东西、AI 决定给不给的东西（地图），好感够高才白送，不然模型第一次见面就把剑白送了。
+# 任务奖励、按条件给的（打完哥布林给钥匙）不受这个限制
+GIFT_AFFINITY = 50
 
 
-def can_gift(spec: dict, affinity: int) -> bool:
-    return base_price(spec) <= GIFT_FREE_MAX or affinity >= GIFT_AFFINITY
+def can_gift(affinity: int) -> bool:
+    return affinity >= GIFT_AFFINITY
 
 
 def effect_text(stats: dict) -> str:
@@ -1633,11 +1633,13 @@ def get_affinity(conn: Connection, player_id: UUID, npc_id: UUID) -> int:
         return _affinity(cur, load_player(cur, player_id), npcs[0]) if npcs else 0
 
 
-NPC_MEMORY_LIMIT = 150                  # NPC 对每个玩家的记忆摘要上限（字）
+NPC_MEMORY_LIMIT = 300                  # NPC 对每个玩家的长期记忆总结上限（字）
+NPC_LOG_RECENT = 10                     # 给 AI 看的最近几条完整来往记录（全部记录都留在 npc_memory_log）
+NPC_LOG_LIMIT = 400                     # 每条记录上限（字）
 
 
 def get_npc_memory(conn: Connection, player_id: UUID, npc_id: UUID) -> str:
-    """NPC 对这个玩家记得什么（按 NPC 模板记，NPC 复活、重新 seed 都不丢）"""
+    """NPC 对这个玩家记得什么：长期记忆总结 + 最近几条完整来往（按 NPC 模板记，NPC 复活、重新 seed 都不丢）"""
     with conn.transaction():
         cur = _cursor(conn)
         cur.execute(
@@ -1646,7 +1648,24 @@ def get_npc_memory(conn: Connection, player_id: UUID, npc_id: UUID) -> str:
             (player_id, npc_id),
         )
         row = cur.fetchone()
-        return row["memory"] if row else ""
+        cur.execute(
+            """select * from (
+                 select l.id, l.entry, l.created_at from npc_memory_log l join npcs n on n.template_id = l.npc_template
+                 where l.player_id = %s and n.id = %s order by l.id desc limit %s) t order by id""",
+            (player_id, npc_id, NPC_LOG_RECENT),
+        )
+        log = [f"[{r['created_at']:%m-%d %H:%M}] {r['entry']}" for r in cur.fetchall()]
+    summary = row["memory"] if row and row["memory"] else ""
+    if not log:
+        return summary
+    return (summary or "（还没有总结）") + "\n最近的来往（从早到晚，原话记录）：\n" + "\n".join(log)
+
+
+def add_npc_log(conn: Connection, player_id: UUID, npc: Npc, entry: str) -> None:
+    """记一条完整的来往：他说了什么、NPC 回了什么、结果如何。全部留着，不删"""
+    with conn.transaction():
+        conn.execute("insert into npc_memory_log (player_id, npc_template, entry) values (%s, %s, %s)",
+                     (player_id, npc.template.id, entry.strip()[:NPC_LOG_LIMIT]))
 
 
 def set_npc_memory(conn: Connection, player_id: UUID, npc_id: UUID, memory: str) -> None:

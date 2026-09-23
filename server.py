@@ -321,6 +321,8 @@ def run_turn(req: CommandReq):
             quest_results, quests = engine.quest_turn(conn, pid, npc_id)
             results += quest_results
         now_view = engine.load_view(conn, pid)       # 执行后的房间：移动之后要写新地方
+        if npc and npc.room_id != now_view.room.id:
+            npc = None                               # 说完话就走了（"先赊账，然后往西走"）：不再跟他交易、他也不回话
         if use_ai:
             # 叙事要用的东西一次查好，后面调 AI 时不占连接
             if npc:
@@ -351,7 +353,11 @@ def run_turn(req: CommandReq):
                 add(u)
                 if trade:
                     with pool.connection() as conn:
-                        if trade.give_id:
+                        rule = next((npc.template.props.get("gives", {}).get(i.template.id)
+                                     for i in giveable if i.id == trade.give_id), None)
+                        if trade.give_id and trade.price == 0 and rule == "ai" and not engine.can_gift(affinity):
+                            pass                    # 看心情给的东西，交情不够不白送（任务奖励、按条件给的不走这里）
+                        elif trade.give_id:
                             results.append(engine.npc_give(conn, pid, npc_id, trade.give_id, trade.price))
                         elif trade.made:
                             # 现做：AI 给的效果按上限裁剪；白送当场给，要收钱就先按效果开价。
@@ -360,7 +366,7 @@ def run_turn(req: CommandReq):
                             try:
                                 spec = engine.made_spec(npc, m.kind, m.name, m.description, m.heal, m.harm,
                                                         m.damage, m.knockout)
-                                free = trade.price == 0 and engine.can_gift(spec, affinity)
+                                free = trade.price == 0 and engine.can_gift(affinity)
                                 results.append(engine.npc_gift(conn, pid, npc, spec) if free
                                                else engine.quote_made(conn, pid, npc, spec))
                             except engine.ActionError as e:
@@ -408,12 +414,15 @@ def run_turn(req: CommandReq):
                 if key:
                     engine.set_offer(conn, pid, npc, key, out.npc_offer.price)
             if talk and out.npc_reply:
-                # 交东西的回合开头是"把锈剑递给了莉娜"这条 fact，说话的回合是说的原话
-                said = (f"{name}对{npc.name}说：“{talk.message}”" if talk.action == "talk"
-                        else next(f for a, r in zip(actions, results) if a is talk for f in r.facts[:1]))
                 observer = "\n".join(
-                    [said, f"{npc.name}：“{out.npc_reply}”"]
+                    [_said(name, npc, talk, actions, results), f"{npc.name}：“{out.npc_reply}”"]
                     + [f for r in results if r.success and r.action in NPC_OUTCOMES for f in r.facts])
+        # NPC 的完整记忆：每次打交道记一条（说了什么、回了什么、给了什么、开了什么价），全部留着
+        if npc and talk:
+            engine.add_npc_log(conn, pid, npc, "；".join(
+                [_said(name, npc, talk, actions, results)]
+                + ([f"你回：“{out.npc_reply}”"] if out and out.npc_reply else [])
+                + [f for r in results if r.success and r.action in NPC_OUTCOMES | {"affinity"} for f in r.facts]))
         with conn.transaction():
             conn.execute(
                 """insert into events (room_id, player_id, kind, facts, narrative, observer, input, meta)
@@ -456,6 +465,13 @@ def _recent_events(conn, room_id: str, player_id: UUID, limit: int = 6) -> list[
     ).fetchall()
     conn.commit()
     return [r[0] for r in reversed(rows)]
+
+
+def _said(name: str, npc, talk, actions: list, results: list[ActionResult]) -> str:
+    """这回合玩家对 NPC 做了什么：动作的第一条 fact（"A对莉娜说：……"已经去掉了解析带进来的"对莉娜"，
+    交东西的是"把锈剑递给了莉娜"）"""
+    return next((f for a, r in zip(actions, results) if a is talk for f in r.facts[:1]),
+                f"{name}对{npc.name}说：“{getattr(talk, 'message', '')}”")
 
 
 def _observer_fallback(name: str, actions: list, results: list[ActionResult]) -> Optional[str]:
