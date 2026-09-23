@@ -616,6 +616,9 @@ NPC 对话（只有 facts 里有对话时才用）：
 # 以前台词跟叙事、好感、报价挤在一次调用里，模型要守几十条规则，演戏就敷衍了。
 # 拆出来：这一步只看人设、好感、记忆、这回合发生了什么、玩家说了什么，写 NPC 说出口的话；叙事再把它原样包进场景
 
+CLAW_RE = re.compile(r"交出来|还给我|还我|还回来|拿回来|吐出来|收回")
+
+
 class NpcLine(BaseModel):
     line: str                            # NPC 这回合说出口的话，只要台词，不要动作旁白
 
@@ -632,7 +635,9 @@ ROLEPLAY_SYSTEM = """你在文字 MUD 游戏里扮演一个 NPC，只写她这�
 - <this_turn> 是这回合系统里真实发生的：成交就照成交说价钱，开价就把价说出来，委托办完就认可他、说把奖励交给他。没发生的交付不要说成已经给了
 - 只能提 <npc> 里有的货和做过的东西；不提回几点血、伤害多少这类游戏数值，价钱可以说
 - "刚才你……""上次你……"只能说记忆、<recent>、<this_turn> 里真有的事；他问刚才说了什么，就照记忆回答
-- 不提 <npc> 里没有的人物、店铺、委托"""
+- 不提 <npc> 里没有的人物、店铺、委托
+- 办完的委托、给过的奖励已经结了，东西归他：别找他要回来、别拿收回来威胁他，也别老翻这件旧事，除非他自己提
+- 不向他讨要他身上的东西（买卖报价除外），生气、要他赔罪也用嘴说，不索要物品"""
 
 
 def npc_line(db, view: RoomView, text: str, results: list[ActionResult], npc: Npc, affinity: int, memory: str,
@@ -653,6 +658,7 @@ def npc_line(db, view: RoomView, text: str, results: list[ActionResult], npc: Np
     trading = any(r.success and r.action in TRADE_ACTIONS for r in results)
     rewards = [m[1] for r in results if r.success and r.action == "quest"
                for f in r.facts if (m := re.search(r"把(.+?)交给了", f))]
+    owned = {i.name for i in view.inventory}
 
     def check(out: NpcLine, last: bool) -> NpcLine:
         out.line = out.line.strip().strip("“”\"'").strip()
@@ -664,6 +670,8 @@ def npc_line(db, view: RoomView, text: str, results: list[ActionResult], npc: Np
             out.line = _tidy(STAT_RE.sub("", out.line))
         if not last and rewards and re.search(r"已经在你|不是已经|早就有|已经拿到", out.line):
             raise ValueError("奖励是这回合刚给的，不能说他早就有了")
+        if not last and not trading and CLAW_RE.search(out.line) and any(n in out.line for n in owned):
+            raise ValueError("向他讨要他身上的东西（比如办委托拿到的奖励），这些已经归他了，别要回来")
         return out
 
     out, _ = _call(db, view.player.id, "roleplay", ROLEPLAY_SYSTEM, user, NpcLine, 512, check, prefer=roleplay_model())
