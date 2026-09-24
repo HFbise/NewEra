@@ -4837,6 +4837,7 @@ def adjust_affinity(conn: Connection, player_id: UUID, npc_id: UUID, delta: int)
 # NPC 的 props.return_gifts：好感到了某一档（20/40/60/80/100），玩家来聊天时送一次；领过的档记在 player_npc_relations.gifts，
 # 好感掉下去再涨回来也不会重领。送的是东西（item），或者解锁一样本事（perk：九折、买地图残片、看出诅咒、怪物图鉴……）
 GIFT_BACK_FACT = "回礼"                  # 台词那边认这两个字，演送礼
+REFILL_FACT = "说「续杯」就能灌满"       # 送的东西用完能找她续：台词那边认这句，台词里一定要说到
 
 
 def return_gift(conn: Connection, player_id: UUID, npc: Npc) -> list[ActionResult]:
@@ -4864,6 +4865,10 @@ def return_gift(conn: Connection, player_id: UUID, npc: Npc) -> list[ActionResul
                 facts += _exclusive_blade(cur, player, npc)
             else:
                 cur.execute("insert into item_instances (template_id, player_id) values (%s, %s)", (item, player_id))
+                cur.execute("select props ? 'empty' as refill from item_templates where id = %s", (item,))
+                if cur.fetchone()["refill"]:
+                    # 用完会空的（麦琪的酒壶、迷药）：告诉他能回来续
+                    facts.append(f"用完了会空，回来找{npc.name}{REFILL_FACT}")
         return [ActionResult(action="gift_back", success=True, facts=facts)]
 
 

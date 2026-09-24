@@ -731,6 +731,7 @@ def npc_line(db, view: RoomView, text: str, results: list[ActionResult], npc: Np
              buys: Optional[list[tuple[str, int]]] = None, bonds: Optional[list[str]] = None) -> Optional[str]:
     """NPC 这回合说的话，单独演。失败返回 None（叙事自己写台词）。bonds 是可以提的别人的交情（engine.npc_bonds）"""
     services = npc_services(npc, sells)
+    refill_gift = any(engine.REFILL_FACT in f for r in results if r.success and r.action == "gift_back" for f in r.facts)
     # 第一次见面、或者问起能干什么：把能办的事介绍一遍。这回合在交委托、做买卖就先办正事，不插介绍
     busy = any(r.success and (r.action in TRADE_ACTIONS or r.action in ("quest", "give", "sell", "upgrade", "rest", "gift_back"))
                for r in results)
@@ -773,13 +774,17 @@ def npc_line(db, view: RoomView, text: str, results: list[ActionResult], npc: Np
             + (f"\n\n<important>{FEELINGS[feeling]}</important>" if (feeling := engine.affinity_word(affinity)) in FEELINGS else "")
             + "".join(f"\n\n<important>你们的交情到了这一步，你这回合要送他一份回礼：{f.split('：', 1)[1].split('（回礼', 1)[0]}。"
                       "按你的性格和对他的感情把它交给他（嘴硬的也可以别扭地塞过去），说说这是什么、有什么用，别说成是交易</important>"
-                      for r in results if r.success and r.action == "gift_back" for f in r.facts[:1]))
+                      for r in results if r.success and r.action == "gift_back" for f in r.facts[:1])
+            + ("\n\n<important>这件东西用完会空：一定要在台词里告诉他，用完了回来找你续杯（让他说「续杯」），按你的性格说</important>"
+               if refill_gift else ""))
     trading = any(r.success and r.action in TRADE_ACTIONS for r in results)
     rewards = [m[1] for r in results if r.success and r.action == "quest"
                for f in r.facts if (m := re.search(r"把(.+?)交给了", f))]
     owned = {i.name for i in view.inventory}
 
     def check(out: NpcLine, last: bool) -> NpcLine:
+        if not last and refill_gift and not re.search(r"续|灌满|再来|回来找我|添满|满上", out.line):
+            raise ValueError("你送的东西用完会空，台词里要告诉他用完了回来找你续杯")
         out.line = out.line.strip().strip("“”\"'").strip()
         out.line = re.sub(r"'([^'\n]+)'", r"「\1」", out.line)      # 台词里的英文单引号：叙事会换引号，先统一掉
         if not last and (words := _stray_english(out.line, text + this_turn + _names(view))):

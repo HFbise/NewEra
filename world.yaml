@@ -354,12 +354,12 @@ items:
     type: misc
     props: {price: 80, refill_by: innkeeper, refill_to: maggie_drug}
   maggie_flask:
-    name: 回头见❤
+    name: 疗伤酒壶「回头见❤」
     description: 一只磨得发亮的旧锡酒壶，壶身上刻着一个歪歪扭扭的"杂"字，壶底贴着一张小纸条："回头见❤"。喝下去伤一下子就好了，偶尔还会觉得浑身是劲。每次下地牢前找她灌满。
     type: misc
     props: {price: 200, flask: true, empty: maggie_flask_empty}      # 回满血；20% 两层内攻击 +25%（engine._flask）
   maggie_flask_empty:
-    name: 回头见❤（空）
+    name: 疗伤酒壶「回头见❤」（空）
     description: 麦琪给的那只旧锡酒壶，已经喝空了，壶底的纸条还在："回头见❤"。回酒馆找她说"续杯"。
     type: misc
     props: {price: 200, refill_by: innkeeper, refill_to: maggie_flask}
@@ -474,10 +474,10 @@ npcs:
       #   item 是送的东西，perk 是解锁的本事（引擎认），text 是给台词看的说明。40、60 还没定
       return_gifts:
         20: {item: maggie_trap_map, text: 一张她亲手标了陷阱的破地图（带在身上，地牢路上的陷阱更容易看出来）}
-        40: {item: maggie_antidote, text: 一只装着解毒草泡的烈酒的皮酒壶（喝了解毒，喝完回来找她续杯）}
-        60: {item: maggie_drug, text: 一小瓶她的特制迷药（泼向敌人能让它醉倒，用完回来找她续上）}
+        40: {item: maggie_antidote, text: 一只装着解毒草泡的烈酒的皮酒壶（喝了解毒）}
+        60: {item: maggie_drug, text: 一小瓶她的特制迷药（泼向敌人能让它醉倒）}
         80: {item: maggie_crossbow, text: 她吧台下那把上了弦的轻弩（单手就能端平，远近一样准，射完要重新上弦）}
-        100: {item: maggie_flask, text: 一只壶底贴着"回头见❤"的旧锡酒壶（喝了回满血，偶尔浑身是劲；每次下地牢前找她灌满）}
+        100: {item: maggie_flask, text: 一只壶底贴着"回头见❤"的疗伤酒壶（喝一口回满血，偶尔浑身是劲）}
       # 吧台上的货，价钱由 AI 按建议价浮动
       sells: [dwarf_stout, elf_mead, dragon_breath, sober_potion]
       eject_to: south
