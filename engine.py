@@ -21,6 +21,7 @@ from psycopg import errors as pg_errors
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
+import dungeon
 from commands import REST_TALK_RE
 from schema import (
     ActionResult, Attack, Drop, Equip, Feature, Follow, Freeform, Give, Invite, ItemInstance, Join, LeaveParty, Look,
@@ -294,11 +295,11 @@ REVIVE_HOOK: Optional[Callable[[str, str, UUID, str, dict, str], None]] = None
 
 
 def _keeper_revive(cur: Cursor, room_id: str) -> list[str]:
-    """看店的 NPC（配了 eject_to、不敌对、醒着）把自己店里倒下的人扶起来，回满血。
+    """看店的 NPC（配了 revive_lines、不敌对、醒着）把自己店里倒下的人扶起来，回满血。
     房间里的人会看到一条动态；返回 facts 给当回合用"""
     cur.execute(
         """select t.id, t.name, t.props->'revive_lines' as lines from npcs n join npc_templates t on t.id = n.template_id
-           where n.room_id = %s and n.alive and n.status is null and not t.hostile and t.props ? 'eject_to'
+           where n.room_id = %s and n.alive and n.status is null and not t.hostile and t.props ? 'revive_lines'
            order by t.name limit 1""",
         (room_id,),
     )
@@ -657,13 +658,19 @@ def do_move(cur: Cursor, player: Player, view: RoomView, a: Move) -> list[str]:
         cur.execute("update room_exits set locked = false, unlocked_at = now() where room_id = %s and direction = %s",
                     (player.room_id, a.direction))
         facts.append(f"{player.name}用{keys[0].name}打开了往{dir_name(a.direction)}的门")
+    # 地窖的漆黑入口、地牢楼梯间往下：去哪一层由地牢决定（第一次到的那层当场生成）
+    to, arrived = ex["to_room"], []
+    if to == dungeon.GATE:
+        to, arrived = dungeon.through_gate(cur, player, player.room_id)
+    dungeon.touch(cur, player.room_id)
     # 进门前没人在的区域先把该回来的敌人刷出来（走进去才碰上），进门时还没被发现
-    _respawn_npcs(cur, ex["to_room"])
+    _respawn_npcs(cur, to)
     # 自己走就不再跟着别人
     cur.execute("update players set room_id = %s, following = null, stealth = %s, updated_at = now() where id = %s",
-                (ex["to_room"], Jsonb(Stealth(room=ex["to_room"], chance=DETECT_START).model_dump()), player.id))
-    room = load_room(cur, ex["to_room"])
+                (to, Jsonb(Stealth(room=to, chance=DETECT_START).model_dump()), player.id))
+    room = load_room(cur, to)
     facts.append(f"{player.name}往{dir_name(a.direction)}走，来到了{room.name}")
+    facts += arrived
     # 同房间跟着他的人一起走：睡着、倒下、带着负面状态的跟不上
     cur.execute(
         f"""update players set room_id = %s, updated_at = now()
@@ -671,11 +678,14 @@ def do_move(cur: Cursor, player: Player, view: RoomView, a: Move) -> list[str]:
               and last_active_at > now() - interval '{ONLINE_WINDOW}'
               and id not in (select challenger from duels where accepted)
             returning name""",
-        (ex["to_room"], player.id, player.room_id),
+        (to, player.id, player.room_id),
     )
     names = [r["name"] for r in cur.fetchall()]
     if names:
         facts.append(f"{'、'.join(names)}跟着{player.name}一起来到了{room.name}")
+        if arrived:
+            cur.execute("update players set deepest_floor = greatest(deepest_floor, %s) where name = any(%s)",
+                        (dungeon.parse_room(to)[1], names))
     return facts
 
 
@@ -733,7 +743,15 @@ def do_look(cur: Cursor, player: Player, view: RoomView, a: Look) -> list[str]:
 
     # 看同房间的玩家：HP、倒下、负面状态、手里拿着什么（背包里别的东西看不到）
     if a.target not in view.refs:
-        other, awake = _room_player(cur, player, a.target)
+        try:
+            other, awake = _room_player(cur, player, a.target)
+        except ActionError:
+            # 不是人：环境里写着的东西（石碑、壁画、井）照环境细节看，地窖石碑把排行榜念出来
+            room = view.room
+            seen = a.target.strip("的")
+            if not seen or seen not in room.description + room.details:
+                raise
+            return [f"{player.name}仔细看了看{seen}"]
         worn = _worn(cur, other)
         facts = [f"{other.name}：HP {other.hp}/{other.max_hp}"
                  + ("，倒在地上" if other.hp <= 0 else "") + ("" if awake else "，睡着了")]
@@ -753,7 +771,7 @@ def do_look(cur: Cursor, player: Player, view: RoomView, a: Look) -> list[str]:
     npcs = load_npcs(cur, "n.id = %s and n.room_id = %s and n.alive", (uid, player.room_id))
     if npcs:
         n = npcs[0]
-        facts = [f"{n.name}：{n.template.description}"]
+        facts = [f"{n.name}：{n.template.description}"] + _stele(cur, n)
         if n.combatable:
             facts.append(f"{n.name} HP {n.hp}/{n.template.max_hp}")
         if n.status:
@@ -806,6 +824,10 @@ def do_take(cur: Cursor, player: Player, view: RoomView, a: Take) -> list[str]:
         raise ActionError(f"这里没有{item.name}")
     if not item.template.takeable:
         raise ActionError(f"{item.name}拿不起来")
+    if coins := item.props.get("gold"):
+        cur.execute("delete from item_instances where id = %s", (item.id,))
+        cur.execute("update players set gold = gold + %s where id = %s", (coins, player.id))
+        return [f"{player.name}捡起{item.name}，倒出了 {coins} 枚金币"]
     _move_item(cur, item, player_id=player.id)
     return [f"{player.name}从地上捡起了{_label(item)}"]
 
@@ -834,10 +856,28 @@ def do_use(cur: Cursor, player: Player, view: RoomView, a: Use) -> list[str]:
                     (player.room_id, a.target))
         return [f"{player.name}用{item.name}打开了往{dir_name(a.target)}的门"]
 
+    if _prop(item, "recall"):
+        return _recall(cur, player, item)
     if item.template.type != "consumable":
         raise ActionError(f"{item.name}不能直接使用")
     _consume(cur, item)
     return [f"{player.name}{_eat_verb(item)}掉了{item.name}"] + _eat_effect(cur, player, item, player)
+
+
+RECALL_TO = "square"                    # 回城水晶把人传回这里
+
+
+def _recall(cur: Cursor, player: Player, item: ItemInstance) -> list[str]:
+    """在地牢里捏碎回城水晶：传回村口广场。被怪缠着也能走，这就是它值钱的地方"""
+    if not dungeon.is_dungeon(player.room_id):
+        raise ActionError(f"{item.name}只有在远古地牢里才有用")
+    if _active_duel(cur, player.id):
+        raise ActionError(f"{player.name}正在决斗，走不了")
+    _consume(cur, item)
+    dungeon.touch(cur, player.room_id)
+    cur.execute("update players set room_id = %s, following = null, stealth = null, updated_at = now() where id = %s",
+                (RECALL_TO, player.id))
+    return [f"{player.name}捏碎了{item.name}，一阵淡蓝色的光裹住全身，再睁眼已经回到了{load_room(cur, RECALL_TO).name}"]
 
 
 def _eat_verb(item: ItemInstance) -> str:
@@ -1726,7 +1766,7 @@ def do_talk(cur: Cursor, player: Player, view: RoomView, a: Talk) -> list[str]:
     # 外面多包的一层引号（玩家自己打了引号）也去掉
     message = re.sub(rf"^(对|跟|和|向){re.escape(npc.name)}(说|讲|问)?[\s，,：:]*", "", a.message).strip() or a.message
     message = message.strip("\"“”'‘’「」").strip() or message
-    facts = [f"{player.name}对{npc.name}说：“{message}”"]
+    facts = [f"{player.name}对{npc.name}说：“{message}”"] + _stele(cur, npc)
     offers = _offers(cur, player.id, npc)
     # 刚说要白给她钱、她问了"真要给我？"，这句回"是""给你"就给
     if (tip := offers.get("tip")) and TIP_CONFIRM_RE.search(message) and not re.search(r"不|算了|别", message[:4]):
@@ -1795,6 +1835,11 @@ def _tip(cur: Cursor, player: Player, npc: Npc, amount: int, pending: Optional[d
                 (player.id, npc.template.id))
     return ([f"{player.name}把 {amount} 金币塞给了{npc.name}，{npc.name}收下了（白给的心意，不是买东西，她不用拿东西给他）"]
             + _pay(cur, player, amount, npc))
+
+
+def _stele(cur: Cursor, npc: Npc) -> list[str]:
+    """地窖石碑（world.yaml props.leaderboard）：看它、跟它说话，碑面上都会显出到过地牢最深处的人"""
+    return [dungeon.leaderboard(cur)] if npc.template.props.get("leaderboard") else []
 
 
 def do_give(cur: Cursor, player: Player, view: RoomView, a: Give) -> list[str]:
@@ -1866,7 +1911,7 @@ def do_respawn(cur: Cursor, player: Player, view: RoomView, a: Respawn) -> list[
         raise ActionError(f"{player.name}没有倒下，用不着复活")
     cur.execute(
         """select distinct r.id, r.name from rooms r join npcs n on n.room_id = r.id join npc_templates t on t.id = n.template_id
-           where n.alive and not t.hostile and t.props ? 'eject_to'""")
+           where n.alive and not t.hostile and t.props ? 'revive_lines'""")
     havens = cur.fetchall()
     named = next((r for r in havens if a.target and (a.target in r["name"] or r["name"] in a.target)), None)
     dest = named or next((r for r in havens if r["id"] == RESPAWN_ROOM), None)

@@ -75,6 +75,7 @@ create table players (
   last_drink_at timestamptz,
   downed_by   jsonb,                             -- 上次倒下的原因 {kind: npc|player|poison, by}，看店 NPC 扶人时说俏皮话
   gold        int not null default 0 check (gold >= 0),       -- 金币：打怪掉，跟 NPC 买东西花
+  deepest_floor int not null default 0,          -- 到过远古地牢最深第几层（地窖石碑排行榜）
   created_at  timestamptz not null default now(),
   updated_at  timestamptz not null default now()
 );
@@ -292,6 +293,25 @@ create index on ai_calls (created_at desc);
 -- 所有写操作只走服务器（service_role 绕过 RLS），客户端只读
 alter table rooms          enable row level security;
 alter table room_exits     enable row level security;
+-- 远古地牢：每支队伍（没组队就是自己）一份，按需一层层生成（dungeon.py），房间 id 以 dg-<run>- 开头
+create table dungeon_runs (
+  id             uuid primary key default gen_random_uuid(),
+  owner          uuid references players(id) on delete set null,
+  party_id       uuid,                           -- 组队进的就是队伍的，队友进来走同一份
+  created_at     timestamptz not null default now(),
+  last_active_at timestamptz not null default now()   -- 没人在里面超过 dungeon.STALE 就整份删掉
+);
+
+create table dungeon_floors (
+  run_id      uuid not null references dungeon_runs(id) on delete cascade,
+  depth       int not null,
+  theme       text not null,                     -- dungeon.yaml 的主题
+  entry_room  text not null,
+  stairs_room text not null,
+  primary key (run_id, depth)
+);
+
+
 alter table item_templates enable row level security;
 alter table npc_templates  enable row level security;
 alter table players        enable row level security;
@@ -311,6 +331,8 @@ alter table dispenser_log  enable row level security;
 alter table npc_memory_log enable row level security;
 alter table duels          enable row level security;
 alter table npc_goods      enable row level security;
+alter table dungeon_runs   enable row level security;
+alter table dungeon_floors enable row level security;
 
 create policy "read static" on rooms          for select to authenticated using (true);
 create policy "read static" on room_exits     for select to authenticated using (true);
