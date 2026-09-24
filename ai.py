@@ -770,6 +770,9 @@ def npc_line(db, view: RoomView, text: str, results: list[ActionResult], npc: Np
             + (f"你对他的感情：{FEELINGS[engine.affinity_word(affinity)]}\n" if engine.affinity_word(affinity) in FEELINGS else "")
             + f"对他的记忆：\n{memory or '第一次见面'}\n"
             f"你卖的货、做过的东西：{goods}\n委托：{tasks}\n"
+            + ("（你这儿只卖上面这些现成的货，不现做东西：客人要清单外的（特调、蜡烛、定做的刀），"
+               "按你的性子回绝或者推荐清单里差不多的，不要答应做、不要给它报价）\n"
+               if not npc.template.props.get("creates") else "")
             + (f"你这儿能办的事：{'；'.join(services)}\n" if services else "")
             + (f"村里别的店卖的：{shops_text(shops)}（客人要的东西你不卖、别家卖，就告诉他去哪家找谁买，不要自己报价、不要拿别的顶替）\n"
                if shops else "")
@@ -1048,7 +1051,7 @@ def decide_give(db, view: RoomView, text: str, npc: Npc, giveable: list[ItemInst
     give_refs = {f"g{n}": item for n, item in enumerate(giveable, 1)}
     sell_refs = {f"s{n}": s for n, s in enumerate(sells or [], 1)}
     # 开过价还没成交的现做东西，也能成交
-    made_offers = {k: v for k, v in offers.items() if k.startswith("made:") and v.get("spec")}
+    made_offers = {k: v for k, v in offers.items() if k.startswith("made:") and v.get("spec") and v["spec"].get("kind") in creatable}
     sell_refs |= {f"m{n}": {"id": k, "name": v["spec"]["name"], "description": v["spec"].get("description", "")}
                   for n, (k, v) in enumerate(made_offers.items(), 1)}
     gives = "、".join(f"{ref} {item.name}（{item.description}）" for ref, item in give_refs.items()) or "无"

@@ -4686,6 +4686,8 @@ def npc_buy_made(conn: Connection, player_id: UUID, npc: Npc, key: str) -> Actio
         if not offer or not offer.get("spec"):
             raise ActionError(f"{npc.name}还没给这件东西报价")
         spec = offer["spec"]
+        if spec.get("kind") not in create_limits(npc):
+            raise ActionError(f"{npc.name}现在不做{spec['name']}了")     # 现做关掉以前开过的价
         with conn.transaction():
             cur = _cursor(conn)
             player = load_player(cur, player_id, lock=True)

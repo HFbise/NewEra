@@ -478,10 +478,11 @@ npcs:
       #   food 食物 / drink 酒水：heal 回血上限；harm 有毒掉血上限；knockout: true 能下蒙汗药把人放倒
       #   weapon 武器：damage 伤害上限
       #   misc 杂物（字条、信物）：没效果
-      creates:
-        food: {heal: 5, harm: 5, knockout: true}
-        drink: {heal: 5, harm: 5, knockout: true}
-        misc: {}
+      # 暂时关掉现做（AI 起名的东西没有正式物品的属性，蜡烛当不了火把，玩家拿到发现没用）。要恢复把下面四行打开
+      # creates:
+      #   food: {heal: 5, harm: 5, knockout: true}
+      #   drink: {heal: 5, harm: 5, knockout: true}
+      #   misc: {}
       # 玩家闹事时能把人轰出去：从这个出口扔出去。不写就不能轰人
       # 能住店：付钱睡一觉回满血、醒酒
       inn: {price: 5}
@@ -515,9 +516,9 @@ npcs:
       # 能卖的东西（物品 id），价钱、卖不卖、打不打折都由 AI 看人设和心情定
       sells: [iron_axe, forge_knife, sickle, wooden_shield, leather_cap, leather_armor,
               whetstone, hand_crossbow, lead_shot, grapple_bolt]     # 铁打的：磨刀石、手弩、铅弹、钩索箭（弓不是铁匠的活，只从地牢出）
-      # 现打武器，伤害最多 4（墙上的铁斧是 5）
-      creates:
-        weapon: {damage: 4}
+      # 现打武器，伤害最多 4（墙上的铁斧是 5）。暂时关掉，同麦琪
+      # creates:
+      #   weapon: {damage: 4}
       # 能帮人升级武器和防具：每级伤害（防具是防御）+1，费用和失败的几率随等级涨，失败退一级不会碎（engine.upgrade_terms）
       upgrades: true
       buys: {likes: [weapon, armor, ore]}
