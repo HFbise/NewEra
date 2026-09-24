@@ -836,7 +836,14 @@ def _defense(cur: Cursor, player: Player) -> int:
                - (corrode.value if corrode else 0))
 
 
-OFFHAND_SHARE = 0.25                    # 双持时副手（左手）武器只加这么多伤害，向下取整；只拿一把的不管在哪只手都算主手
+OFFHAND_SHARE = 0.5                     # 双持时副手（左手）武器只加这么多伤害，向下取整；只拿一把的不管在哪只手都算主手。
+                                        # 以前是 1/4，副手 7 才 +1；一半时两把精钢短剑 7+3 = 10，跟双手战锤一样
+
+
+def gear_totals(attack: int, defense: int, equipped: list[ItemInstance]) -> tuple[int, int]:
+    """算上装备的攻、防（侧栏、后台看的）：双持时副手武器按 OFFHAND_SHARE，所有装备的防御相加"""
+    weapons = [i for i in equipped if i.equipped_slot in ("left_hand", "right_hand") and i.template.type == "weapon"]
+    return attack + weapon_damage(weapons), defense + sum(i.defense for i in equipped if i.equipped_slot)
 
 
 def weapon_damage(weapons: list[ItemInstance]) -> int:
@@ -2288,10 +2295,10 @@ def enemy_turn(conn: Connection, player_id: UUID, actions: list[PlayerAction],
 
 
 # ============ 战斗回合（tick）============
-# 房间里有怪、有人被怪发现了就是在战斗：队员的命令先排队，都出完手或者到了 ROUND_SECONDS 一起结算。
-# 队员按出手先后执行，然后每只怪出手一次，挑谁打看 _pick_target；没出手的人这一轮什么也不做，怪照样会打他。
+# 房间里有怪、有人被怪发现了就是在战斗：队员的命令先排队，全队都出完手才一起结算（没有倒计时，纯等：文字游戏不该催人；
+# 掉线的人（ONLINE_WINDOW 没心跳）不算在"全队"里，不会卡住）。
+# 队员按出手先后执行，然后每只怪出手一次（props.attacks 的出手几次），挑谁打看 _pick_target。
 # 说话、查看不用排队，马上生效
-ROUND_SECONDS = 10
 ROUND_INSTANT = {"say", "look", "reject"}
 
 
@@ -2314,7 +2321,7 @@ def round_members(cur: Cursor, room_id: str) -> list[dict]:
 
 def queue_round(conn: Connection, player_id: UUID, room_id: str, text: str, actions: list[dict], source: str,
                 notes: list[str]) -> None:
-    """战斗中出手：先排队（这一轮里再说一次就换成新的），这一轮还没开始计时就开始"""
+    """战斗中出手：先排队（这一轮里再说一次就换成新的）。deadline 在这里只记这一轮什么时候有人先出的手"""
     with conn.transaction():
         cur = _cursor(conn)
         cur.execute(
@@ -2324,23 +2331,18 @@ def queue_round(conn: Connection, player_id: UUID, room_id: str, text: str, acti
                      created_at = now()""",
             (room_id, player_id, text, Jsonb(actions), source, Jsonb(notes)))
         cur.execute(
-            f"""insert into combat_rounds (room_id, deadline) values (%s, now() + interval '{ROUND_SECONDS} seconds')
-                on conflict (room_id) do update
-                  set deadline = coalesce(combat_rounds.deadline, now() + interval '{ROUND_SECONDS} seconds')
-                  where not combat_rounds.resolving""", (room_id,))
+            """insert into combat_rounds (room_id, deadline) values (%s, now())
+               on conflict (room_id) do update set deadline = coalesce(combat_rounds.deadline, now())
+                 where not combat_rounds.resolving""", (room_id,))
 
 
 def round_due(conn: Connection, room_id: str) -> bool:
-    """这一轮该结算了：到点了，或者该出手的人都出手了"""
+    """这一轮该结算了：有人出了手，而且在场（在线、没倒下）的人都出手了"""
     with conn.transaction():
         cur = _cursor(conn)
-        cur.execute("select deadline <= now() as late from combat_rounds where room_id = %s and not resolving and deadline is not null",
-                    (room_id,))
-        row = cur.fetchone()
-        if row is None:
+        cur.execute("select 1 from combat_rounds where room_id = %s and not resolving and deadline is not null", (room_id,))
+        if cur.fetchone() is None:
             return False
-        if row["late"]:
-            return True
         cur.execute("select player_id from combat_queue where room_id = %s", (room_id,))
         queued = {r["player_id"] for r in cur.fetchall()}
         return all(m["id"] in queued for m in round_members(cur, room_id))
@@ -2361,7 +2363,7 @@ def claim_round(conn: Connection, room_id: str) -> Optional[tuple[int, list[dict
 
 
 def end_round(conn: Connection, room_id: str) -> None:
-    """这一轮的叙事写完了：还在打就进下一轮（结算期间已经有人出手就开始计时），打完了、没人排队就收掉"""
+    """这一轮的叙事写完了：还在打就进下一轮（结算期间已经有人出手了就接着等其他人），打完了、没人排队就收掉"""
     with conn.transaction():
         cur = _cursor(conn)
         fighting = in_combat(cur, room_id)
@@ -2370,19 +2372,17 @@ def end_round(conn: Connection, room_id: str) -> None:
         if not fighting and not queued:
             cur.execute("delete from combat_rounds where room_id = %s", (room_id,))
             return
-        # 打完了但还有人排着队：马上把他们的命令结算掉
-        wait = ROUND_SECONDS if fighting else 0
-        cur.execute(f"""update combat_rounds set resolving = false, round = round + 1,
-                          deadline = case when %s then now() + interval '{wait} seconds' end
-                        where room_id = %s""", (queued, room_id))
+        # 打完了但还有人排着队：也照样结算掉（round_due 看的是在场的人是不是都出手了）
+        cur.execute("""update combat_rounds set resolving = false, round = round + 1,
+                         deadline = case when %s then now() end
+                       where room_id = %s""", (queued, room_id))
 
 
 def round_info(conn: Connection, player: Player) -> Optional[dict]:
-    """给界面看的战斗回合：第几轮、还剩几秒、谁出手了、在等谁"""
+    """给界面看的战斗回合：第几轮、是不是在结算、谁出手了、在等谁"""
     with conn.transaction():
         cur = _cursor(conn)
-        cur.execute("""select round, resolving, extract(epoch from deadline - now())::float as left
-                       from combat_rounds where room_id = %s""", (player.room_id,))
+        cur.execute("select round, resolving from combat_rounds where room_id = %s", (player.room_id,))
         row = cur.fetchone()
         if row is None and not in_combat(cur, player.room_id):
             return None
@@ -2391,7 +2391,6 @@ def round_info(conn: Connection, player: Player) -> Optional[dict]:
         acted = sorted(r["name"] for r in cur.fetchall())
         members = [m["name"] for m in round_members(cur, player.room_id)]
         return {"round": row["round"] if row else 1, "resolving": bool(row and row["resolving"]),
-                "left": max(0.0, row["left"]) if row and row["left"] is not None else None,
                 "acted": acted, "waiting": [n for n in members if n not in acted]}
 
 
@@ -2494,7 +2493,7 @@ def _enemies_stand(cur: Cursor, alive: list[Npc]) -> list[str]:
 
 def do_attack(cur: Cursor, player: Player, view: RoomView, a: Attack) -> list[str]:
     # target 是 ref 就是打 NPC，不是 ref 就当玩家名字（PvP）
-    # 双持：主手全额，副手加四分之一
+    # 双持：主手全额，副手加一半
     weapons = _weapons(cur, player)
     how = _wielding(weapons)
     power = player.attack + weapon_damage(weapons)

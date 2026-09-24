@@ -26,10 +26,10 @@ THEME_GAP = 3                           # 主题不跟上面几层重复
 TREASURE_GUARD = 0.5                    # 宝箱房有怪守着的几率
 # 组队时多刷怪，不再给怪加血（战斗按回合结算，每只怪一轮只出手一次，以前是每个人出手它都还手）：
 # 每只普通怪、精英变成"人数"只，一个房间最多 ROOM_CAP 只，多出来的折成血；钱按只数分、东西只有第一只带，
-# 整个房间的收获跟以前一样。头目、楼梯间守卫只有一只，带（人数 − 1）只小怪（不掉钱不掉东西），自己的血
-# × (1 + BOSS_PARTY_HP × (人数 − 1))
+# 整个房间的收获跟以前一样。头目、楼梯间守卫还是一只，血 × (1 + BOSS_PARTY_HP × (人数 − 1))，
+# 一轮出手"人数"次（跟以前每个人出手它都还手一样）
 ROOM_CAP = 6
-BOSS_PARTY_HP = 0.4
+BOSS_PARTY_HP = 0.8
 
 DIRS = {"north": (-1, 0), "south": (1, 0), "west": (0, -1), "east": (0, 1)}
 BACK = {"north": "south", "south": "north", "west": "east", "east": "west"}
@@ -207,10 +207,8 @@ def _spawn_group(cur: Cursor, room: str, depth: int, kind: str, rank: str, theme
 
 
 def _spawn_boss(cur: Cursor, room: str, depth: int, kind: str, rank: str, theme: str, size: int) -> None:
-    """头目、楼梯间守卫：只有一只，组队时自己多些血，再带（人数 − 1）只这个主题的小怪"""
-    _spawn(cur, room, depth, kind, rank, theme, hp_mult=1 + BOSS_PARTY_HP * (size - 1))
-    for _ in range(size - 1):
-        _spawn(cur, room, depth, random.choice(data()["themes"][theme]["monsters"]), "normal", theme, minion=True, loot=False)
+    """头目、楼梯间守卫：只有一只，组队时多些血、一轮多动几次（不召小怪：组队时场面已经够乱）"""
+    _spawn(cur, room, depth, kind, rank, theme, hp_mult=1 + BOSS_PARTY_HP * (size - 1), attacks=size)
 
 
 def _spawn(cur: Cursor, room: str, depth: int, kind: str, rank: str, theme: str, share: int = 1, hp_mult: float = 1.0,

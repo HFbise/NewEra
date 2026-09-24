@@ -104,7 +104,8 @@ def state(conn, view: RoomView, after: Optional[int] = None) -> dict:
     cur.execute("select id, name from rooms where id = any(%s)", ([e.to_room for e in view.exits],))
     room_names = dict(cur.fetchall())
     light = engine.light_info(engine._cursor(conn), view.player, view.room)      # 地牢里的光亮和它的效果
-    combat = engine.round_info(conn, view.player)                                  # 战斗回合：倒计时、谁出手了
+    combat = engine.round_info(conn, view.player)                                  # 战斗回合：谁出手了、在等谁
+    totals = engine.gear_totals(view.player.attack, view.player.defense, view.inventory)
     conn.commit()
     return {
         "player": view.player.model_dump(mode="json"),
@@ -131,10 +132,9 @@ def state(conn, view: RoomView, after: Optional[int] = None) -> dict:
                                      if i.equipped_slot == slot), None)} for slot, label in SLOT_NAMES.items()],
         "inventory": [{"ref": by_id[i.id], "name": i.name, "quantity": i.quantity, "detail": engine.item_detail(i)}
                       for i in view.inventory if not i.equipped_slot],
-        # 攻防算上装备：双持时副手武器只加四分之一，所有装备的防御相加
-        "attack_total": view.player.attack + engine.weapon_damage(
-            [i for i in view.inventory if i.equipped_slot in ("left_hand", "right_hand") and i.template.type == "weapon"]),
-        "defense_total": view.player.defense + sum(i.defense for i in view.inventory if i.equipped_slot),
+        # 攻防算上装备（engine.gear_totals）
+        "attack_total": totals[0],
+        "defense_total": totals[1],
         "others": others,
         "party": view.party,
         "following": view.following,
@@ -203,7 +203,7 @@ def get_state(player_id: UUID, after: Optional[int] = None):
         except engine.ActionError as e:
             raise HTTPException(404, str(e))
         engine.touch(conn, player_id)      # 页面每 3 秒拉一次，顺便当心跳
-        _kick_round(conn, view.room.id)    # 战斗回合到点了就结算（没有后台定时器，靠轮询推一把）
+        _kick_round(conn, view.room.id)    # 战斗回合：等的人掉线了就不等他，结算（没有后台定时器，靠轮询推一把）
         return state(conn, view, after)
 
 
@@ -603,7 +603,8 @@ _ACTION = TypeAdapter(PlayerAction)
 
 
 def _kick_round(conn, room_id: str) -> None:
-    """这一轮该结算了（到点了、全队都出手了）就在后台结算，别让发命令、轮询的请求等着"""
+    """这一轮该结算了（在场的人都出手了）就在后台结算，别让发命令、轮询的请求等着。
+    轮询也要推：有人掉线（没心跳）后就不等他了，那时没人发命令"""
     if engine.round_due(conn, room_id):
         threading.Thread(target=_resolve_round, args=(room_id,), daemon=True).start()
 

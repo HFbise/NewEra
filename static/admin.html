@@ -51,15 +51,22 @@
   .toolbar { display: flex; gap: 8px; align-items: center; margin-bottom: 12px; flex-wrap: wrap; }
   h2 { font-size: 14px; color: var(--dim); margin: 20px 0 8px; }
   #login { display: flex; justify-content: center; align-items: center; min-height: 80vh; }
+  #login[hidden] { display: none; }        /* 上面的 display: flex 会盖掉 hidden，登录后登录框还占着地方 */
   #login form { display: flex; flex-direction: column; gap: 10px; width: 280px; }
-  #give-dialog { border: 1px solid var(--border); border-radius: 8px; background: var(--panel); color: inherit; padding: 16px 20px; }
-  #give-dialog::backdrop { background: rgba(0, 0, 0, .5); }
-  #give-dialog h3 { margin: 0 0 12px; font-size: 15px; }
-  #give-dialog label { display: block; margin: 8px 0; }
-  #give-dialog input[name=item] { width: 18em; }
-  #give-dialog input[name=count] { width: 5em; }
-  #give-dialog .err { color: #f85149; min-height: 1.2em; font-size: 13px; }
-  #give-dialog .btns { text-align: right; margin-top: 8px; }
+  button.name { font-size: 13px; padding: 3px 10px; }
+  td:first-child { white-space: nowrap; }
+  #player-dialog { border: 1px solid var(--border); border-radius: 8px; background: var(--panel); color: inherit; padding: 16px 20px;
+                   min-width: min(440px, 92vw); }
+  #player-dialog::backdrop { background: rgba(0, 0, 0, .5); }
+  #player-dialog h3 { margin: 0 0 12px; font-size: 15px; }
+  #player-dialog h3 small { display: block; color: var(--dim); font-weight: 400; font-size: 12px; margin-top: 2px; }
+  #player-dialog .ops { margin-bottom: 6px; }
+  #player-dialog label { display: block; margin: 8px 0; }
+  #player-dialog input[name=item] { width: 14em; }
+  #player-dialog input[name=hp], #player-dialog input[name=count] { width: 5em; }
+  #player-dialog input[name=gold] { width: 8em; }
+  #player-dialog .msg { min-height: 1.4em; font-size: 13px; }
+  #player-dialog .btns { display: flex; justify-content: space-between; margin-top: 8px; }
 </style>
 </head>
 <body>
@@ -191,15 +198,17 @@ async function loadWorld() {
 // ============ 玩家 ============
 
 let itemList = null;                // 给道具时的物品列表（名字自动补全），第一次用到时拉一次
+let playerRows = {};                // 最近一次拉到的玩家，弹窗按 id 取
 async function loadPlayers() {
   const ps = await api("/players");
   if (!itemList) {
     try { itemList = await api("/item_templates"); } catch { itemList = []; }
   }
+  playerRows = Object.fromEntries(ps.map(p => [p.id, p]));
   $("#main").innerHTML = `<div class="scroll"><table>
-    <tr><th>玩家</th><th>位置</th><th>HP</th><th>状态</th><th>队伍 / 跟随</th><th>背包</th><th>标记</th><th>最后活跃</th><th>操作</th></tr>
-    ${ps.map(p => `<tr data-id="${p.id}" data-name="${esc(p.name)}">
-      <td><span class="dot${p.awake ? " on" : ""}"></span>${esc(p.name)}</td>
+    <tr><th>玩家</th><th>位置</th><th>HP</th><th>状态</th><th>队伍 / 跟随</th><th>背包</th><th>标记</th><th>最后活跃</th></tr>
+    ${ps.map(p => `<tr>
+      <td><span class="dot${p.awake ? " on" : ""}"></span><button class="act name" data-id="${p.id}">${esc(p.name)}</button></td>
       <td>${esc(p.room_name)}</td>
       <td class="${p.hp <= 0 ? "bad" : ""}">${p.hp}/${p.max_hp}<div class="dim">攻 ${p.attack} 防 ${p.defense} · ${p.gold} 金币</div></td>
       <td>${p.hp <= 0 ? '<span class="bad">倒下</span> ' : ""}${p.status ? `<span class="warn">${esc(p.status.label)}</span>` : ""}</td>
@@ -207,70 +216,79 @@ async function loadPlayers() {
       <td>${p.inventory.map(i => esc(i.name) + (i.quantity > 1 ? ` x${i.quantity}` : "") + (i.equipped_slot ? '<span class="dim">[装]</span>' : "")).join("、")}</td>
       <td class="dim">${Object.keys(p.flags).map(esc).join("、")}</td>
       <td class="dim">${ago(p.last_active_at)}</td>
-      <td>
-        <button class="act" data-op="revive">治好</button>
-        <button class="act" data-op="home">传送回广场</button>
-        <button class="act" data-op="clear_status">清状态</button>
-        <button class="act" data-op="set_hp">改 HP</button>
-        <button class="act" data-op="give">给道具</button>
-        <button class="act" data-op="gold">给金币</button>
-        <button class="act danger" data-op="delete">删除</button>
-      </td>
     </tr>`).join("")}
   </table></div>`;
-  $("#main").onclick = async e => {
-    const b = e.target.closest("button[data-op]");
-    if (!b) return;
-    const tr = b.closest("tr");
-    const op = b.dataset.op, name = tr.dataset.name;
-    const body = { op };
-    if (op === "delete" && !confirm(`确定删除「${name}」？身上的东西会掉在原地，不能恢复。`)) return;
-    if (op === "set_hp") {
-      const v = prompt(`把 ${name} 的 HP 改成多少？`);
-      if (v === null || v.trim() === "" || isNaN(+v)) return;
-      body.hp = Math.round(+v);
-    }
-    if (op === "gold") {
-      const v = prompt(`给 ${name} 多少金币？（负数是拿走）`);
-      if (v === null || v.trim() === "" || isNaN(+v)) return;
-      body.count = Math.round(+v);
-    }
-    if (op === "give") {
-      openGive(tr.dataset.id, name);
-      return;
-    }
-    try { await api(`/players/${tr.dataset.id}`, body); load(); } catch (err) { alert(err.message); }
+  $("#main").onclick = e => {
+    const b = e.target.closest("button.name");
+    if (b) openPlayer(b.dataset.id);
   };
+  // 弹窗开着时跟着刷新顶上那行状态（HP、金币），输入框不动
+  const dlg = document.getElementById("player-dialog");
+  if (dlg?.open && playerRows[dlg.dataset.id]) dlg.querySelector("h3").innerHTML = playerHead(playerRows[dlg.dataset.id]);
 }
 
-// 给道具的弹窗：物品名字自动补全 + 数量。放在 body 上，表格自动刷新不影响它
-function openGive(playerId, name) {
-  let dlg = document.getElementById("give-dialog");
+function playerHead(p) {
+  return `${esc(p.name)}<small>${esc(p.room_name)} · HP ${p.hp}/${p.max_hp} · 攻 ${p.attack} 防 ${p.defense} · ${p.gold} 金币</small>`;
+}
+
+// 点玩家名字弹出的操作窗：治好、传送、清状态、改 HP、给金币、给道具、删除。放在 body 上，表格自动刷新不影响它
+function openPlayer(id) {
+  const p = playerRows[id];
+  if (!p) return;
+  let dlg = document.getElementById("player-dialog");
   if (!dlg) {
     dlg = document.createElement("dialog");
-    dlg.id = "give-dialog";
+    dlg.id = "player-dialog";
     document.body.append(dlg);
   }
-  dlg.innerHTML = `<form method="dialog">
-    <h3>给 ${esc(name)} 道具</h3>
-    <label>物品 <input name="item" list="item-options" placeholder="名字或 id" required autocomplete="off"></label>
+  dlg.dataset.id = id;
+  dlg.innerHTML = `
+    <h3>${playerHead(p)}</h3>
+    <div class="ops">
+      <button class="act" data-op="revive">治好</button>
+      <button class="act" data-op="home">传送回广场</button>
+      <button class="act" data-op="clear_status">清状态</button>
+    </div>
+    <label>HP <input name="hp" type="number" value="${p.hp}"> <button class="act" data-op="set_hp">改</button></label>
+    <label>金币 <input name="gold" type="number" placeholder="负数是拿走"> <button class="act" data-op="gold">给</button></label>
+    <label>道具 <input name="item" list="item-options" placeholder="名字或 id" autocomplete="off">
+      × <input name="count" type="number" value="1" min="1" max="99"> <button class="act" data-op="give">给</button></label>
     <datalist id="item-options">${(itemList || []).map(i => `<option value="${esc(i.name)}">${esc(i.id)} · ${esc(i.type)}</option>`).join("")}</datalist>
-    <label>数量 <input name="count" type="number" value="1" min="1" max="99"></label>
-    <div class="err"></div>
-    <div class="btns"><button value="cancel" formnovalidate class="act">取消</button> <button value="ok" class="act">给</button></div>
-  </form>`;
-  const form = dlg.querySelector("form");
-  form.onsubmit = async ev => {
-    if (ev.submitter?.value !== "ok") return;              // 取消：直接关
-    ev.preventDefault();
+    <div class="msg"></div>
+    <div class="btns"><button class="act danger" data-op="delete">删除角色</button> <button class="act" data-close>关闭</button></div>`;
+  const field = name => dlg.querySelector(`input[name=${name}]`);
+  const msg = (text, bad) => { const m = dlg.querySelector(".msg"); m.textContent = text; m.className = "msg " + (bad ? "bad" : "ok"); };
+  const DONE = { revive: "治好了", home: "传送回广场了", clear_status: "状态清掉了", set_hp: "HP 改好了", gold: "金币改好了",
+                 give: "道具给了", delete: "删掉了" };
+  dlg.onclick = async e => {
+    if (e.target.matches("[data-close]")) { dlg.close(); return; }
+    const b = e.target.closest("button[data-op]");
+    if (!b) return;
+    const op = b.dataset.op, body = { op };
+    if (op === "delete" && !confirm(`确定删除「${p.name}」？身上的东西会掉在原地，不能恢复。`)) return;
+    if (op === "set_hp") {
+      if (field("hp").value.trim() === "" || isNaN(+field("hp").value)) return msg("HP 填个数", true);
+      body.hp = Math.round(+field("hp").value);
+    }
+    if (op === "gold") {
+      if (field("gold").value.trim() === "" || isNaN(+field("gold").value)) return msg("金币填个数（负数是拿走）", true);
+      body.count = Math.round(+field("gold").value);
+    }
+    if (op === "give") {
+      if (!field("item").value.trim()) return msg("填物品名字或 id", true);
+      body.item = field("item").value.trim();
+      body.count = +field("count").value || 1;
+    }
     try {
-      await api(`/players/${playerId}`, { op: "give", item: form.item.value.trim(), count: +form.count.value || 1 });
-      dlg.close();
+      await api(`/players/${id}`, body);
+      if (op === "delete") { dlg.close(); load(); return; }
+      msg(DONE[op]);
+      if (op === "gold") field("gold").value = "";
+      if (op === "give") field("item").value = "";
       load();
-    } catch (err) { dlg.querySelector(".err").textContent = err.message; }
+    } catch (err) { msg(err.message, true); }
   };
   dlg.showModal();
-  form.item.focus();
 }
 
 // ============ 动态 ============

@@ -134,8 +134,12 @@ def players():
             order by p.last_active_at desc nulls last, p.name""")
         items = _rows(conn, """select i.player_id, coalesce(i.props->>'name', t.name) as name, i.quantity, i.equipped_slot from item_instances i
                                join item_templates t on t.id = i.template_id where i.player_id is not null order by t.name""")
+        with conn.transaction():
+            gear = engine.load_items(engine._cursor(conn), "i.player_id is not null and i.equipped_slot is not null", ())
     for p in rows:
         p["inventory"] = [i for i in items if i["player_id"] == p["id"]]
+        # 攻防算上装备（跟玩家侧栏一样），players 表里存的只是空手的底子
+        p["attack"], p["defense"] = engine.gear_totals(p["attack"], p["defense"], [i for i in gear if i.player_id == p["id"]])
         p["party"] = [q["name"] for q in rows if p["party_id"] and q["party_id"] == p["party_id"] and q is not p]
     return rows
 

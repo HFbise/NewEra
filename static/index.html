@@ -179,14 +179,14 @@ function render(s) {
     ${p.status ? `<div class="sys">你${esc(p.status.label)}，${p.status.kind === "incapacitated" ? "说什么都算挣扎着醒来" : p.status.kind === "prone" ? "输入“站起来”爬起来" : "动不了，试试挣脱"}</div>` : ""}
     ${(p.effects || []).map(e => e.kind === "whet" ? `<div class="sys">磨利：普通攻击伤害 +${e.value}（这一层）</div>` : `<div class="sys">${{poison: "中毒", bleed: "流血", blind: "看不清", corrode: "腐蚀"}[e.kind]}：${esc(e.label)}（还剩 ${e.left} ${e.kind === "bleed" ? "个动作" : "回合"}）</div>`).join("")}
     ${Object.keys(p.flags).length ? `<div class="tag">标记：${Object.keys(p.flags).map(esc).join("、")}</div>` : ""}
-    ${s.combat ? `<div class="combat"><b>⚔ 战斗中 · 第 ${s.combat.round} 轮</b> · <span id="round-left">${roundLeftText()}</span>
+    ${s.combat ? `<div class="combat"><b>⚔ 战斗中 · 第 ${s.combat.round} 轮</b>${s.combat.resolving ? " · 结算中…" : ""}
       <div>已出手：${s.combat.acted.map(esc).join("、") || "还没人"}</div>
-      <div class="sys">${s.combat.waiting.length ? "等：" + s.combat.waiting.map(esc).join("、") : "全队都出手了"}</div>
-      <div class="sys">大家都出完手、或者倒计时到了就一起结算；没出手的这一轮什么也不做</div></div>` : ""}
+      <div class="sys">${s.combat.waiting.length ? "在等：" + s.combat.waiting.map(esc).join("、") : "全队都出手了"}</div>
+      <div class="sys">全队都出完手才一起结算（掉线的人不等）</div></div>` : ""}
     <h2>位置</h2>
     <div class="room">${esc(s.room.name)}</div>
     <div class="sys">${esc(s.room.description)}</div>
-    ${s.light ? `<div class="light" data-detail="${esc(s.light.source)}">光亮 ${s.light.value}/100 · ${esc(s.light.word)}
+    ${s.light ? `<div class="light">光亮 ${s.light.value}/100 · ${esc(s.light.word)}
       <div class="lightbar"><div style="width:${s.light.value}%"></div><span class="mark"></span></div>
       <ul class="sys">${s.light.lines.map(l => `<li>${esc(l)}</li>`).join("")}</ul>
       <div class="tag">光从哪来：${esc(s.light.source)}</div></div>` : ""}
@@ -212,7 +212,7 @@ function render(s) {
       ? `<li data-name="卸下${esc(e.item.name)}" data-detail="${esc(e.item.detail || "")}"><span class="tag slot">${e.label}</span>${esc(e.item.name)}</li>`
       : `<li class="empty"><span class="tag slot">${e.label}</span>—</li>`).join("")}</ul>
     ${foldHead("skills", "技能")}
-    <ul class="equip fold-body">${s.skills.map(k => `<li class="empty" data-detail="这一级攒了 ${k.have}/${k.need} 次熟练">${k.name} ${k.level}<span class="tag">${k.have}/${k.need}</span></li>`).join("")}</ul>
+    <ul class="equip fold-body">${s.skills.map(k => `<li class="empty">${k.name} ${k.level}<span class="tag">${k.have}/${k.need}</span></li>`).join("")}</ul>
     <h2>背包</h2>
     <ul>${s.inventory.map(i => li(i.ref, i.name,
       i.quantity > 1 ? `<span class="tag">x${i.quantity}</span>` : "", i.name, i.detail)).join("") || '<li class="sys">空</li>'}</ul>
@@ -223,7 +223,7 @@ function render(s) {
       打 · 躲起来 · 搜索 · 说 · 对某人说<br>
       地牢：扎营 · 回城（传送石边）· 传送到第 N 层（地窖）<br>
       跟着某人（就是加入他的队伍）· 不跟了 / 离队（地牢里、战斗中不行）<br>
-      战斗中：大家的命令一起按回合结算（全队出完手或者 10 秒到了）<br>
+      战斗中：全队都出完手，大家的命令一起按回合结算<br>
       急救 · 给人用药（给寒风灌血药）· 挣脱<br>
       决斗某人 · 接受决斗 · 拒绝决斗 · 逃跑<br>
       其他想做的事直接写，AI 判定
@@ -288,19 +288,9 @@ async function enter() {
 
 let entered = false;                // enter 成功之前 refresh 不跑，免得重复显示
 let offline = false;                // 连接中断时只提示一次
-// 战斗回合的倒计时：服务器给的是还剩几秒，换算成本机时间，每 250ms 刷一下侧栏里的数字
-let roundEnd = null, roundBusy = false, inCombat = false;
-function trackRound(s) {
-  inCombat = !!s.combat;
-  roundBusy = !!(s.combat && s.combat.resolving);
-  roundEnd = s.combat && s.combat.left != null ? Date.now() + s.combat.left * 1000 : null;
-}
-function roundLeftText() {
-  if (roundBusy) return "结算中…";
-  if (roundEnd == null) return "等有人出手";
-  return `还剩 ${Math.max(0, Math.ceil((roundEnd - Date.now()) / 1000))} 秒`;
-}
-setInterval(() => { const el = document.getElementById("round-left"); if (el) el.textContent = roundLeftText(); }, 250);
+// 战斗中轮询快一点，回合结果出来能马上看到
+let inCombat = false;
+function trackRound(s) { inCombat = !!s.combat; }
 
 let lastRefresh = 0;
 async function refresh() {
@@ -554,7 +544,7 @@ document.addEventListener("pointerdown", e => { if (!e.target.closest("#tip, #si
 $("#side").addEventListener("scroll", hideTip);
 
 if (playerId) { $("#login").style.display = "none"; enter(); }
-// 没有 WebSocket，先轮询看其他玩家的变化：平时 3 秒一次，战斗中 1 秒一次（回合结果、倒计时要跟得上）
+// 没有 WebSocket，先轮询看其他玩家的变化：平时 3 秒一次，战斗中 1 秒一次（回合结果要跟得上）
 setInterval(() => { if (inCombat || Date.now() - lastRefresh >= 3000) refresh(); }, 1000);
 
 // 关页面、关浏览器、跳走时让角色立刻睡着，不用等心跳超时。sendBeacon 在页面关掉时也能发出去。
