@@ -1552,7 +1552,7 @@ def _tick_effects(cur: Cursor, player: Player, unit: str) -> list[str]:
 # 越暗怪越凶、钱越多（_dark_factor）；怕光的怪在 LIGHT_BRIGHT 以上攻击 -1。
 # 积水：闪避效果减半、逃跑难度 +1。掩体：躲藏容易 1 级
 LIGHT_FULL, LIGHT_MIN_HIT, LIGHT_DARK, LIGHT_BRIGHT = 50, 0.05, 20, 70
-TORCH_LIGHT = 30
+TORCH_LIGHT = 35
 LIGHT_OLD = {"bright": 70, "dim": 40, "dark": 15}      # 旧存档里的文字写法
 
 

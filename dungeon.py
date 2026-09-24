@@ -22,6 +22,8 @@ ENTRANCE = "cellar"                     # 地牢第 1 层往上回到这里
 STALE = "30 minutes"                    # 没人在里面、这么久没动静的地牢删掉
 GRID = 3                                # 一层 GRID × GRID 个房间
 BOSS_EVERY = 5                          # 每几层楼梯间守着头目
+THEME_GAP = 3                           # 主题不跟上面几层重复
+TREASURE_GUARD = 0.5                    # 宝箱房有怪守着的几率
 PARTY_HP = 0.8                          # 组队时怪的血量：× (1 + PARTY_HP × (人数 − 1))，2 人 ×1.8、3 人 ×2.6（攻击不变）
 
 DIRS = {"north": (-1, 0), "south": (1, 0), "west": (0, -1), "east": (0, 1)}
@@ -30,9 +32,9 @@ BACK = {"north": "south", "south": "north", "west": "east", "east": "west"}
 # 房间里的补给：空房搜索可能找到药草（每人每层一次），宝箱房有一袋古币和药草
 EMPTY_FORAGE = [{"item": "herb", "chance": 0.5, "cooldown": 86400}]
 FEATURE_RESPAWN = 86400                 # 地牢里的环境物件用掉就没了（地牢活不到这么久）
-# 光亮 0~100：主题的自然光亮（dungeon.yaml themes.light）+ 房间明暗（bright +30 / dim 0 / dark -20），
+# 光亮 0~100：主题的自然光亮（dungeon.yaml themes.light）+ 房间明暗（bright +30 / dim 0 / dark -15），
 # 点着的灯（火盆、烛台）每盏 +LAMP_LIGHT，带火把的人在场 +engine.TORCH_LIGHT。越暗怪越强、钱越多（engine._dark_factor）
-LIGHT_OFFSET = {"bright": 30, "dim": 0, "dark": -20}
+LIGHT_OFFSET = {"bright": 30, "dim": 0, "dark": -15}
 LAMP_LIGHT = 20
 STONE_LIGHT = 90
 ROAD_EVENT_CHANCE = 0.15                # 地牢里两个房间之间走动时碰上随机事件的几率（engine._road_event）
@@ -168,9 +170,11 @@ def _make_floor(cur: Cursor, run: UUID, depth: int, above: Optional[str], size: 
     """生成第 depth 层，返回入口房间 id。above 是往上回去的房间（第 1 层是地窖，往后是上一层的楼梯间；
     从地窖直接传送来的没有上一层，就不开往上的路）；size 是队伍人数：怪的血量、钱袋里的钱跟着涨"""
     themes = data()["themes"]
-    cur.execute("select theme from dungeon_floors where run_id = %s and depth = %s", (run, depth - 1))
-    prev = cur.fetchone()
-    theme_key = random.choice([k for k in themes if not prev or k != prev["theme"]] or list(themes))
+    # 主题随机，但不跟上面 THEME_GAP 层重复，连着下几层都是不同的地方
+    cur.execute("select theme from dungeon_floors where run_id = %s and depth between %s and %s",
+                (run, depth - THEME_GAP, depth - 1))
+    recent = {r["theme"] for r in cur.fetchall()}
+    theme_key = random.choice([k for k in themes if k not in recent] or list(themes))
     theme = themes[theme_key]
     start, stairs, edges = layout()
     cells = [(r, c) for r in range(GRID) for c in range(GRID)]
@@ -214,7 +218,8 @@ def _make_floor(cur: Cursor, run: UUID, depth: int, above: Optional[str], size: 
                 cur.execute("insert into room_exits (room_id, direction, to_room) values (%s, %s, %s)",
                             (rid, direction, _room_id(run, depth, n)))
         kind = kinds[cell]
-        if kind in ("combat", "stairs"):
+        guarded = kind == "treasure" and random.random() < TREASURE_GUARD
+        if kind in ("combat", "stairs") or guarded:
             lamps = []
             for i, ft in enumerate(random.sample(theme["features"], random.randint(1, 2))):
                 cur.execute(
@@ -244,6 +249,10 @@ def _make_floor(cur: Cursor, run: UUID, depth: int, above: Optional[str], size: 
             cur.execute("insert into item_instances (template_id, room_id, props) values ('gold_pouch', %s, %s)",
                         (rid, Jsonb({"gold": coins})))
             cur.execute("insert into item_instances (template_id, room_id) values ('herb', %s)", (rid,))
+            if guarded:
+                # 有一半的宝箱房有怪守着（越深越可能是精英）
+                rank = "elite" if random.random() < min(0.35, 0.02 * depth) else "normal"
+                _spawn(cur, rid, depth, random.choice(theme["monsters"]), rank, theme_key, size)
     entry = _room_id(run, depth, start)
     if above:
         cur.execute("insert into room_exits (room_id, direction, to_room) values (%s, 'up', %s)", (entry, above))
