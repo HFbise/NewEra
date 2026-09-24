@@ -370,14 +370,14 @@ items:
     description: 麦琪藏在吧台下的那把轻弩，弩臂上缠着磨旧的皮绳，扳机护圈里刻着一个歪歪扭扭的"杂"字。单手就能端平，射出去又稳又准，远近都一样；射完要重新上弦（说"装填"）。
     type: weapon
     slot: hand
-    damage: 8
+    damage: 11
     props: {price: 150, ranged: true, steady: true, unloaded: maggie_crossbow_empty}
   maggie_crossbow_empty:
     name: 麦琪的轻弩（空）
     description: 麦琪的那把轻弩，弦松着，槽里空空的。说"装填"重新上弦才能再射。
     type: weapon
     slot: hand
-    damage: 8
+    damage: 11
     props: {price: 150, loads: maggie_crossbow}
   # 莉娜的回礼（好感 100）：伤害按玩家走到过的最深层数定，带一个武器词条，能自己起名（engine._exclusive_blade）
   lina_blade:

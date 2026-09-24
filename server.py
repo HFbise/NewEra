@@ -674,7 +674,12 @@ def _resolve_round(room_id: str) -> None:
                 if view.room.id != room_id or view.player.hp <= 0:
                     continue                            # 出手之后被打倒了、被带走了
                 actions = [_ACTION.validate_python(a) for a in e["actions"]]
+                # 一轮里最多做 ROUND_ACTIONS 件事（平时也是做两件事敌人就动一次），"砍；砍；砍"不能一轮三刀
+                skipped = actions[engine.ROUND_ACTIONS:]
+                actions = actions[:engine.ROUND_ACTIONS]
                 results = engine.execute_all(conn, view, actions, enemies=False)
+                if skipped and results:
+                    results[-1].facts.append(f"{view.player.name}这一轮只来得及做前 {len(actions)} 件事，后面的没做")
                 done[view.player.id] = list(zip(actions, results))
                 for a, r in zip(actions, results):
                     if not r.success:

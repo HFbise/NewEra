@@ -84,6 +84,90 @@ items:
       price: 35
       effects:
         - {when: passive, do: gold, value: 0.15}
+  # ===================== 远程武器 =====================
+  # ranged：贴身难射、离远了准（engine.RANGED_HIT：贴身 45%、一步 75%、几步开外 90%）；steady 的远近都 90%。
+  # 一轮只能做两件事，射完要装填，所以远程一轮只打一发（近战能砍两下）：单发伤害比同档近战高四成左右
+  # 射完换成 unloaded 那个"（空）"，说"装填"才能再射（算一个动作）。two_handed 要两只手
+  sling:
+    name: 投石索
+    description: 一根磨得发亮的皮索，兜里放一颗石子甩出去，打得又准又狠。单手就能用，射完要再装一颗石子（说"装填"）。
+    type: weapon
+    slot: hand
+    damage: 6
+    props: {price: 25, ranged: true, unloaded: sling_empty}
+  sling_empty:
+    name: 投石索（空）
+    description: 皮兜里空了，得再装一颗石子才能甩（说"装填"）。
+    type: weapon
+    slot: hand
+    damage: 6
+    props: {price: 25, loads: sling}
+  hunting_bow:
+    name: 猎弓
+    description: 一张用韧木和兽筋做的短弓，要两只手才拉得开。离得越远越准，贴身了就不好使；射完要重新搭箭（说"装填"）。
+    type: weapon
+    slot: hand
+    damage: 10
+    props: {price: 55, ranged: true, two_handed: true, unloaded: hunting_bow_empty}
+  hunting_bow_empty:
+    name: 猎弓（空）
+    description: 弦上没搭箭，得重新搭一支才能射（说"装填"）。
+    type: weapon
+    slot: hand
+    damage: 10
+    props: {price: 55, two_handed: true, loads: hunting_bow}
+  bone_bow:
+    name: 骨弓
+    description: 骷髅弓手那张缠满蛛丝的骨弓，弓身冰凉，要两只手拉。射向亡灵的箭格外狠；射完要重新搭箭（说"装填"）。
+    type: weapon
+    slot: hand
+    damage: 8
+    props:
+      price: 60
+      ranged: true
+      two_handed: true
+      unloaded: bone_bow_empty
+      effects:
+        - {when: hit, do: bonus, value: 2, vs: [undead]}
+  bone_bow_empty:
+    name: 骨弓（空）
+    description: 弦上没搭箭，得重新搭一支才能射（说"装填"）。
+    type: weapon
+    slot: hand
+    damage: 8
+    props: {price: 60, two_handed: true, loads: bone_bow}
+  heavy_crossbow:
+    name: 绞盘重弩
+    description: 弩手狱卒那把沉重的绞盘弩，要两只手端着，远近一样准，扁铁箭头能打穿铠甲；上一次弦很费劲（说"装填"）。
+    type: weapon
+    slot: hand
+    damage: 13
+    props:
+      price: 120
+      ranged: true
+      steady: true
+      two_handed: true
+      unloaded: heavy_crossbow_empty
+      effects:
+        - {when: hit, do: pierce, value: 1}
+  heavy_crossbow_empty:
+    name: 绞盘重弩（空）
+    description: 弦松着，得转着绞盘重新上弦才能射（说"装填"）。
+    type: weapon
+    slot: hand
+    damage: 13
+    props: {price: 120, two_handed: true, loads: heavy_crossbow}
+  tower_shield:
+    name: 塔盾
+    description: 一面几乎有半人高的包铁木盾，举起来能把整个人藏在后面，专挡箭矢、石子和飞过来的东西。
+    type: armor
+    slot: hand
+    defense: 3
+    props:
+      price: 45
+      effects:
+        - {when: hurt, do: guard, value: 2, vs: [ranged]}
+
   map_scrap:
     name: 地牢地图残片
     description: 半张画在兽皮上的地图，墨迹一碰到这一层的空气就自己动了起来。用掉后能知道这一层所有房间和宝箱房在哪。

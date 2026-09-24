@@ -92,7 +92,7 @@ themes:
       - {name: 碎石堆, max_tier: light}
       - {name: 垂下来的锁链, max_tier: light}
       - {name: 松动的岩壁, max_tier: heavy}
-    monsters: [cave_rat, kobold, rock_beetle]
+    monsters: [cave_rat, kobold, rock_beetle, kobold_slinger]
     events: [ore_vein, spring, miner_cache]
     eerie:
       - 远处传来一声镐头敲在石头上的脆响，然后是很长的寂静。
@@ -163,7 +163,7 @@ themes:
       - {name: 锈铁栅栏, max_tier: light}
       - {name: 石棺盖, max_tier: heavy}
       - {name: 长明的烛台, max_tier: light, lamp: true}
-    monsters: [skeleton, ghoul, wisp]
+    monsters: [skeleton, ghoul, wisp, skeleton_archer, grave_nun]
     events: [offering_wine, tomb_notes, spring]
     eerie:
       - 身后的骨龛里传来一声轻轻的咔哒，像是有颗头骨转了过来。
@@ -244,7 +244,7 @@ themes:
       - {name: 垂着的铁链, max_tier: light}
       - {name: 铁栅栏门, max_tier: heavy}
       - {name: 翻倒的木凳, max_tier: light}
-    monsters: [jailer, armored_guard, dungeon_hound]
+    monsters: [jailer, armored_guard, dungeon_hound, jail_crossbowman]
     events: [warden_cellar, prison_records, spring]
     eerie:
       - 某间囚室里传出铁链拖地的声音，拖了三下，停了。
@@ -318,7 +318,7 @@ themes:
       - {name: 垂下的藤蔓, max_tier: light}
       - {name: 布满苔藓的大石, max_tier: heavy}
       - {name: 发光的菌灯, max_tier: light, lamp: true}
-    monsters: [cave_wolf, thorn_vine, forest_goblin]
+    monsters: [cave_wolf, thorn_vine, forest_goblin, goblin_hunter]
     events: [tree_hollow_wine, runestone_notes, spring]
     eerie:
       - 远处有什么东西踩断了一根树枝，然后整片林子都安静了下来。
@@ -392,7 +392,7 @@ themes:
       - {name: 淤泥坑, max_tier: heavy}
       - {name: 垂着的湿苔藓, max_tier: light}
       - {name: 挂着的萤虫灯笼, max_tier: light, lamp: true}
-    monsters: [bog_toad, myconid, bog_leech]
+    monsters: [bog_toad, myconid, bog_leech, spit_toad]
     events: [witch_hut, sunken_cart, spring]
     eerie:
       - 沼泽深处传来一声沉闷的"咕嘟"，像是有什么很大的东西沉下去了。
@@ -464,7 +464,7 @@ themes:
       - {name: 带轮子的滚梯, max_tier: heavy}
       - {name: 成堆的厚书, max_tier: light}
       - {name: 翻倒的墨水桶, max_tier: light}
-    monsters: [animated_tome, ink_shade, stone_gargoyle]
+    monsters: [animated_tome, ink_shade, stone_gargoyle, ink_scribe]
     events: [forbidden_shelf, scholar_cellar, meteor_paperweight]
     eerie:
       - 远处的书架间传来一声清晰的"嘘——"，然后再没有声音。
@@ -589,6 +589,71 @@ traps:
   - 墙上的机关咔哒一响，一把生锈的刀片横扫过来
 
 monsters:
+  # 远程的怪（ranged: true）：不主动靠近，离人一步以上就射；被贴身了先往后跳开（这一下不射），
+  #   除非这一轮刚被这个人贴身砍中（被缠住了），那就只能贴身硬射。有掩体的房间射得没那么准。verb 是出手的说法
+  # 治疗的怪（healer: 比例）：有同伴掉到六成血以下，这一下给伤得最重的那个回这么多血，不打人
+  kobold_slinger:
+    name: 狗头人投石手
+    description: 一个瘦小的狗头人，腰上挂着一袋磨圆的石子，手里甩着一根皮投石索，站得远远的。
+    persona: 胆小，从不靠近，躲在同伴后面放冷石头，被逼近了就尖叫着往后蹿。
+    hp: 0.7
+    ranged: true
+    verb: 甩出一颗石子
+    on_hit: {kind: prone, chance: 0.15, label: 被石子砸中膝盖，摔倒在地}
+  skeleton_archer:
+    name: 骷髅弓手
+    description: 一具穿着烂皮甲的骷髅，拉着一张缠满蛛丝的骨弓，眼窝里两点幽光一直盯着你。
+    persona: 没有恐惧，也不会累，只会一箭接一箭地射，直到弓弦断掉。
+    hp: 0.7
+    atk: 1
+    undead: true
+    ranged: true
+    verb: 松开弓弦射出一箭
+  grave_nun:
+    name: 招魂修女
+    description: 一个披着破黑纱的半透明女人，手里捧着一盏熄灭的烛台，嘴里一直在低声念诵。
+    persona: 守着这里的死者，谁伤了它们，她就把它们缝补回去；她自己几乎不出手。
+    hp: 0.8
+    undead: true
+    light_averse: true
+    ranged: true
+    healer: 0.25
+    verb: 伸出苍白的手指一点，一股寒气打了过来
+  jail_crossbowman:
+    name: 弩手狱卒
+    description: 一个站在高处的狱卒，端着一把沉重的绞盘弩，弩箭的箭头是扁平的铁片，专门用来打穿铠甲。
+    persona: 冷静，喜欢隔着距离把人钉在墙上，看见有人冲过来就退到更远的地方。
+    hp: 0.7
+    atk: 2
+    ranged: true
+    verb: 扣下扳机，一支粗短的弩箭呼啸而来
+  goblin_hunter:
+    name: 哥布林猎手
+    description: 一个脸上涂着绿泥的哥布林，背着一张短弓，箭头上抹着发黑的膏子。
+    persona: 狡猾，喜欢躲在树后面放冷箭，箭上有毒。
+    hp: 0.7
+    ranged: true
+    verb: 从树后放出一支冷箭
+    on_hit: {kind: poison, chance: 0.3, label: 中了毒箭}
+  spit_toad:
+    name: 喷毒蛙
+    description: 一只颜色鲜艳得刺眼的大蛙，喉囊一鼓一鼓的，嘴角挂着冒泡的黏液。
+    persona: 不喜欢被靠近，谁走近就先喷一口毒液，然后蹦开。
+    hp: 0.8
+    animal: true
+    ranged: true
+    verb: 喉囊一鼓，喷出一口毒液
+    on_hit: {kind: poison, chance: 0.35, label: 被毒液溅了一身}
+  ink_scribe:
+    name: 墨咒书记
+    description: 一个用墨水勾出轮廓的人形，握着一支比手臂还长的羽毛笔，在空中写下发光的字。
+    persona: 永远在抄写同一段咒文，写出来的字会飞出去伤人；讨厌光。
+    hp: 0.7
+    atk: 1
+    light_averse: true
+    ranged: true
+    verb: 在空中写下一行发光的字，字句飞了过来
+    on_hit: {kind: blind, chance: 0.3, label: 被发光的字晃花了眼睛}
   cave_rat:
     name: 矿坑巨鼠
     description: 狗那么大的灰毛老鼠，尾巴光秃秃的，门牙黄得发黑。

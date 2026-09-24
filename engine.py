@@ -2479,17 +2479,13 @@ def enemy_turn(conn: Connection, player_id: UUID, actions: list[PlayerAction],
         if _room_env(cur, player.room_id).get("ground") == "water" and not gear_has(cur, player, "wade"):
             dodge_bonus /= 2                    # 积水泥泞，躲不利索（沼泽高筒靴不怕）
         if st.detected:
+            pinned = any(a.action in ("attack", "stunt") and r.success for a, r in done)    # 贴身砍中了：远程的怪跳不开
             for npc in enemies:
                 # 挨打那一下刚摆脱状态的，这回合来不及还手
                 if any(f.startswith(f"{npc.name}摆脱了") for r in results for f in r.facts):
                     continue
-                d = _distance(st, npc)
-                if d > 0:
-                    d = _set_distance(st, npc, d - ENEMY_STEP)
-                    facts.append(f"{npc.name}逼近过来，离{player.name} {distance_word(d)}")
-                if d not in MELEE_HIT:
-                    continue
-                facts += _npc_strike(cur, player, npc, "扑上来攻击", max(0.0, MELEE_HIT[d] - dodge_bonus))
+                for _ in range(npc.template.props.get("attacks", 1)):
+                    facts += _enemy_act(cur, player, st, npc, dodge_bonus, pinned)
                 if player.hp <= 0:
                     break
         _save_stealth(cur, player, st)
@@ -2502,6 +2498,7 @@ def enemy_turn(conn: Connection, player_id: UUID, actions: list[PlayerAction],
 # 队员按出手先后执行，然后每只怪出手一次（props.attacks 的出手几次），挑谁打看 _pick_target。
 # 说话、查看不用排队，马上生效
 ROUND_INSTANT = {"say", "look", "reject"}
+ROUND_ACTIONS = ENEMY_EVERY             # 一轮里每人最多做几件事（跟平时"做两件事敌人动一次"一样），多的不做
 
 
 def in_combat(cur: Cursor, room_id: str) -> bool:
@@ -2695,15 +2692,49 @@ def round_enemies(conn: Connection, room_id: str, done: dict[UUID, list[tuple[Pl
                 if not live:
                     break
                 c = _pick_target(cur, npc, live, hits, healers)
-                d = _distance(c["st"], npc)
-                if d > 0:
-                    d = _set_distance(c["st"], npc, d - ENEMY_STEP)
-                    facts.append(f"{npc.name}逼近过来，离{c['p'].name} {distance_word(d)}")
-                if d in MELEE_HIT:
-                    facts += _npc_strike(cur, c["p"], npc, "扑上来攻击", max(0.0, MELEE_HIT[d] - c["dodge"]))
+                facts += _enemy_act(cur, c["p"], c["st"], npc, c["dodge"], hits.get(npc.id) == c["p"].id)
         for c in cands:
             _save_stealth(cur, c["p"], c["st"])
         return facts
+
+
+# 敌人出一次手（enemy_turn、round_enemies 共用）：
+# - 治疗的怪（props.healer，比例）：有同伴掉到 HEALER_BELOW 以下，这一下给伤得最重的那个回血，不打人
+# - 远程的怪（props.ranged）：不主动靠近，离人一步以上就射（ENEMY_RANGED_HIT，有掩体的房间 −RANGED_COVER）；
+#   被贴身了先往后跳开一步、这一下不射；这一轮刚被这个人贴身砍中（pinned，被缠住了）就跳不开，只能贴身硬射。
+#   所以对付远程怪要"冲上去砍它"（靠近和攻击一句话里说完），或者用远程武器、躲在掩体后面
+# - 近战的怪：逼近一格，够得着就扑上来
+ENEMY_RANGED_HIT = {0: 0.5, 1: 0.75, 2: 0.85, 3: 0.85, 4: 0.75}
+RANGED_COVER = 0.15
+HEALER_BELOW = 0.6
+HEALER_CHANCE = 0.5                     # 有同伴要治时一半几率治疗（另一半照常出手），不然一只修女能把一架拖得没完没了
+
+
+def _enemy_act(cur: Cursor, player: Player, st: Stealth, npc: Npc, dodge: float, pinned: bool) -> list[str]:
+    props = npc.template.props
+    if (share := props.get("healer")) and _roll(HEALER_CHANCE):
+        hurt = [n for n in _enemies(cur, npc.room_id)
+                if n.id != npc.id and n.hp is not None and n.hp < n.template.max_hp * HEALER_BELOW]
+        if hurt:
+            n = min(hurt, key=lambda n: n.hp / n.template.max_hp)
+            hp = min(n.template.max_hp, n.hp + max(1, math.ceil(n.template.max_hp * share)))
+            cur.execute("update npcs set hp = %s where id = %s", (hp, n.id))
+            return [f"{npc.name}朝{n.name}低声念诵，它身上的伤口合上了一些（{n.name} HP {hp}/{n.template.max_hp}）"]
+    d = _distance(st, npc)
+    if props.get("ranged"):
+        if d == 0 and not pinned:
+            _set_distance(st, npc, 1)
+            return [f"{npc.name}往后一跳，拉开了和{player.name}的距离（{distance_word(1)}）"]
+        cover = RANGED_COVER if _room_env(cur, npc.room_id).get("cover") else 0.0
+        return _npc_strike(cur, player, npc, props.get("verb") or "放了一箭",
+                           max(0.0, ENEMY_RANGED_HIT.get(d, ENEMY_RANGED_HIT[max(ENEMY_RANGED_HIT)]) - dodge - cover))
+    facts = []
+    if d > 0:
+        d = _set_distance(st, npc, d - ENEMY_STEP)
+        facts.append(f"{npc.name}逼近过来，离{player.name} {distance_word(d)}")
+    if d in MELEE_HIT:
+        facts += _npc_strike(cur, player, npc, props.get("verb") or "扑上来攻击", max(0.0, MELEE_HIT[d] - dodge))
+    return facts
 
 
 def _enemies_stand(cur: Cursor, alive: list[Npc]) -> list[str]:
@@ -4205,7 +4236,7 @@ PART_NAMES = {"hand": "手", "head": "头", "chest": "胸", "neck": "项链", "f
               "belt": "腰"}
 STATE_NAMES = {"poison": "中毒", "bleed": "流血", "blind": "看不清", "corrode": "腐蚀", "restrained": "被缠住",
                "prone": "倒地", "stun": "定住"}
-TAG_NAMES = {"undead": "亡灵", "animal": "野兽", "light_averse": "怕光的怪"}
+TAG_NAMES = {"undead": "亡灵", "animal": "野兽", "light_averse": "怕光的怪", "ranged": "远程的敌人"}
 WHEN_NAMES = {"passive": "", "attack": "每次出手", "hit": "打中时", "kill": "杀死敌人时", "hurt": "被打中时",
               "fight": "每场第一次攻击", "enter": "走进新房间时"}
 GIFT_FOR = {"ore": "莉娜", "wine": "麦琪", "book": "诺艾尔"}
@@ -4246,7 +4277,9 @@ def monster_notes(npc: Npc) -> str:
     notes += [text for key, text in (("keen", "嗅觉、警觉极好：一进门就会发现你，偷袭不了"),
                                      ("animal", "野兽：可以试着安抚它避战（驯兽）"),
                                      ("undead", "亡灵：怕圣水"),
-                                     ("light_averse", "怕光：光亮 70 以上攻击变弱，也会避开拿火把的人"))
+                                     ("light_averse", "怕光：光亮 70 以上攻击变弱，也会避开拿火把的人"),
+                                     ("ranged", "远程：不会主动靠近，离远了射人；贴身了会往后跳，冲上去一口气砍中它就跳不开；掩体能挡一些"),
+                                     ("healer", "会给受伤的同伴回血：先打它"))
               if p.get(key)]
     if hit := p.get("on_hit"):
         notes.append(f"打中人时有几率让人{EFFECT_NAMES.get(hit['kind'], STATE_NAMES.get(hit['kind'], hit['kind']))}")

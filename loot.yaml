@@ -14,6 +14,18 @@ rules:
 # 普通怪的专属掉落
 monsters:
   cave_rat: []
+  kobold_slinger:
+    - {item: sling, chance: 0.08}
+  skeleton_archer:
+    - {item: bone_bow, chance: 0.05, min_floor: 3}
+  grave_nun: []
+  jail_crossbowman:
+    - {item: tower_shield, chance: 0.05, min_floor: 3}
+    - {item: heavy_crossbow, chance: 0.03, min_floor: 7}
+  goblin_hunter:
+    - {item: hunting_bow, chance: 0.06, min_floor: 2}
+  spit_toad: []
+  ink_scribe: []
   kobold:
     - {item: miner_pick, chance: 0.06}
     - {item: kobold_cap, chance: 0.08}
@@ -77,6 +89,10 @@ stair_guard:
   - {item: recall_crystal, weight: 3, min_floor: 4}
 
 pool:
+  - {item: sling,            weight: 6,  min_floor: 2}
+  - {item: hunting_bow,      weight: 5,  min_floor: 4}
+  - {item: tower_shield,     weight: 4,  min_floor: 5}
+  - {item: heavy_crossbow,   weight: 2,  min_floor: 9}
   - {item: steel_shortsword, weight: 10, min_floor: 5}
   - {item: war_hammer,       weight: 4,  min_floor: 8}
   - {item: vigor_ring,       weight: 5,  min_floor: 6}

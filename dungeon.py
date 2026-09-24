@@ -319,9 +319,12 @@ def _template(cur: Cursor, depth: int, kind: str, rank: str, theme: str, share: 
     props = {"on_death": {} if minion else {"gold": gold}, "dungeon": {"depth": depth, "rank": rank}}
     if attacks > 1:
         props["attacks"] = attacks
-    for flag in ("animal", "light_averse", "undead", "keen"):
+    for flag in ("animal", "light_averse", "undead", "keen", "ranged"):
         if m.get(flag):
             props[flag] = True
+    for key in ("healer", "verb"):              # 治疗的比例、出手的说法（"甩出一颗石子"）
+        if m.get(key):
+            props[key] = m[key]
     if rank == "boss":
         props["keen"] = True                    # 头目都是警觉的：一进门就发现人，偷袭不了
     if m.get("on_hit"):
