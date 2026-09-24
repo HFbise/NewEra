@@ -87,8 +87,9 @@ def _template(cur: Cursor, depth: int, kind: str, rank: str, theme: str, size: i
     name = m["name"] if rank != "elite" else f"凶悍的{m['name']}"
     description = m["description"] + ("它比同类更壮、更凶，身上带着好几道旧伤。" if rank == "elite" else "")
     props = {"on_death": {"gold": _gold(depth, rank)}, "dungeon": {"depth": depth, "rank": rank}}
-    if m.get("animal"):
-        props["animal"] = True
+    for flag in ("animal", "light_averse"):
+        if m.get(flag):
+            props[flag] = True
     cur.execute(
         """insert into npc_templates (id, name, description, persona, hostile, max_hp, attack, defense, props)
            values (%s, %s, %s, %s, true, %s, %s, %s, %s) on conflict (id) do nothing""",
@@ -173,7 +174,9 @@ def _make_floor(cur: Cursor, run: UUID, depth: int, above: str, size: int) -> st
         text = (event if event else theme[kind] if kind in ("entry", "stairs", "treasure")
                 else pool.pop() if pool else random.choice(theme["rooms"]))
         rid = _room_id(run, depth, cell)
-        props = {"dungeon": {"depth": depth, "theme": theme_key, "kind": kind}}
+        props = {"dungeon": {"depth": depth, "theme": theme_key, "kind": kind},
+                 "env": {"light": text.get("light", "dim"), "ground": text.get("ground", "normal"),
+                         "cover": bool(text.get("cover"))}}
         if kind == "empty":
             # 空房：搜索可能找到药草；调查（搜索时过调查判定）可能翻出藏着的古币，每人一次
             props["forage"] = EMPTY_FORAGE
@@ -195,10 +198,18 @@ def _make_floor(cur: Cursor, run: UUID, depth: int, above: str, size: int) -> st
                             (rid, direction, _room_id(run, depth, n)))
         kind = kinds[cell]
         if kind in ("combat", "stairs"):
+            lamps = []
             for i, ft in enumerate(random.sample(theme["features"], random.randint(1, 2))):
                 cur.execute(
                     """insert into room_features (room_id, key, name, max_tier, max_uses, uses_left, respawn_seconds)
                        values (%s, %s, %s, %s, 1, 1, %s)""", (rid, f"f{i}", ft["name"], ft["max_tier"], FEATURE_RESPAWN))
+                if ft.get("lamp"):
+                    lamps.append(f"f{i}")
+            if lamps:
+                # 点着火盆、烛台的房间亮一级；灯被拿去砸人就暗下来（engine.do_stunt）
+                cur.execute("""update rooms set props = jsonb_set(jsonb_set(props, '{env,lamps}', %s),
+                                 '{env,light}', to_jsonb((case props->'env'->>'light' when 'dark' then 'dim' else 'bright' end)::text))
+                               where id = %s""", (Jsonb(lamps), rid))
         if kind == "combat":
             count = random.randint(1, min(3, 1 + depth // 8))
             ranks = ["elite" if i == 0 and random.random() < min(0.35, 0.02 * depth) else "normal" for i in range(count)]
@@ -288,6 +299,21 @@ def cleanup(cur: Cursor) -> None:
         cur.execute("delete from npcs where room_id like %s", (prefix,))
         cur.execute("delete from rooms where id like %s", (prefix,))
         cur.execute("delete from dungeon_runs where id = %s", (row["id"],))
+
+
+LIGHT_WORDS = {"bright": "光线明亮", "dim": "光线昏暗，看东西有些吃力", "dark": "一片漆黑，几乎看不见东西"}
+
+
+def env_text(env: dict, light: str) -> str:
+    """给 AI 看的环境说明（写进房间细节）：light 是算上火把之后的光线"""
+    parts = [LIGHT_WORDS.get(light, "")]
+    if env.get("light") == "dark" and light != "dark":
+        parts[0] = "本来一片漆黑，有人带着火把，勉强能看清周围"
+    if env.get("ground") == "water":
+        parts.append("地上积水泥泞，行动不便，很难灵活闪躲，也不好逃跑")
+    if env.get("cover"):
+        parts.append("有能躲藏的掩体")
+    return "【环境】" + "；".join(p for p in parts if p)
 
 
 def leaderboard(cur: Cursor, limit: int = 10) -> str:

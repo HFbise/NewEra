@@ -379,6 +379,8 @@ def load_view(conn: Connection, player_id: UUID) -> RoomView:
             cur.execute("select name from players where id = %s", (player.following,))
             following = cur.fetchone()["name"]
         room = load_room(cur, player.room_id)
+        if env := env_text(cur, room):
+            room.details = (room.details + "\n" + env).strip()
         _end_stale_duels(cur)
         duel = _active_duel(cur, player.id)
         cur.execute(
@@ -513,6 +515,7 @@ def do_flee(cur: Cursor, player: Player, view: RoomView, a: Flee) -> list[str]:
             raise ActionError(f"{player.name}没有在决斗，也没被敌人缠住，用不着逃跑")
         near = min(_distance(st, n) for n in foes)
         if diff := FLEE_DIFFICULTY.get(near):
+            diff += _room_env(cur, player.room_id).get("ground") == "water"     # 积水里跑不快
             ok, rolled = _check(cur, player, view, "athletics", diff)
             facts += rolled
             if not ok:
@@ -779,7 +782,7 @@ def do_unfollow(cur: Cursor, player: Player, view: RoomView, a: Unfollow) -> lis
 def do_look(cur: Cursor, player: Player, view: RoomView, a: Look) -> list[str]:
     if a.target is None:
         room = load_room(cur, player.room_id)
-        facts = [f"{room.name}：{room.description}"]
+        facts = [f"{room.name}：{room.description}"] + ([env] if (env := env_text(cur, room)) else [])
         exits = load_exits(cur, player.room_id)
         if exits:
             facts.append("出口：" + "、".join(
@@ -1331,7 +1334,10 @@ def _npc_strike(cur: Cursor, player: Player, npc: Npc, verb: str, chance: float 
     """NPC 打玩家一下（反击、主动攻击），chance 是命中率。player.hp 跟着更新，同一回合几个敌人连着打能接上"""
     if not _roll(chance):
         return [f"{npc.name}{verb}，没打中{player.name}"]
-    dmg = max(1, npc.template.attack - _defense(cur, player))
+    atk = npc.template.attack
+    if npc.template.props.get("light_averse") and _light(cur, npc.room_id) == "bright":
+        atk -= 1                                # 怕光的怪在亮处缩手缩脚
+    dmg = max(1, atk - _defense(cur, player))
     player.hp = max(0, player.hp - dmg)
     cur.execute("update players set hp = %s, updated_at = now() where id = %s", (player.hp, player.id))
     facts = [f"{npc.name}{verb}，对{player.name}造成 {dmg} 点伤害", f"{player.name} HP {player.hp}/{player.max_hp}"]
@@ -1359,6 +1365,38 @@ def _set_distance(st: Stealth, npc: Npc, d: int) -> int:
     d = max(0, min(MAX_DISTANCE, d))
     st.distance[str(npc.id)] = d
     return d
+
+
+# ============ 环境（地牢房间 props.env，见 dungeon.yaml）============
+# 越暗玩家普通攻击越难打中；漆黑里做花样难度 +1、躲藏容易 1 级；有人带火把漆黑算昏暗。
+# 积水：闪避效果减半、逃跑难度 +1。掩体：躲藏容易 1 级。怕光的怪在明亮处攻击 -1
+LIGHT_HIT = {"bright": 0.0, "dim": 0.05, "dark": 0.25}
+LIGHT_STEPS = ["dark", "dim", "bright"]
+
+
+def _room_env(cur: Cursor, room_id: str) -> dict:
+    cur.execute("select props->'env' as env from rooms where id = %s", (room_id,))
+    row = cur.fetchone()
+    return (row and row["env"]) or {}
+
+
+def _light(cur: Cursor, room_id: str, env: Optional[dict] = None) -> str:
+    """房间现在的光线：没设环境的（村里）算明亮；漆黑但有人带着火把算昏暗"""
+    env = _room_env(cur, room_id) if env is None else env
+    level = env.get("light", "bright")
+    if level == "dark":
+        cur.execute("""select 1 from item_instances i join item_templates t on t.id = i.template_id
+                       join players p on p.id = i.player_id where p.room_id = %s and t.props ? 'light' limit 1""",
+                    (room_id,))
+        if cur.fetchone():
+            return "dim"
+    return level
+
+
+def env_text(cur: Cursor, room: Room) -> str:
+    """给 AI 看的环境说明，没设环境的房间是空的"""
+    env = room.props.get("env")
+    return dungeon.env_text(env, _light(cur, room.id, env)) if env else ""
 
 
 def _save_stealth(cur: Cursor, player: Player, st: Stealth) -> None:
@@ -1406,7 +1444,9 @@ def _dodge_bonus(player: Player) -> float:
 def do_hide(cur: Cursor, player: Player, view: RoomView, a: Hide) -> list[str]:
     """躲起来（隐匿）：成功了几率不再上涨；已经被发现的，躲成功就甩掉了（难度高一级）"""
     st = _stealth(player)
-    ok, rolled = _check(cur, player, view, "stealth", min(10, a.difficulty + st.detected))
+    env = _room_env(cur, player.room_id)
+    easier = bool(env.get("cover")) + (_light(cur, player.room_id, env) == "dark")
+    ok, rolled = _check(cur, player, view, "stealth", max(1, min(10, a.difficulty + st.detected - easier)))
     facts = [f"{player.name}尝试：{a.description or '躲起来'}"] + rolled
     if not ok:
         return facts + [f"{player.name}没能藏好"]
@@ -1507,6 +1547,8 @@ def enemy_turn(conn: Connection, player_id: UUID, actions: list[PlayerAction],
                 st.chance = round(min(1.0, st.chance + step), 2)
         # 闪避：察觉越高躲得越好
         dodge_bonus = _dodge_bonus(player) if dodge else 0.0
+        if _room_env(cur, player.room_id).get("ground") == "water":
+            dodge_bonus /= 2                    # 积水泥泞，躲不利索
         if st.detected:
             for npc in enemies:
                 # 挨打那一下刚摆脱状态的，这回合来不及还手
@@ -1566,7 +1608,8 @@ def do_attack(cur: Cursor, player: Player, view: RoomView, a: Attack) -> list[st
     if npc.template.hostile:
         # 近战按距离算命中；敌人以外的 NPC 就在跟前说话，不算距离
         d = _distance(_stealth(player), npc)
-        if not _roll(max(0.0, MELEE_HIT.get(d, 0) - _drunk(player) + _prone_bonus(npc, d))):
+        dark = LIGHT_HIT[_light(cur, player.room_id)]
+        if not _roll(max(0.0, MELEE_HIT.get(d, 0) - _drunk(player) - dark + _prone_bonus(npc, d))):
             return [f"{player.name}用{how}攻击{npc.name}，" + (f"隔着 {distance_word(d)}够不着" if d not in MELEE_HIT
                                                              else f"隔着 {distance_word(d)}，没打中")]
     dmg = max(1, power - npc.template.defense)
@@ -1581,7 +1624,7 @@ def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]
     if a.feature:
         uid = view.resolve(a.feature)
         if uid:
-            cur.execute("select id, name, max_tier, uses_left from room_features where id = %s and room_id = %s for update",
+            cur.execute("select id, key, name, max_tier, uses_left from room_features where id = %s and room_id = %s for update",
                         (uid, player.room_id))
             feature = cur.fetchone()
         if feature is None:
@@ -1640,11 +1683,19 @@ def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]
     if feature:
         cur.execute("update room_features set uses_left = uses_left - 1, used_at = coalesce(used_at, now()) where id = %s",
                     (feature["id"],))
+    env = _room_env(cur, player.room_id)
+    doused = []
+    if feature and feature["key"] in env.get("lamps", []):
+        # 火盆、烛台被拿去砸人：灯灭了，房间暗一级
+        dimmer = LIGHT_STEPS[max(0, LIGHT_STEPS.index(env.get("light", "dim")) - 1)]
+        cur.execute("""update rooms set props = jsonb_set(props, '{env,light}', to_jsonb(%s::text)) where id = %s""",
+                    (dimmer, player.room_id))
+        doused = [f"{feature['name']}的火光灭了，这里" + ("陷入一片漆黑" if dimmer == "dark" else "暗了下来")]
     # 拿有毒的酒菜泼、砸别人：东西用掉，砸中了按它的毒性算（伤害、放倒），不按 AI 给的档位
     poison = item if item and item.template.type == "consumable" and (item.harm or item.knockout) else None
     if poison:
         _consume(cur, poison)
-    facts = [f"{player.name}尝试：{a.description}"]
+    facts = [f"{player.name}尝试：{a.description}"] + doused
     # 泼出去、扔出去、点着的东西不管成没成都没了；捆人的东西成了才留在对方身上
     if material and material is not poison and a.status != "restrained":
         _consume(cur, material)
@@ -1686,6 +1737,8 @@ def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]
     # 伤得越重难度下限越高（轻伤 2、重伤 3、致命 4）；对无力反抗的补刀、下毒不算
     if not poison and not helpless:
         diff = max(diff, TIER_MIN_DIFFICULTY[tier])
+    if _light(cur, player.room_id) == "dark":
+        diff = min(10, diff + 1)                # 漆黑里看不清，做什么都更难
     ok, rolled = _check(cur, player, view, skill, diff)
     facts += rolled
     if not ok:
