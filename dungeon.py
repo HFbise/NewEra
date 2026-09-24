@@ -22,6 +22,7 @@ ENTRANCE = "cellar"                     # 地牢第 1 层往上回到这里
 STALE = "30 minutes"                    # 没人在里面、这么久没动静的地牢删掉
 GRID = 3                                # 一层 GRID × GRID 个房间
 BOSS_EVERY = 5                          # 每几层楼梯间守着头目
+PARTY_HP = 0.8                          # 组队时怪的血量：× (1 + PARTY_HP × (人数 − 1))，2 人 ×1.8、3 人 ×2.6（攻击不变）
 
 DIRS = {"north": (-1, 0), "south": (1, 0), "west": (0, -1), "east": (0, 1)}
 BACK = {"north": "south", "south": "north", "west": "east", "east": "west"}
@@ -76,11 +77,12 @@ def _gold(depth: int, rank: str) -> list[int]:
     return [max(1, round(2 * scale)), max(2, round(5 * scale))]
 
 
-def _template(cur: Cursor, depth: int, kind: str, rank: str, theme: str) -> str:
-    """这一层这种怪的 NPC 模板，没有就建"""
-    tid = f"dg_{kind}_{depth}" + ("" if rank == "normal" else f"_{rank}")
+def _template(cur: Cursor, depth: int, kind: str, rank: str, theme: str, size: int) -> str:
+    """这一层这种怪（几个人的队伍）的 NPC 模板，没有就建"""
+    tid = f"dg_{kind}_{depth}" + ("" if rank == "normal" else f"_{rank}") + (f"_p{size}" if size > 1 else "")
     m = data()["themes"][theme]["boss"] if rank == "boss" else data()["monsters"][kind]
     hp, atk, df = monster_stats(depth, m, rank)
+    hp = round(hp * (1 + PARTY_HP * (size - 1)))
     name = m["name"] if rank != "elite" else f"凶悍的{m['name']}"
     description = m["description"] + ("它比同类更壮、更凶，身上带着好几道旧伤。" if rank == "elite" else "")
     props = {"on_death": {"gold": _gold(depth, rank)}, "dungeon": {"depth": depth, "rank": rank}}
@@ -93,8 +95,8 @@ def _template(cur: Cursor, depth: int, kind: str, rank: str, theme: str) -> str:
     return tid
 
 
-def _spawn(cur: Cursor, room: str, depth: int, kind: str, rank: str, theme: str) -> None:
-    tid = _template(cur, depth, kind, rank, theme)
+def _spawn(cur: Cursor, room: str, depth: int, kind: str, rank: str, theme: str, size: int) -> None:
+    tid = _template(cur, depth, kind, rank, theme, size)
     cur.execute("insert into npcs (template_id, room_id, hp) select id, %s, max_hp from npc_templates where id = %s",
                 (room, tid))
 
@@ -133,8 +135,9 @@ def layout() -> tuple[tuple[int, int], tuple[int, int], set[frozenset]]:
     return start, stairs, edges
 
 
-def _make_floor(cur: Cursor, run: UUID, depth: int, above: str) -> str:
-    """生成第 depth 层，返回入口房间 id。above 是往上回去的房间（第 1 层是地窖，往后是上一层的楼梯间）"""
+def _make_floor(cur: Cursor, run: UUID, depth: int, above: str, size: int) -> str:
+    """生成第 depth 层，返回入口房间 id。above 是往上回去的房间（第 1 层是地窖，往后是上一层的楼梯间）；
+    size 是队伍人数：怪的血量、钱袋里的钱跟着涨"""
     themes = data()["themes"]
     cur.execute("select theme from dungeon_floors where run_id = %s and depth = %s", (run, depth - 1))
     prev = cur.fetchone()
@@ -173,31 +176,31 @@ def _make_floor(cur: Cursor, run: UUID, depth: int, above: str) -> str:
             count = random.randint(1, min(3, 1 + depth // 8))
             ranks = ["elite" if i == 0 and random.random() < min(0.35, 0.02 * depth) else "normal" for i in range(count)]
             for rank in ranks:
-                _spawn(cur, rid, depth, random.choice(theme["monsters"]), rank, theme_key)
+                _spawn(cur, rid, depth, random.choice(theme["monsters"]), rank, theme_key, size)
         elif kind == "stairs":
             boss = depth % BOSS_EVERY == 0
             _spawn(cur, rid, depth, "boss" if boss else random.choice(theme["monsters"]), "boss" if boss else "elite",
-                   theme_key)
+                   theme_key, size)
             cur.execute("insert into room_exits (room_id, direction, to_room) values (%s, 'down', %s)", (rid, GATE))
         elif kind == "treasure":
-            coins = round(random.randint(8, 15) * 1.2 ** depth)
+            coins = round(random.randint(8, 15) * 1.2 ** depth) * size      # 捡的人会分给在场的队友
             cur.execute("insert into item_instances (template_id, room_id, props) values ('gold_pouch', %s, %s)",
                         (rid, Jsonb({"gold": coins})))
             cur.execute("insert into item_instances (template_id, room_id) values ('herb', %s)", (rid,))
     entry = _room_id(run, depth, start)
     cur.execute("insert into room_exits (room_id, direction, to_room) values (%s, 'up', %s)", (entry, above))
-    cur.execute("""insert into dungeon_floors (run_id, depth, theme, entry_room, stairs_room)
-                   values (%s, %s, %s, %s, %s)""", (run, depth, theme_key, entry, _room_id(run, depth, stairs)))
+    cur.execute("""insert into dungeon_floors (run_id, depth, theme, entry_room, stairs_room, party_size)
+                   values (%s, %s, %s, %s, %s, %s)""", (run, depth, theme_key, entry, _room_id(run, depth, stairs), size))
     return entry
 
 
 # ============ 进出 ============
 
-def _floor(cur: Cursor, run: UUID, depth: int, above: str) -> tuple[str, str]:
-    """(这一层的入口房间, 主题名)，还没有就生成"""
+def _floor(cur: Cursor, run: UUID, depth: int, above: str, size: int) -> tuple[str, str]:
+    """(这一层的入口房间, 主题名)，还没有就按现在的队伍人数生成"""
     cur.execute("select 1 from dungeon_floors where run_id = %s and depth = %s", (run, depth))
     if not cur.fetchone():
-        _make_floor(cur, run, depth, above)
+        _make_floor(cur, run, depth, above, size)
     cur.execute("select entry_room, theme from dungeon_floors where run_id = %s and depth = %s", (run, depth))
     row = cur.fetchone()
     return row["entry_room"], row["theme"]
@@ -217,15 +220,21 @@ def _run_for(cur: Cursor, player) -> UUID:
     return run
 
 
-def through_gate(cur: Cursor, player, from_room: str) -> tuple[str, list[str]]:
-    """走进地窖的漆黑入口、或者从楼梯间往下：返回 (要去的房间, facts)。第一次去的那层当场生成"""
+def through_gate(cur: Cursor, player, from_room: str, online: str) -> tuple[str, list[str]]:
+    """走进地窖的漆黑入口、或者从楼梯间往下：返回 (要去的房间, facts)。第一次去的那层当场生成，
+    难度按队伍里在线的人数（online 是算在线的时间窗）"""
     if is_dungeon(from_room):
         run, depth = parse_room(from_room)
         depth += 1
     else:
         cleanup(cur)
         run, depth = _run_for(cur, player), 1
-    entry, theme = _floor(cur, run, depth, from_room)
+    size = 1
+    if player.party_id:
+        cur.execute(f"""select count(*) as n from players where party_id = %s
+                        and (id = %s or last_active_at > now() - interval '{online}')""", (player.party_id, player.id))
+        size = max(1, cur.fetchone()["n"])
+    entry, theme = _floor(cur, run, depth, from_room, size)
     cur.execute("update dungeon_runs set last_active_at = now() where id = %s", (run,))
     cur.execute("update players set deepest_floor = greatest(deepest_floor, %s) where id = %s", (depth, player.id))
     t = data()["themes"][theme]

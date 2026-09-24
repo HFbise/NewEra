@@ -661,7 +661,7 @@ def do_move(cur: Cursor, player: Player, view: RoomView, a: Move) -> list[str]:
     # 地窖的漆黑入口、地牢楼梯间往下：去哪一层由地牢决定（第一次到的那层当场生成）
     to, arrived = ex["to_room"], []
     if to == dungeon.GATE:
-        to, arrived = dungeon.through_gate(cur, player, player.room_id)
+        to, arrived = dungeon.through_gate(cur, player, player.room_id, ONLINE_WINDOW)
     dungeon.touch(cur, player.room_id)
     # 进门前没人在的区域先把该回来的敌人刷出来（走进去才碰上），进门时还没被发现
     _respawn_npcs(cur, to)
@@ -826,8 +826,16 @@ def do_take(cur: Cursor, player: Player, view: RoomView, a: Take) -> list[str]:
         raise ActionError(f"{item.name}拿不起来")
     if coins := item.props.get("gold"):
         cur.execute("delete from item_instances where id = %s", (item.id,))
-        cur.execute("update players set gold = gold + %s where id = %s", (coins, player.id))
-        return [f"{player.name}捡起{item.name}，倒出了 {coins} 枚金币"]
+        cur.execute("select id, name from players where party_id = %s and room_id = %s and id <> %s order by name",
+                    (player.party_id, player.room_id, player.id))
+        mates = cur.fetchall() if player.party_id else []
+        share = coins // (len(mates) + 1)
+        for m in mates:
+            cur.execute("update players set gold = gold + %s where id = %s", (share, m["id"]))
+        mine = coins - share * len(mates)
+        cur.execute("update players set gold = gold + %s where id = %s", (mine, player.id))
+        return [f"{player.name}捡起{item.name}，倒出了 {coins} 枚金币"
+                + (f"，跟{'、'.join(m['name'] for m in mates)}平分，每人 {share} 枚" if mates else "")]
     _move_item(cur, item, player_id=player.id)
     return [f"{player.name}从地上捡起了{_label(item)}"]
 
@@ -1185,10 +1193,15 @@ def _hurt_npc(cur: Cursor, player: Player, npc: Npc, dmg: int) -> tuple[list[str
         if mates:
             facts.append(f"这次击杀算整支队伍的，{'、'.join(mates)}也记了功")
     # 掉金币（world.yaml 的 on_death.gold: [最少, 最多]），给补最后一刀的人
+    # 同房间的队友每人一份（组队时怪更肉，钱也得跟上）
     if gold := npc.template.props.get("on_death", {}).get("gold"):
         n = random.randint(*gold)
-        cur.execute("update players set gold = gold + %s where id = %s", (n, player.id))
-        facts.append(f"{player.name}从{npc.name}身上摸到了 {n} 枚金币")
+        cur.execute("""update players set gold = gold + %s
+                       where id = %s or (party_id = %s and room_id = %s and hp > 0) returning name""",
+                    (n, player.id, player.party_id, player.room_id))
+        mates = [r["name"] for r in cur.fetchall() if r["name"] != player.name]
+        facts.append(f"{player.name}从{npc.name}身上摸到了 {n} 枚金币"
+                     + (f"，{'、'.join(mates)}也各分到 {n} 枚" if mates else ""))
     return facts, True
 
 

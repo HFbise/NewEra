@@ -308,6 +308,7 @@ create table dungeon_floors (
   theme       text not null,                     -- dungeon.yaml 的主题
   entry_room  text not null,
   stairs_room text not null,
+  party_size  int not null default 1,           -- 生成时队伍在线人数：怪的血量、钱袋跟着涨
   primary key (run_id, depth)
 );
 
