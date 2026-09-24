@@ -209,7 +209,7 @@ class AIAction(BaseModel):
     action: Literal["move", "look", "take", "drop", "use", "equip", "unequip", "attack", "talk", "give", "sell", "pay", "say",
                     "upgrade", "respawn", "stand", "rest", "camp", "teleport", "revive", "uncurse", "leave_party", "follow", "unfollow", "challenge", "accept_duel",
                     "decline_duel", "flee", "stunt", "struggle",
-                    "maneuver", "dodge", "tame", "reload", "refill", "transfer", "reroll", "rename", "hide", "search", "freeform", "reject"]
+                    "maneuver", "dodge", "tame", "reload", "refill", "transfer", "reroll", "rename", "write", "hide", "search", "freeform", "reject"]
     direction: Optional[str] = None
     item: Optional[str] = None
     target: Optional[str] = None
@@ -298,7 +298,9 @@ INTENT_SYSTEM = """你是文字 MUD 游戏的指令解析器。读玩家的输�
 - transfer: item（转出强化的装备 ref），to（接过去的装备 ref），target（铁匠的 ref）。找铁匠把一件装备的强化等级转到另一件上
 - reroll: item（装备 ref），target（铁匠的 ref）。找铁匠刷新、重铸装备的词条（特效）
 - rename: item（装备 ref），name（新名字）。给自己的专属武器起名
-- tame: target（野兽的 ref），description（怎么安抚的）。安抚、驯服、哄走野兽，让它不打了自己走开（只对野兽有用，引擎判驯兽）
+- write: item（纸条 ref），message（要写的字，照玩家原话）。在纸条上写字、留言
+- tame: target（野兽的 ref），description（怎么安抚的）。安抚、驯服、哄走野兽，让它不打了自己走开（只对野兽有用，引擎判驯兽）；
+  扔骨头给野兽、拿肉骨头引开它也是 tame（身上的肉骨头引擎会先扔一根）
 - dodge: description。闪避、闪躲、侧身躲开、护住要害准备挨打：这一下敌人更难打中
 - hide: description（第三人称简述怎么躲的），difficulty（隐匿的难度 1 到 10，看环境里有没有好藏身的地方、敌人离得多近）。躲起来、藏到树后、趴进草丛、屏住呼吸不让敌人发现
 - search: description（第三人称简述怎么找的）。四处搜寻、找找有没有哥布林、在草丛里翻找、采药、找药草、找找有没有能用的东西、循着声音去找声音的来源都是 search：能不能找到由引擎判定。地上已经列出来的东西直接 take，只是看看环境细节是 look
@@ -711,7 +713,7 @@ def npc_services(npc: Npc, sells: Optional[list[dict]] = None) -> list[str]:
     out = []
     if sells:
         out.append("卖" + "、".join(s["name"] for s in sells))
-    if kinds := [CREATE_WORDS.get(k, k) for k in p.get("creates", {})]:
+    if kinds := [CREATE_WORDS.get(k, k) for k, caps in engine.create_limits(npc).items() if not caps.get("knockout_only")]:
         out.append("按客人要求现做" + "、".join(kinds))
     if inn := p.get("inn"):
         out.append(f"住店，一晚 {inn.get('price', 0)} 金币，价钱固定不讲价，睡一觉回满体力、醒酒（他说一句“住店”就能住）")
@@ -770,9 +772,11 @@ def npc_line(db, view: RoomView, text: str, results: list[ActionResult], npc: Np
             + (f"你对他的感情：{FEELINGS[engine.affinity_word(affinity)]}\n" if engine.affinity_word(affinity) in FEELINGS else "")
             + f"对他的记忆：\n{memory or '第一次见面'}\n"
             f"你卖的货、做过的东西：{goods}\n委托：{tasks}\n"
-            + ("（你这儿只卖上面这些现成的货，不现做东西：客人要清单外的（特调、蜡烛、定做的刀），"
-               "按你的性子回绝或者推荐清单里差不多的，不要答应做、不要给它报价）\n"
-               if not npc.template.props.get("creates") else "")
+            + ("（你这儿只卖上面这些现成的货，不现做东西：客人要清单外的（蜡烛、定做的刀、单子上没有的酒），"
+               "按你的性子回绝或者推荐清单里差不多的，不要答应做、不要给它报价"
+               + ("；下了药的特调不卖，只端给把你惹毛了的闹事的人" if any(c.get("knockout_only") for c in engine.create_limits(npc).values()) else "")
+               + "）\n"
+               if not any(not c.get("knockout_only") for c in engine.create_limits(npc).values()) else "")
             + (f"你这儿能办的事：{'；'.join(services)}\n" if services else "")
             + (f"村里别的店卖的：{shops_text(shops)}（客人要的东西你不卖、别家卖，就告诉他去哪家找谁买，不要自己报价、不要拿别的顶替）\n"
                if shops else "")
@@ -796,6 +800,8 @@ def npc_line(db, view: RoomView, text: str, results: list[ActionResult], npc: Np
                "但你是有礼貌的人，最后一定要真心道谢（比如“……但、但还是谢谢你”），不能怪他</important>"
                if any(engine.RELUCTANT_FACT in f for r in results if r.success for f in r.facts) else "")
             + (f"\n\n<important>{FEELINGS[feeling]}</important>" if (feeling := engine.affinity_word(affinity)) in FEELINGS else "")
+            + (f"\n\n<important>这回合没做成：{'；'.join(failed)}。台词要照这个说（回绝他、说明为什么），不能答应、不能报价</important>"
+               if (failed := [f for r in results if not r.success and r.action in ("npc_create", "npc_sell", "npc_give") for f in r.facts]) else "")
             + (f"\n\n<important>他要的{other[0]}你这儿不卖，是{other[1]['npc']}（{other[1]['room']}）卖的："
                f"这一句按你的说话方式告诉他去找{other[1]['npc']}买，不要报价，也不要说你卖过</important>" if other else "")
             + "".join(f"\n\n<important>你们的交情到了这一步，你这回合要送他一份回礼：{f.split('：', 1)[1].split('（回礼', 1)[0]}。"
@@ -950,6 +956,9 @@ KIND_NAMES = {"food": "食物（吃的）", "drink": "酒水（喝的）", "misc
 
 def _kind_caps(kind: str, caps: dict) -> str:
     """给 AI 看的某个种类能做到什么程度"""
+    if caps.get("knockout_only"):
+        return (f"{kind} {KIND_NAMES.get(kind, kind)}：只能调下了药的特调（knockout 必填，白送不收钱），"
+                "只端给闹事、把你惹毛了的客人（好感是负的）；特调不卖，平常客人要特调就回绝，点喝的卖卖货清单里的")
     parts = [f"回血最多 {caps['heal']} 点（每点回血量上限的 {engine.HEAL_PCT}%，酒 {engine.HEAL_PCT_ALCOHOL}%）"
              if caps.get("heal") else "",
              f"有毒的最多掉 {caps['harm']} 血" if caps.get("harm") else "",
@@ -1051,7 +1060,7 @@ def decide_give(db, view: RoomView, text: str, npc: Npc, giveable: list[ItemInst
     give_refs = {f"g{n}": item for n, item in enumerate(giveable, 1)}
     sell_refs = {f"s{n}": s for n, s in enumerate(sells or [], 1)}
     # 开过价还没成交的现做东西，也能成交
-    made_offers = {k: v for k, v in offers.items() if k.startswith("made:") and v.get("spec") and v["spec"].get("kind") in creatable}
+    made_offers = {k: v for k, v in offers.items() if k.startswith("made:") and v.get("spec") and engine.made_allowed(npc, v["spec"])}
     sell_refs |= {f"m{n}": {"id": k, "name": v["spec"]["name"], "description": v["spec"].get("description", "")}
                   for n, (k, v) in enumerate(made_offers.items(), 1)}
     gives = "、".join(f"{ref} {item.name}（{item.description}）" for ref, item in give_refs.items()) or "无"

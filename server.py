@@ -552,9 +552,15 @@ def run_turn(req: CommandReq):
                             try:
                                 spec = engine.made_spec(npc, m.kind, m.name, m.description, m.heal, m.harm,
                                                         m.damage, m.knockout, m.alcohol)
-                                free = trade.price == 0 and engine.can_gift(affinity)
-                                results.append(engine.npc_gift(conn, pid, npc, spec) if free
-                                               else engine.quote_made(conn, pid, npc, spec, trade.price))
+                                if engine.create_limits(npc)[spec["kind"]].get("knockout_only"):
+                                    # 放倒人的特调不卖（不然买去药倒别的玩家），只端给惹毛了她的人（好感为负）
+                                    if affinity >= 0:
+                                        raise engine.ActionError(f"{npc.name}的特调不卖，只给闹事的人喝")
+                                    results.append(engine.npc_gift(conn, pid, npc, spec))
+                                else:
+                                    free = trade.price == 0 and engine.can_gift(affinity)
+                                    results.append(engine.npc_gift(conn, pid, npc, spec) if free
+                                                   else engine.quote_made(conn, pid, npc, spec, trade.price))
                             except engine.ActionError as e:
                                 results.append(ActionResult(action="npc_create", success=False, facts=[str(e)]))
                         elif trade.sell_id.startswith("made:"):

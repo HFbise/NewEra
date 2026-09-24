@@ -27,7 +27,7 @@ from schema import (
     ActionResult, Attack, Drop, Equip, Feature, Follow, Freeform, Give, ItemInstance, LeaveParty, Look,
     Move, Npc, OtherPlayer, Player, PlayerAction, Reject, Revive, Room, RoomExit, RoomView, Say, Status, Struggle,
     Stunt, Take, Talk, Unfollow, Unequip, Use, dir_name, Dispenser, SLOT_CHOICES, SLOT_NAMES, Dodge, Hide, Maneuver, Search, Stealth, Tame,
-    Uncurse, Reload, Refill, Transfer, Reroll, Rename,
+    Uncurse, Reload, Refill, Transfer, Reroll, Rename, Write,
     AcceptDuel, Challenge, DeclineDuel, Duel, Flee, SKILL_NAMES, Upgrade, Respawn, Stand, Rest, Pay, Camp, Teleport, Sell,
     Effect,
 )
@@ -2357,7 +2357,11 @@ def do_maneuver(cur: Cursor, player: Player, view: RoomView, a: Maneuver) -> lis
 
 
 # 驯兽：野兽（怪标了 animal）可以安抚，避开这一仗。难度 1 + 层数/6，精英 +1，头目安抚不了。
-# 成了这一群同种的野兽平静下来走开，金币、身上的东西照给；不成它们被激怒，马上扑上来先打一下
+# 成了这一群同种的野兽平静下来走开，金币、身上的东西照给；不成它们被激怒，马上扑上来先打一下。
+# 身上带着肉骨头（麦琪后厨卖的）会先扔一根，难度 -BAIT_EASE
+BAIT_EASE = 1
+
+
 def do_tame(cur: Cursor, player: Player, view: RoomView, a: Tame) -> list[str]:
     npc = _room_npc(cur, view, player, a.target)
     rank = npc.template.props.get("dungeon", {}).get("rank", "normal")
@@ -2367,8 +2371,16 @@ def do_tame(cur: Cursor, player: Player, view: RoomView, a: Tame) -> list[str]:
         raise ActionError(f"{npc.name}是这一层的头目，安抚不了")
     pack = [n for n in _enemies(cur, player.room_id) if n.template.id == npc.template.id]
     depth = npc.template.props.get("dungeon", {}).get("depth", 1)
-    ok, facts = _check(cur, player, view, "animal", 1 + depth // 6 + (1 if rank == "elite" else 0))
-    facts = [f"{player.name}{a.description or '放低身子、慢慢靠近，压着嗓子安抚'}{npc.name}"] + facts
+    difficulty = 1 + depth // 6 + (1 if rank == "elite" else 0)
+    # 身上有肉骨头（props.bait）就先扔一根过去：难度 -BAIT_EASE，成不成骨头都没了
+    bone = next((i for i in view.inventory if _prop(i, "bait")), None)
+    thrown = []
+    if bone:
+        _consume(cur, bone)
+        difficulty = max(0, difficulty - BAIT_EASE)
+        thrown = [f"{player.name}先把一根{bone.name}扔到{npc.name}跟前，它低头嗅了嗅"]
+    ok, facts = _check(cur, player, view, "animal", difficulty)
+    facts = thrown + [f"{player.name}{a.description or '放低身子、慢慢靠近，压着嗓子安抚'}{npc.name}"] + facts
     if ok:
         for n in pack:
             facts += _npc_gone(cur, player, n, tamed=True)
@@ -2392,7 +2404,7 @@ def _beast_hint(cur: Cursor, room_id: str) -> list[str]:
     if not beasts:
         return []
     return [f"{'、'.join(beasts)}是野兽：可以试着安抚它，避开这一仗（说「安抚{beasts[0]}」，看驯兽）；"
-            "安抚成了照样有收获，失败会被它抢先扑上来"]
+            "安抚成了照样有收获，失败会被它抢先扑上来；身上带着肉骨头会先扔一根，容易些"]
 
 
 def do_dodge(cur: Cursor, player: Player, view: RoomView, a: Dodge) -> list[str]:
@@ -3521,13 +3533,28 @@ def do_give(cur: Cursor, player: Player, view: RoomView, a: Give) -> list[str]:
         return [f"{player.name}把{item.name}递给了{npc.name}"]
     # 送她心爱的礼物（world.yaml props.gift_likes 里的种类）：好感固定 +LIKED_GIFT，东西她收下（从世界里拿走）
     if (gift := _prop(item, "gift")) and gift in npc.template.props.get("gift_likes", []):
+        # 小礼物（props.gift_value，村里互相卖的怪酒、木炭、游记）：好感加得少，每人每天只收一件，跨得过好感的坎
+        if small := _prop(item, "gift_value"):
+            cur.execute("""select 1 from player_npc_relations where player_id = %s and npc_template = %s
+                           and gift_day = (now() at time zone 'Asia/Shanghai')::date""", (player.id, npc.template.id))
+            if cur.fetchone():
+                raise ActionError(f"{npc.name}今天已经收过{player.name}的小礼物了，明天再送")
+            _consume(cur, item)
+            new = min(100, _affinity(cur, player, npc) + int(small))
+            cur.execute("""insert into player_npc_relations (player_id, npc_template, affinity, gift_day)
+                           values (%s, %s, %s, (now() at time zone 'Asia/Shanghai')::date)
+                           on conflict (player_id, npc_template) do update
+                           set affinity = excluded.affinity, gift_day = excluded.gift_day""",
+                        (player.id, npc.template.id, new))
+            return [f"{player.name}把{item.name}送给了{npc.name}，是她喜欢的小东西",
+                    f"{npc.name}对{player.name}的好感上升（当前 {new}，收到小礼物）"]
         back = item.props.get("sold_by") == npc.template.id
-        cur.execute("delete from item_instances where id = %s", (item.id,))
+        _consume(cur, item)                 # 叠着的古酒只送出一瓶
         new = min(100, _affinity(cur, player, npc) + LIKED_GIFT)
         cur.execute("""insert into player_npc_relations (player_id, npc_template, affinity) values (%s, %s, %s)
                        on conflict (player_id, npc_template) do update set affinity = excluded.affinity""",
                     (player.id, npc.template.id, new))
-        return [f"{player.name}把{_label(item)}送给了{npc.name}，这正是她最想要的东西（{GIFT_FACT}）"
+        return [f"{player.name}把{item.name}送给了{npc.name}，这正是她最想要的东西（{GIFT_FACT}）"
                 + (f"，而且是{RETURNED_FACT}" if back else ""),
                 f"{npc.name}对{player.name}的好感上升（当前 {new}，收到心爱的礼物）"]
     _move_item(cur, item, npc_id=npc.id)
@@ -3785,6 +3812,35 @@ def do_rename(cur: Cursor, player: Player, view: RoomView, a: Rename) -> list[st
     return [f"{player.name}给{item.name}起了名字：{full}"]
 
 
+NOTE_MAX = 100
+
+
+def do_write(cur: Cursor, player: Player, view: RoomView, a: Write) -> list[str]:
+    """在纸条（props.writable）上写字：文字存进这一张的描述，名字变成"写了字的纸条"，写过的不能再改。
+    玩家之间留言用：给队友、丢在地牢房间里提醒后来的人、当信物。字是玩家写的，不是 AI 编的"""
+    item = _inv_item(cur, view, player, a.item)
+    if item.props.get("note"):
+        raise ActionError(f"{item.name}上已经写过字了，改不了")
+    if not _prop(item, "writable"):
+        raise ActionError(f"{item.name}上写不了字")
+    text = re.sub(r"\s+", " ", a.message).strip().strip("「」“”\"'").strip()
+    if not text:
+        raise ActionError("要写什么？（说「在纸条上写……」）")
+    if len(text) > NOTE_MAX:
+        raise ActionError(f"纸条就这么大，最多写 {NOTE_MAX} 个字（这段有 {len(text)} 个）")
+    if item.quantity > 1:                   # 叠着的只写最上面一张
+        cur.execute("update item_instances set quantity = quantity - 1 where id = %s", (item.id,))
+        cur.execute("insert into item_instances (template_id, player_id) values (%s, %s) returning id",
+                    (item.template.id, player.id))
+        note_id = cur.fetchone()["id"]
+    else:
+        note_id = item.id
+    cur.execute("update item_instances set props = props || %s where id = %s",
+                (Jsonb({"note": text, "writable": False, "name": "写了字的纸条",
+                        "description": f"{item.template.description}上面用炭笔写着：“{text}”（{player.name}写的）"}), note_id))
+    return [f"{player.name}在纸条上写下：“{text}”"]
+
+
 # ============ 诅咒 ============
 # 诅咒装备（props.cursed）：装上就粘在身上，卸不下、扔不掉、给不出、卖不掉，别的东西也顶不掉它。
 # 找诺艾尔（props.uncurse）按参考价付钱解咒：解了就是普通装备（实例上记 cursed: false），特效还在
@@ -3871,7 +3927,7 @@ HANDLERS: dict[str, Callable[..., list[str]]] = {
     "say": do_say, "revive": do_revive, "stunt": do_stunt, "struggle": do_struggle,
     "follow": do_follow, "unfollow": do_unfollow, "leave_party": do_leave_party,
     "maneuver": do_maneuver, "dodge": do_dodge, "tame": do_tame, "uncurse": do_uncurse, "reload": do_reload, "refill": do_refill,
-    "transfer": do_transfer, "reroll": do_reroll, "rename": do_rename, "hide": do_hide, "search": do_search, "reject": do_reject,
+    "transfer": do_transfer, "reroll": do_reroll, "rename": do_rename, "write": do_write, "hide": do_hide, "search": do_search, "reject": do_reject,
     "upgrade": do_upgrade, "pay": do_pay, "sell": do_sell, "respawn": do_respawn, "stand": do_stand, "rest": do_rest, "camp": do_camp, "teleport": do_teleport, "challenge": do_challenge, "accept_duel": do_accept_duel, "decline_duel": do_decline_duel, "flee": do_flee,
 }
 
@@ -4548,6 +4604,8 @@ def item_detail(item: ItemInstance, curse_sense: bool = False) -> str:
         "ammo": "特殊弹药：装填时装上，下一发带上它的效果",
         "smoke": "摔碎了冒一大团烟：两轮里远程命中减半，敌我都算",
         "recover": "扔完了，打完这一架会捡回来",
+        "bait": "安抚野兽时先扔一根过去，驯兽难度 -1（成不成都用掉一根）",
+        "writable": "能写几句话（说「在纸条上写……」），写了就改不了",
     }
     if t.type == "consumable" and _use_kind(item) in MEDICINE_KINDS:
         lines.append("能给别人用：用药的人医药越高回得越多，给人用药能练医药")
@@ -4562,7 +4620,8 @@ def item_detail(item: ItemInstance, curse_sense: bool = False) -> str:
     if uses := _prop(item, "uses"):
         lines.append(f"能用 {item.props.get('uses_left', uses)} 次")
     if gift := _prop(item, "gift"):
-        lines.append(f"{GIFT_FOR.get(gift, '')}最想要的礼物")
+        lines.append(f"{GIFT_FOR.get(gift, '')}喜欢的小礼物（每天收一件）" if _prop(item, "gift_value")
+                     else f"{GIFT_FOR.get(gift, '')}最想要的礼物")
     lines += [_effect_line(e) for e in _prop(item, "effects") or []]
     if price := base_price(item_stats(item)):
         lines.append(f"参考价 {price} 金币")
@@ -4588,6 +4647,12 @@ def create_limits(npc: Npc) -> dict[str, dict]:
     return {k: (v or {}) for k, v in cfg.items() if k in MADE_TEMPLATES}
 
 
+def made_allowed(npc: Npc, spec: dict) -> bool:
+    """这个 NPC 现在还做这种东西吗。knockout_only：只调下了药的特调（麦琪放倒闹事的人），别的酒水不现做"""
+    caps = create_limits(npc).get(spec.get("kind"))
+    return caps is not None and (not caps.get("knockout_only") or bool(spec.get("knockout")))
+
+
 def made_spec(npc: Npc, kind: str, name: str, description: str, heal: int = 0, harm: int = 0,
               damage: int = 0, knockout: Optional[str] = None, alcohol: bool = False) -> dict:
     """AI 提议的现造东西，按 NPC 的上限裁剪成规格。种类不允许就抛 ActionError"""
@@ -4604,6 +4669,8 @@ def made_spec(npc: Npc, kind: str, name: str, description: str, heal: int = 0, h
         spec["heal"] = 0 if spec["harm"] or spec.get("knockout") else clamp(heal, "heal")
         if alcohol and kind == "drink":
             spec["alcohol"] = True              # 酒：喝了可能醉
+        if caps.get("knockout_only") and not spec.get("knockout"):
+            raise ActionError(f"{npc.name}不现做酒水，吧台上有什么卖什么")
     elif kind == "weapon":
         spec["damage"] = max(1, clamp(damage, "damage"))
     return spec
@@ -4686,7 +4753,7 @@ def npc_buy_made(conn: Connection, player_id: UUID, npc: Npc, key: str) -> Actio
         if not offer or not offer.get("spec"):
             raise ActionError(f"{npc.name}还没给这件东西报价")
         spec = offer["spec"]
-        if spec.get("kind") not in create_limits(npc):
+        if not made_allowed(npc, spec):
             raise ActionError(f"{npc.name}现在不做{spec['name']}了")     # 现做关掉以前开过的价
         with conn.transaction():
             cur = _cursor(conn)
@@ -4715,12 +4782,12 @@ def _remember_goods(cur: Cursor, npc: Npc, spec: dict, price: Optional[int] = No
 
 
 def known_goods(conn: Connection, npc: Npc) -> list[dict]:
-    """NPC 做过的东西 [{name, spec, price}]，最近的在前"""
+    """NPC 做过、现在还做的东西 [{name, spec, price}]，最近的在前"""
     with conn.transaction():
         cur = _cursor(conn)
         cur.execute("select name, spec, price from npc_goods where npc_template = %s order by updated_at desc limit %s",
                     (npc.template.id, GOODS_SHOWN))
-        return cur.fetchall()
+        return [g for g in cur.fetchall() if made_allowed(npc, g["spec"] or {})]
 
 
 def can_eject(npc: Npc) -> bool:

@@ -237,6 +237,11 @@ def _parse_one(view: RoomView, t: str) -> dict:
         if m := (re.fullmatch(r"(?:刷新|重洗|洗|重铸)\s*(.+?)\s*(?:的)?\s*(?:词条|特效)?", u)
                  or re.fullmatch(r"(?:给|把)\s*(.+?)\s*(?:刷新|重洗|重铸)\s*(?:一下)?\s*(?:词条|特效)?", u)):
             return {"action": "reroll", "item": _find(view, m[1], "inv"), "target": ref}
+    # 纸条写字："在纸条上写：明天地牢门口等你""纸条上写下 小心左边的陷阱""写纸条：……"（写在还空着的那张上）
+    if m := re.fullmatch(r"(?:在|往)?\s*纸条\s*上\s*(?:写下|写上|写)\s*[:：,，]?\s*(.+)|写(?:一?张)?纸条\s*[:：,，]\s*(.+)", t, re.S):
+        blank = next((i for i in view.inventory if i.template.props.get("writable") and not i.props.get("note")), None)
+        return {"action": "write", "item": {uid: ref for ref, uid in view.refs.items()}[blank.id] if blank else _find(view, "纸条", "inv"),
+                "message": m[1] or m[2]}
     # 专属武器起名："给莉娜打的剑起名叫破晓""把它改名为破晓"
     if m := re.fullmatch(r"(?:给|把)\s*(.+?)\s*(?:起名|取名|改名|命名)\s*(?:叫|为|成|作)?\s*(.+)", t):
         return {"action": "rename", "item": _find(view, m[1], "inv"), "name": m[2]}
@@ -257,6 +262,14 @@ def _parse_one(view: RoomView, t: str) -> dict:
         return {"action": "use", "item": {uid: ref for ref, uid in view.refs.items()}[drug.id],
                 "target": {uid: ref for ref, uid in view.refs.items()}[foe.id] if foe else None}
 
+    # 拿肉骨头驯兽："扔根骨头给狼""用肉骨头安抚狼""拿骨头引开狼"：就是安抚，引擎会先扔一根骨头
+    if "骨头" in t and re.search(r"扔|丢|喂|引|用|给|拿", t) and any(i.template.props.get("bait") for i in view.inventory):
+        beasts = [n for n in view.npcs if n.template.hostile and n.template.props.get("animal")]
+        foe = next((n for n in beasts if n.name in t or n.name[-1] in t.replace("骨头", "")), None) \
+            or (beasts[0] if len(beasts) == 1 or len({n.template.id for n in beasts}) == 1 else None)
+        if foe:
+            return {"action": "tame", "target": {uid: ref for ref, uid in view.refs.items()}[foe.id],
+                    "description": "趁它啃骨头，放低身子慢慢靠近，压着嗓子安抚"}
     # 驯兽："安抚狼""驯服巨鼠""安抚一下那只狼"（只对野兽有用，是不是野兽引擎查）
     if m := re.fullmatch(r"(?:试着|试试|慢慢)?(?:安抚|驯服|驯养|平息|哄走|哄哄|安慰)\s*(?:一下)?\s*(?:那只|这只|那群|这群)?\s*(.+)", t):
         return {"action": "tame", "target": _find(view, m[1], "npc")}
@@ -424,7 +437,7 @@ def _parse_one(view: RoomView, t: str) -> dict:
             return {"action": "pay", "target": name or _find(view, who, "npc"), "amount": amount}
 
     # 给东西：对方是玩家就填名字，是 NPC 就填 ref
-    if m := (re.fullmatch(r"把\s*(.+?)\s*(?:给|交给|递给)\s*(.+)", t)
+    if m := (re.fullmatch(r"把\s*(.+?)\s*(?:给|交给|递给|送给)\s*(.+)", t)
              or re.fullmatch(r"give\s+(\S+)\s+(?:to\s+)?(\S+)", t, re.I)):
         who = next((p.name for p in view.others if p.name == m[2].strip()), None)
         return {"action": "give", "item": _find(view, m[1], "inv"), "target": who or _find(view, m[2], "npc")}

@@ -338,6 +338,48 @@ items:
     type: consumable
     heal: 1
     props: {price: 5, cure: poison, kind: potion}
+  tavern_stew:
+    name: 麦琪的炖肉
+    description: 一大碗炖得软烂的肉块和土豆，汤面上浮着一层油花，麦琪说里面放了“秘方”，问是什么就只笑不答。
+    type: consumable
+    heal: 8
+    props: {price: 5, kind: food}
+  beast_bone:
+    name: 肉骨头
+    description: 后厨剁剩下的大骨头，上面还挂着不少肉丝，野兽闻到了多半顾不上别的。
+    type: misc
+    stackable: true
+    props: {price: 2, bait: true}   # 扔给一只野兽：它叼着骨头走开，不再参与这一仗，也不掉东西；头目不吃这套（engine._bait）
+  paper_note:
+    name: 纸条
+    description: 一张裁得歪歪扭扭的粗纸，附带一小截炭笔，能写几句话。
+    type: misc
+    props: {price: 1, writable: true}   # "在纸条上写……"：文字存进这张纸条，限 100 字，写过的不能再改（engine.do_write）
+  # 小礼物：三个人互相卖对方喜欢的东西。gift_value 是送出去加的好感（不写就是心爱礼物的 LIKED_GIFT），
+  # 小礼物每个 NPC 每天只收一件（engine.SMALL_GIFT_DAILY）
+  southern_wine:               # 诺艾尔卖，送麦琪
+    name: 南方怪酒
+    description: 一只贴着看不懂的外国字标签的扁酒瓶，是南方商队顺路捎来的，诺艾尔自己一口都没尝过。
+    type: consumable
+    heal: 2
+    props: {price: 8, alcohol: true, gift: wine, gift_value: 3}
+  hardwood_charcoal:           # 诺艾尔卖，送莉娜
+    name: 硬木炭
+    description: 一麻袋烧得透透的硬木炭，敲起来声音清脆，据说烧起来火最稳。
+    type: misc
+    props: {price: 8, gift: ore, gift_value: 3}
+  travel_journal:              # 麦琪卖，送诺艾尔
+    name: 冒险者的游记
+    description: 一本皮面起了毛的小本子，是某个再也没回来付酒钱的冒险者留在酒馆里的，最后几页的字迹越来越潦草。
+    type: misc
+    props: {price: 8, gift: book, gift_value: 3}
+  leather_boots:               # 莉娜卖：脚部位的入门货，商店全套防御到 5，再往上靠地牢
+    name: 皮靴
+    description: 一双缝得结结实实的短筒皮靴，鞋底钉了几颗铁钉，踩在湿石头上不打滑。
+    type: armor
+    slot: feet
+    defense: 1
+    props: {price: 7}
 
   # 回礼：好感到了某一档，来聊天时 NPC 送的东西（见各 NPC 的 return_gifts）
   maggie_trap_map:
@@ -478,11 +520,11 @@ npcs:
       #   food 食物 / drink 酒水：heal 回血上限；harm 有毒掉血上限；knockout: true 能下蒙汗药把人放倒
       #   weapon 武器：damage 伤害上限
       #   misc 杂物（字条、信物）：没效果
-      # 暂时关掉现做（AI 起名的东西没有正式物品的属性，蜡烛当不了火把，玩家拿到发现没用）。要恢复把下面四行打开
-      # creates:
-      #   food: {heal: 5, harm: 5, knockout: true}
-      #   drink: {heal: 5, harm: 5, knockout: true}
-      #   misc: {}
+      # 暂时关掉现做（AI 起名的东西没有正式物品的属性，蜡烛当不了火把，玩家拿到发现没用）。
+      # 只留一样：给闹事的人调一杯下了药的特调放倒他（knockout_only，别的酒水不现做）。原来的配置：
+      #   food: {heal: 5, harm: 5, knockout: true}  drink: {heal: 5, harm: 5, knockout: true}  misc: {}
+      creates:
+        drink: {knockout: true, knockout_only: true}
       # 玩家闹事时能把人轰出去：从这个出口扔出去。不写就不能轰人
       # 能住店：付钱睡一觉回满血、醒酒
       inn: {price: 5}
@@ -500,7 +542,8 @@ npcs:
         100: {item: maggie_flask, text: 一只装着她私酿的旧锡酒壶，壶底偷偷刻着"回头见"和一颗小小的心（喝一口回满血，偶尔浑身是劲）}
       # 吧台上的货，价钱由 AI 按建议价浮动
       # 麻绳、火把、面包、药草是后厨的顺手生意（人设里写了开价比诺艾尔贵）
-      sells: [dwarf_stout, elf_mead, dragon_breath, sober_potion, trail_rations, rope, torch, bread, herb]
+      sells: [dwarf_stout, elf_mead, dragon_breath, sober_potion, trail_rations,
+              tavern_stew, beast_bone, travel_journal, rope, torch, bread, herb]   # 游记是送诺艾尔的小礼物
       eject_to: south
       # 店里有人倒下时扶起来回满血，按倒下的原因说一句（{name} 倒下的人，{by} 打倒他的怪、人或者吃下的东西）
       revive_lines:
@@ -515,7 +558,7 @@ npcs:
     props:
       # 能卖的东西（物品 id），价钱、卖不卖、打不打折都由 AI 看人设和心情定
       sells: [iron_axe, forge_knife, sickle, wooden_shield, leather_cap, leather_armor,
-              whetstone, hand_crossbow, lead_shot, grapple_bolt]     # 铁打的：磨刀石、手弩、铅弹、钩索箭（弓不是铁匠的活，只从地牢出）
+              whetstone, hand_crossbow, lead_shot, grapple_bolt, leather_boots]     # 铁打的：磨刀石、手弩、铅弹、钩索箭（弓不是铁匠的活，只从地牢出）
       # 现打武器，伤害最多 4（墙上的铁斧是 5）。暂时关掉，同麦琪
       # creates:
       #   weapon: {damage: 4}
@@ -542,7 +585,8 @@ npcs:
     props:
       # 货架上的东西，价钱由 AI 按建议价浮动
       sells: [rope, torch, tent, recall_crystal, blood_potion,
-              bandage, lamp_oil, antidote, light_scroll, smoke_bomb, sling, fire_arrow]   # 探险杂货、解状态、书上学来的小玩意
+              bandage, lamp_oil, antidote, light_scroll, smoke_bomb, sling, fire_arrow,
+              paper_note, southern_wine, hardwood_charcoal]   # 探险杂货、解状态、书上学来的小玩意；怪酒送麦琪、木炭送莉娜
       # 偶尔进的稀罕货（地牢里的礼物道具）：客人问有什么卖的时判一次 chance，中了这一小时里有一件，
       # 价钱固定是参考价 × markup，只有一件、卖掉就没了；没问就不提（engine.rare_stock）。
       # reluctant 里的她舍不得卖，卖的时候台词不一样；卖出去的书送回给她，她认得出来

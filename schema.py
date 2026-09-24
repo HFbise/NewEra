@@ -83,6 +83,13 @@ class Rename(BaseModel):
     name: str
 
 
+class Write(BaseModel):
+    """在能写字的东西（纸条）上写几句话：写进这一张，限 100 字，写过的不能再改"""
+    action: Literal["write"]
+    item: str
+    message: str
+
+
 class Refill(BaseModel):
     """找送酒壶的 NPC（麦琪）续杯：把她给的解毒酒壶、特制迷药、回头见❤ 这些空了的都灌满"""
     action: Literal["refill"]
@@ -267,7 +274,8 @@ class Uncurse(BaseModel):
 
 
 class Tame(BaseModel):
-    """安抚、驯服野兽（怪标了 animal）：驯兽判定，成了这一群同种的野兽平静下来走开（收获照给），不成它们扑上来先打一下"""
+    """安抚、驯服野兽（怪标了 animal）：驯兽判定，成了这一群同种的野兽平静下来走开（收获照给），不成它们扑上来先打一下。
+    身上有肉骨头会先扔一根（难度 -1）：玩家说"扔骨头给狼""用肉骨头引开它"也是这个动作"""
     action: Literal["tame"]
     target: str                         # 野兽 NPC 的 ref
     description: str = ""
@@ -316,7 +324,7 @@ class Reject(BaseModel):
 
 PlayerAction = Annotated[
     Union[Move, Look, Take, Drop, Use, Equip, Unequip, Attack, Talk, Give, Sell, Pay, Upgrade, Say, Revive, Respawn, Stand, Rest, Camp, Teleport, LeaveParty,
-          Follow, Unfollow, Challenge, AcceptDuel, DeclineDuel, Flee, Stunt, Struggle, Maneuver, Dodge, Tame, Uncurse, Reload, Refill, Transfer, Reroll, Rename, Hide, Search,
+          Follow, Unfollow, Challenge, AcceptDuel, DeclineDuel, Flee, Stunt, Struggle, Maneuver, Dodge, Tame, Uncurse, Reload, Refill, Transfer, Reroll, Rename, Write, Hide, Search,
           Freeform, Reject],
     Field(discriminator="action"),
 ]

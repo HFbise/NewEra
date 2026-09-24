@@ -147,6 +147,7 @@ create table player_npc_relations (
   rare         jsonb,                           -- 偶尔进的稀罕货 {at, item}：问货时判一次，这段时间里 item 就是有的那件（null 是没进到或卖掉了）
   chat_day     date,                            -- 聊天涨好感按天封顶（engine.CHAT_DAILY）：这一天
   chat_gain    int not null default 0,          -- 这一天聊天已经涨了多少
+  gift_day     date,                            -- 最近一次收小礼物（props.gift_value）的日子：每人每天只收一件
   gifts        int[] not null default '{}',     -- 领过的回礼档位（好感 20/40/…），掉了再涨回来也不会再送（engine.return_gift）
   primary key (player_id, npc_template)
 );
