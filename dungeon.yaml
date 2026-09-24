@@ -240,6 +240,220 @@ themes:
       atk: 1
       def: 1
 
+  forest:
+    name: 地底森林
+    intro: 石阶尽头竟是一片森林：头顶不是天空，而是望不到边的岩穹，岩缝里垂下发着微光的根须，照着一棵棵在黑暗里长了不知多少年的苍白巨树。
+    entry:
+      name: 林边石阶
+      description: 石阶的最后几级被树根拱得歪歪斜斜，前方是一片苍白的树林，树干上长满发光的苔藓。
+      light: dim
+      details: >-
+        树根从石缝里钻出来，粗得像人的腰。空气潮湿，带着腐叶和某种甜腻花香的味道。
+        林子里很安静，安静得听不见一只虫子叫，只有岩穹上偶尔滴下的水珠打在叶子上。
+    stairs:
+      name: 空心巨树
+      description: 一棵巨树的树干中间是空的，树洞里一圈木质的台阶螺旋着往地底更深处延伸。
+      light: dark
+      details: >-
+        树洞内壁光滑，像是被什么东西常年进出磨出来的。台阶是树本身长出来的木瘤，踩上去微微发软。下面吹上来的风带着泥土和更古老的气味。
+    treasure:
+      name: 猎人的藏身处
+      description: 两棵巨树之间搭着一个破旧的木棚，棚下堆着几只蒙着兽皮的箱子。
+      light: dim
+      cover: true
+      details: >-
+        木棚的柱子上挂着几串风干的兽骨，像是驱邪用的。箱子上的兽皮已经发硬，有一只被爪子抓开过，又被人用绳子重新绑上了。
+    rooms:
+      - name: 苍白林道
+        light: dim
+        cover: true
+        description: 一条落满白色落叶的小路在巨树之间蜿蜒，两侧的树干粗得几个人都合抱不过来。
+        details: 落叶踩上去没有声音，像踩在灰上。树干上有一道道新鲜的爪痕，离地一人多高。
+      - name: 发光的林间空地
+        light: bright
+        description: 一片开阔的空地，地上长满会发光的蓝色小花，把四周照得亮堂堂的。
+        details: 空地中央有一圈倒伏的草，像有什么庞大的东西在这里趴过。花的光一闪一闪，像在呼吸。
+      - name: 缠根洼地
+        light: dark
+        ground: water
+        description: 一处低洼的林地，地面被纵横交错的树根和积水占满，每一步都得小心。
+        details: 积水黑得发亮，树根在水下盘成一张网，随时可能绊住脚。水面上浮着一层细细的白色孢子。
+      - name: 倒木长廊
+        light: dim
+        cover: true
+        description: 几棵倒下的巨树横七竖八地架在一起，形成一条天然的木廊。
+        details: 倒木上长满了蘑菇和苔藓，木廊里又暗又闷。有的倒木被掏空了，里面黑洞洞的，像是有什么东西的窝。
+      - name: 藤蔓帷幕
+        light: dark
+        cover: true
+        description: 从头顶垂下的藤蔓密得像一道道帘子，要拨开才能往前走。
+        details: 藤蔓摸上去冰凉滑腻，有的会轻轻缩一下。帘子后面偶尔传来窸窸窣窣的声音，又很快停了。
+      - name: 石像残迹
+        light: dim
+        description: 林子里立着几尊半埋在树根里的石像，面孔早已被苔藓吞没。
+        details: 石像的手都指着同一个方向，那里的树长得格外密。其中一尊的脚下摆着几块新鲜的兽骨，像是供品。
+    features:
+      - {name: 倒下的枯树, max_tier: heavy}
+      - {name: 荆棘丛, max_tier: light}
+      - {name: 垂下的藤蔓, max_tier: light}
+      - {name: 布满苔藓的大石, max_tier: heavy}
+      - {name: 发光的菌灯, max_tier: light, lamp: true}
+    monsters: [cave_wolf, thorn_vine, forest_goblin]
+    events: [tree_hollow_wine, runestone_notes, spring]
+    eerie:
+      - 远处有什么东西踩断了一根树枝，然后整片林子都安静了下来。
+      - 头顶的根须里传来一阵低沉的吱嘎声，像是某棵巨树在翻身。
+      - 一只发光的飞虫停在你肩上，又飞走了，它飞去的方向传来一声狼嚎。
+    boss:
+      name: 古树守卫
+      description: 一棵会走路的古树，树皮上长着一张沉睡般的人脸，枝条像手臂一样垂着，每走一步地面都在颤。
+      persona: 缓慢而愤怒，把闯进森林的人都当作砍树的贼，枝条抽过来又重又狠。
+      hp: 1.4
+      atk: 0
+      def: 1
+
+  swamp:
+    name: 蘑菇沼泽
+    intro: 石阶一路往下，渐渐被湿滑的淤泥盖住，眼前是一片泡在黑水里的沼泽，到处长着比人还高的蘑菇，伞盖下发着幽幽的绿光。
+    entry:
+      name: 沼泽边缘
+      description: 石阶没进淤泥里，前方是一片冒着气泡的黑水沼泽，几株巨大的蘑菇撑开伞盖，像一盏盏昏暗的灯。
+      light: dim
+      ground: water
+      details: >-
+        空气又闷又潮，带着一股甜腥的霉味，吸久了嗓子发痒。淤泥里半埋着一条腐烂的木栈道，还能勉强下脚。
+    stairs:
+      name: 蘑菇井
+      description: 一株巨大的空心蘑菇倒插在沼泽中央，菌柄里是一条往下的湿滑通道。
+      light: dim
+      details: >-
+        菌柄内壁软得像肉，一按就渗出黏液。通道里挂满发光的菌丝，一直往下延伸，看不到尽头。
+    treasure:
+      name: 沉没的小屋
+      description: 一间陷进沼泽一半的木屋，屋顶上长满了蘑菇，门半开着。
+      light: dark
+      ground: water
+      details: >-
+        屋里的水没到膝盖，漂着腐烂的家具。墙角的架子还高出水面，上面摆着几只用蜡封好的罐子和一只小木箱。
+    rooms:
+      - name: 腐烂的栈道
+        light: dim
+        ground: water
+        description: 一条架在黑水上的木栈道，木板烂了大半，每一步都嘎吱作响。
+        details: 栈道下面的水里有东西游过，带起一串气泡。有几块木板已经断了，要跳过去才行。
+      - name: 巨菇林
+        light: dim
+        cover: true
+        description: 一片比人还高的蘑菇林，伞盖层层叠叠，把头顶遮得严严实实。
+        details: 菌柄上长着一圈圈鳞片，碰一下就落下一阵发光的孢子。蘑菇之间的缝隙窄得只能侧身挤过去。
+      - name: 孢子雾地
+        light: dark
+        description: 一片被浓密孢子雾笼罩的地方，伸手不见五指，只有雾里偶尔亮起一点绿光。
+        details: 孢子雾甜得发腻，吸进去脑袋有点发沉。雾里有东西在慢慢移动，看不清是什么。
+      - name: 泥沼深处
+        light: dark
+        ground: water
+        description: 泥浆一直没到大腿，每一步都要用力把腿拔出来。
+        details: 泥浆里时不时冒出一个大气泡，带着腐臭的味道炸开。泥里好像埋着什么硬东西，踩上去咯脚。
+      - name: 萤火洞穴
+        light: bright
+        description: 一个干燥的小洞穴，洞顶挂满了萤火虫一样发光的小虫，把洞里照得通明。
+        details: 这是沼泽里难得干燥的地方，地上有人生过火的痕迹。发光小虫受惊时会一起熄灭，再慢慢亮起来。
+      - name: 蘑菇人的村落
+        light: dim
+        cover: true
+        description: 几株蘑菇被掏空做成了小屋，屋前摆着用菌盖做的碗和盘子。
+        details: 小屋里空无一人，碗里还盛着冒着热气的黏稠菌汤。屋檐下挂着一串串风干的虫子，像是存粮。
+    features:
+      - {name: 腐烂的树桩, max_tier: heavy}
+      - {name: 发光的毒菇丛, max_tier: light}
+      - {name: 淤泥坑, max_tier: heavy}
+      - {name: 垂着的湿苔藓, max_tier: light}
+      - {name: 挂着的萤虫灯笼, max_tier: light, lamp: true}
+    monsters: [bog_toad, myconid, bog_leech]
+    events: [witch_hut, sunken_cart, spring]
+    eerie:
+      - 沼泽深处传来一声沉闷的"咕嘟"，像是有什么很大的东西沉下去了。
+      - 几株蘑菇的光同时熄灭，又一株接一株地亮了回来，像在传递什么信号。
+      - 雾里有人在轻轻哼一首听不懂的歌，调子忽远忽近。
+    boss:
+      name: 沼泽女巫
+      description: 一个佝偻的老妇人，下半身和一株巨大的蘑菇长在了一起，手里拄着一根挂满骨头的拐杖。
+      persona: 阴沉又爱笑，喜欢用甜言蜜语引人走进泥沼深处，发起怒来尖啸着召唤毒雾。
+      hp: 1.0
+      atk: 2
+      def: 0
+
+  library:
+    name: 巨大图书馆
+    intro: 石阶尽头是一扇敞开的铜门，门后的书架一排排延伸进黑暗，高得看不到顶，空气里满是灰尘、旧纸和墨水的味道。
+    entry:
+      name: 铜门前厅
+      description: 一间铺着黑白石砖的前厅，正对着一扇半开的铜门，门上铸着一只睁开的眼睛。
+      light: dim
+      details: >-
+        前厅的墙上刻着一行字："静。书在听。"地上有一层均匀的灰，只有一串脚印从门里走出来，没有走进去的。
+    stairs:
+      name: 下沉的阅览井
+      description: 一口圆形的井，井壁全是书架，一条螺旋的木梯沿着书架往下盘，下面还是书。
+      light: dark
+      details: >-
+        越往下书越老，书脊上的文字也越古怪。梯子上挂着一盏早已熄灭的油灯，风从井底吹上来，翻动着书页。
+    treasure:
+      name: 馆长的储藏室
+      description: 一间上锁的小房间，锁已经被撬坏了，里面堆着没登记的书和杂物。
+      light: dim
+      cover: true
+      details: >-
+        房间里堆着成箱的书和几只落满灰的木匣，一张桌上还摊着一本记账本，最后一页写着"遗失：三册。追回：零"。
+    rooms:
+      - name: 无尽书廊
+        light: dark
+        cover: true
+        description: 两侧的书架高得看不到顶，书廊笔直地伸进黑暗里，看不到尽头。
+        details: 有些书的书脊在轻轻颤动，像是在呼吸。偶尔会有一本书自己从架上掉下来，摊开在地上。
+      - name: 烛光阅览室
+        light: bright
+        description: 一间摆满长桌的阅览室，桌上的蜡烛都点着，照得满屋亮堂堂的。
+        details: 每张桌上都摊着一本书，翻到同一页。椅子都被拉开了，像是刚刚有一群人起身离开。
+      - name: 倒塌的书架区
+        light: dim
+        cover: true
+        description: 一排书架倒了下来，压塌了另外几排，书堆成了一座座小山。
+        details: 书山里压着一只手，手指还捏着一支羽毛笔。书架的断口很新，像是刚倒不久。
+      - name: 禁书回廊
+        light: dark
+        description: 一条被铁链封住的回廊，书架上的书都用锁扣锁着，锁扣上刻着警告。
+        details: 有几本书的锁扣断了，书页上的字在黑暗里微微发光。走过的时候能听见书在低声说话。
+      - name: 星图穹厅
+        light: dim
+        description: 一间圆形的大厅，穹顶上画满了星图，地板上刻着一个巨大的圆形法阵。
+        details: 法阵的线条里嵌着银丝，有几处已经断了。星图上的星星一闪一闪，和外面的天空都对不上。
+      - name: 抄写室
+        light: dim
+        cover: true
+        description: 一间摆满斜面书桌的房间，桌上堆着没写完的手稿和干掉的墨水瓶。
+        details: 所有的手稿都写着同一段话，一遍又一遍，字迹越到后面越潦草。墙角的墨水桶里的墨水还是湿的。
+    features:
+      - {name: 摇晃的书架, max_tier: heavy}
+      - {name: 燃着的烛台, max_tier: light, lamp: true}
+      - {name: 带轮子的滚梯, max_tier: heavy}
+      - {name: 成堆的厚书, max_tier: light}
+      - {name: 翻倒的墨水桶, max_tier: light}
+    monsters: [animated_tome, ink_shade, stone_gargoyle]
+    events: [forbidden_shelf, scholar_cellar, meteor_paperweight]
+    eerie:
+      - 远处的书架间传来一声清晰的"嘘——"，然后再没有声音。
+      - 一本书从身后的架子上掉下来，摊开的那一页上写着你的名字。
+      - 某处传来翻书的沙沙声，翻得越来越快，然后戛然而止。
+    boss:
+      name: 馆长的幽灵
+      description: 一个披着长袍的半透明老人，眼眶里是两团墨水般的黑暗，身边环绕着飞舞的书页。
+      persona: 严厉又偏执，认定每个闯进来的人都是偷书贼，一边念着馆规一边用书页割人。
+      hp: 1.2
+      atk: 1
+      def: 1
+
 # 传送石：打完头目（每 BOSS_EVERY 层）之后下一层的入口。摸一下能回到酒馆地窖；到过这里的人以后能从地窖直接传送过来
 stone:
   name: 传送石
@@ -294,6 +508,53 @@ events:
     description: 一间堆满卷宗的石室，墙边立着几只上了锁的铁柜。
     details: 地上散落着被撕碎的卷宗，铁柜的锁大多锈死了，只有一只能撬开。柜子里据说收着典狱长没收来的古书。
     take: {name: 铁柜, item: old_tome, where: 里, skill: sleight, difficulty: 2, fail: 铁丝在锁眼里断了，还划破了手指, fail_damage: 1}
+
+  tree_hollow_wine:
+    name: 老树洞
+    light: dim
+    cover: true
+    description: 一棵巨树的根部有个树洞，洞口被人用石头垒过，里面塞着几只陶罐。
+    details: 陶罐用树胶封着口，罐身上刻着猎人的记号。有的罐子被树根挤裂了，里面的酒早就渗干了，要挑出一罐还好的。
+    take: {name: 树洞, item: ancient_wine, where: 里, skill: nature, difficulty: 2, fail: 罐子里只剩一层发霉的酒渣, fail_damage: 0}
+  runestone_notes:
+    name: 刻字的石台
+    light: dim
+    description: 一座被树根缠住的石台，台面上压着一个用油布包好的包裹。
+    details: 包裹被树根勒得死紧，要小心解开才不会扯坏里面的东西。石台上的刻字和地窖石碑上的像是同一种文字。
+    take: {name: 石台, item: old_tome, where: 上, skill: sleight, difficulty: 2, fail: 一扯，油布包里的书页撕开了一道口子，只好先放下}
+  witch_hut:
+    name: 女巫的小屋
+    light: dim
+    cover: true
+    description: 一株空心蘑菇里布置成了小屋，挂满了风干的草药和骨头，角落堆着几本书。
+    details: 书上压着几块刻着符文的骨头，像是某种封印。随便乱翻，封印可能会咬人。
+    take: {name: 书堆, item: old_tome, where: 里, skill: investigation, difficulty: 2, fail: 碰到了一块刻着符文的骨头，手上被烫出一道红印, fail_damage: 2}
+  sunken_cart:
+    name: 陷进泥里的矿车
+    light: dim
+    ground: water
+    description: 一辆翻倒的矿车半陷在泥浆里，车斗里的矿石撒了一地，大多沉进了泥里。
+    details: 泥浆很深，要把矿石捞出来得费不少力气，一不小心就会整个人陷进去。
+    take: {name: 泥浆, item: ore, where: 里, skill: athletics, difficulty: 2, fail: 一脚踩空陷进泥里，费了好大劲才爬出来, fail_damage: 1}
+  forbidden_shelf:
+    name: 半开的禁书架
+    light: dark
+    description: 一排被铁链锁住的书架，其中一格的锁已经锈断了，露出几本古老的书。
+    details: 书架上的书有的会自己合上，有的封面上长着眼睛一样的花纹。要从里面挑出一本安全又值钱的，得有眼力。
+    take: {name: 禁书架, item: old_tome, where: 上, skill: investigation, difficulty: 3, fail: 抽出的那本书猛地合上，夹破了手指, fail_damage: 2}
+  scholar_cellar:
+    name: 学者的私藏
+    light: dim
+    cover: true
+    description: 一排书架后面藏着一个小隔间，里面摆着几瓶落满灰的酒和一只酒杯。
+    details: 看来有学者喜欢边看书边喝酒。酒瓶上贴着手写的标签，写着年份和评价，有几瓶的评价是"别喝"。
+    take: {name: 酒架, item: ancient_wine, where: 上, skill: nature, difficulty: 2, fail: 拔开塞子才发现是标着"别喝"的那瓶，赶紧塞了回去}
+  meteor_paperweight:
+    name: 天文学家的书桌
+    light: bright
+    description: 一张摆满星盘和仪器的书桌，桌上压着一块黑沉沉的陨铁镇纸。
+    details: 陨铁被固定在一个黄铜机关上，拿起来之前得先解开机关的卡扣，不然会触发什么。
+    take: {name: 书桌, item: ore, where: 上, skill: sleight, difficulty: 2, fail: 机关弹出一根细针，扎进了手背, fail_damage: 2}
 
 # 走路时的陷阱（每个主题都可能碰上）
 traps:
@@ -360,3 +621,61 @@ monsters:
     hp: 0.8
     atk: 1
     animal: true
+  cave_wolf:
+    name: 苍白狼
+    description: 一头毛色灰白的大狼，眼睛是没有瞳孔的乳白色，靠嗅觉在黑暗里找猎物。
+    persona: 成群狩猎，先绕着人转圈，找到破绽就扑上来咬腿。
+    hp: 0.8
+    atk: 1
+    animal: true
+  thorn_vine:
+    name: 荆棘藤
+    description: 一团会自己蠕动的带刺藤蔓，藤条上开着几朵暗红的花，花心像一张张小嘴。
+    persona: 不会追人，但谁靠近就用带刺的藤条抽打、缠绕。
+    hp: 1.2
+    atk: -1
+    def: 1
+  forest_goblin:
+    name: 林地哥布林
+    description: 一只脸上涂着绿泥的哥布林，身上披着树叶，手里拿着一把骨头削成的短矛。
+    persona: 鬼鬼祟祟，喜欢躲在树后面偷袭，打不过就吹骨哨叫同伴。
+    hp: 0.9
+  bog_toad:
+    name: 沼泽巨蟾
+    description: 一只有小牛那么大的蟾蜍，皮肤上长满发光的疙瘩，舌头又长又黏。
+    persona: 懒洋洋地趴着，猎物一靠近就闪电般吐出舌头。
+    hp: 1.1
+    animal: true
+  myconid:
+    name: 蘑菇人
+    description: 一个矮胖的蘑菇形人影，伞盖下是一张没有五官的脸，走路时会洒下一片孢子。
+    persona: 慢吞吞地围上来，用孢子熏人，怕光，在亮处会缩起伞盖。
+    hp: 1.0
+    light_averse: true
+  bog_leech:
+    name: 泥沼水蛭
+    description: 一条手臂粗的黑色水蛭，一头是一圈细密的牙齿，在泥水里扭动着。
+    persona: 藏在泥水里，贴上来就不松口，吸饱了才肯走。
+    hp: 0.6
+    atk: 1
+    animal: true
+  animated_tome:
+    name: 活化书
+    description: 一本厚重的书自己飞在半空，书页开合间露出一排排纸做的尖牙。
+    persona: 像鸟一样扑腾着飞过来，用书页割人，被打中就散落一地书页。
+    hp: 0.6
+    atk: 1
+    light_averse: true
+  ink_shade:
+    name: 墨影
+    description: 一团人形的黑色墨迹，在地面和墙上流动，所过之处留下湿漉漉的痕迹。
+    persona: 贴着墙和地板无声地滑过来，怕光，在烛光下会变淡。
+    hp: 0.8
+    atk: 1
+    light_averse: true
+  stone_gargoyle:
+    name: 石像鬼守卫
+    description: 一尊蹲在书架顶上的石像鬼，翅膀收拢，爪子抓着书架边缘，眼睛是两颗暗红的宝石。
+    persona: 一动不动地守着，有人靠近书架就扑下来，石头身子又硬又沉。
+    hp: 0.8
+    def: 2
