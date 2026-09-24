@@ -244,7 +244,7 @@ INTENT_SYSTEM = """你是文字 MUD 游戏的指令解析器。读玩家的输�
 - look: target 可空（空=看整个房间；也可以是 ref 或出口英文名）
 - take: item（地上物品或"取用处"的 ref）。从武器桶这类取用处拿东西也是 take，填取用处的 ref（如 d1）
 - drop: item（背包物品的 ref）
-- use: item（背包物品的 ref），target 可空。只用于吃喝（自己吃 target 不填；喂别人吃、把药草嚼碎喂给倒下的人、给人灌药 target 填"其他玩家"里的名字）和用钥匙开门（target 填出口英文名）。拿东西打人、砸人、抽人是 stunt（item 填那样东西），不是 use
+- use: item（背包物品的 ref），target 可空。只用于吃喝（自己吃 target 不填；喂别人吃、把药草嚼碎喂给倒下的人、给人灌药 target 填"其他玩家"里的名字）和用钥匙开门（target 填出口英文名），以及说明里写着能对敌人用的东西（古书残卷：target 填那个敌人的 ref）。拿东西打人、砸人、抽人是 stunt（item 填那样东西），不是 use
 - equip: item（背包物品的 ref），slot 可空。穿上、戴上、装备、拿在手里当武器都是 equip。玩家说了哪只手就填 slot：左手 left_hand、右手 right_hand（第二个戒指位 ring2）；没说就不填。武器两只手都能拿，可以双持。换手（"把斧子换到左手"）就是一个 equip 填 slot，不要先 unequip：两只手会自动互换
 - unequip: item（已装备的背包物品 ref）。卸下、脱下、摘下、收起武器
 - attack: target（NPC 的 ref；打其他玩家时填"其他玩家"里的名字。玩家之间只有决斗中才会受伤，没在决斗也照样输出 attack，由引擎拒绝）

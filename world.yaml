@@ -59,7 +59,7 @@ rooms:
 
   cellar:
     name: 酒馆地窖
-    description: 潮湿阴冷，堆满了酒桶，只有楼梯口透下来一点光。最里面的墙上有一个漆黑的入口，旁边立着一块石碑。
+    description: 潮湿阴冷，堆满了酒桶，只有楼梯口透下来一点光。墙角有一张落满灰的旧木桌，最里面的墙上有一个漆黑的入口，旁边立着一块石碑。
     details: >-
       酒桶沿墙码成两层，大多是满的，敲起来声音发闷；最里面几只空桶敲起来咚咚响，桶身上用粉笔写着年份。
       墙是粗石砌的，摸上去又冷又湿，渗着水珠，角落结着蛛网。
@@ -75,7 +75,7 @@ rooms:
     dispensers:
       antique_table:
         name: 桌子
-        description: 墙角一张落满灰的旧木桌，桌腿被虫蛀得坑坑洼洼。上面堆着麦琪这些年收来的古董：缺口的铜烛台、裂了缝的青瓷碗、一把没有弦的鲁特琴、几枚看不清年号的铜币，还有一面锈得照不出人影的小铜镜。
+        description: 墙角的一张落满灰的旧木桌，桌腿被虫蛀得坑坑洼洼。上面堆着麦琪这些年收来的古董：缺口的铜烛台、裂了缝的青瓷碗、一把没有弦的鲁特琴、几枚看不清年号的铜币，还有一面锈得照不出人影的小铜镜。
         item: old_amulet
         where: 上
         once: true              # 拿过就没了，丢了也不能再拿
@@ -139,6 +139,11 @@ rooms:
     features:
       boulder: {name: 松动的大石头, max_tier: lethal, uses: 1, respawn: 300}
 
+# 物品的 heal 是"回血点数"，不是直接回多少血：吃喝时按吃的人血量上限折成百分比（engine.heal_amount）
+#   普通吃喝每 1 点回 5%（heal: 6 的药草 = 30%），酒（名字带"酒"或 props.alcohol）每 1 点回 3%（heal: 2 的黑啤 = 6%）
+#   血量上限 20 时正好 1 点回 1 血；耐性升级、上限变高后回得跟着变多。最少回 1 血
+#   建议价也是按点数算的（engine.base_price），所以这里别直接写百分比
+# 有毒的 harm（props 里）还是按点数直接掉血
 items:
   bread:
     name: 面包
@@ -255,21 +260,21 @@ items:
     props: {price: 20, recall: true}
   # 地牢随机事件房里的东西。矿石、古酒、古书以后是送给莉娜、麦琪、诺艾尔的礼物
   ore:
-    name: 矿石
+    name: 奥利哈刚矿石
     description: 一块拳头大的矿石，青灰色，沉甸甸的，断面上闪着金属的光泽。铁匠见了大概会两眼放光。
     type: misc
-    props: {price: 8, gift: ore}
+    props: {price: 80, gift: ore}
   ancient_wine:
     name: 陈年古酒
     description: 一只封着泥的旧陶罐（或者落满灰的酒瓶），晃一晃里面的酒还在响，闻着有一股深沉的陈香。爱酒的人会想要。
     type: consumable
-    heal: 4
+    heal: 30
     props: {alcohol: true, strength: 2, price: 12, gift: wine}
   old_tome:
     name: 古书残卷
-    description: 一本用皮绳捆着、封在蜡里的古书，书页泛黄发脆，写着看不懂的古老文字。爱书的人会很珍惜。
+    description: 一本用皮绳捆着、封在蜡里的古书，书页泛黄发脆，写着看不懂的古老文字。对着敌人翻开念出来，能让它一时僵住动弹不得（念完书就化成灰了）。爱书的人会很珍惜。
     type: misc
-    props: {price: 10, gift: book}
+    props: {price: 100, gift: book, stun: 被古老的文字定住了身形}   # 对敌人使用：一定定身（engine._stun），书用掉
   spring_water:
     name: 泉水
     description: 一瓶从地下泉眼接来的清水，冰凉微甜，喝下去浑身一轻。

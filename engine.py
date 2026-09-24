@@ -970,6 +970,8 @@ def do_drop(cur: Cursor, player: Player, view: RoomView, a: Drop) -> list[str]:
 
 def do_use(cur: Cursor, player: Player, view: RoomView, a: Use) -> list[str]:
     item = _inv_item(cur, view, player, a.item)
+    if _prop(item, "stun"):
+        return _stun(cur, player, view, item, a.target)
 
     ex = _find_exit(cur, player.room_id, a.target, lock=True) if a.target is not None else None
     if a.target is not None and ex is None and item.template.type == "consumable":
@@ -991,6 +993,24 @@ def do_use(cur: Cursor, player: Player, view: RoomView, a: Use) -> list[str]:
         raise ActionError(f"{item.name}不能直接使用")
     _consume(cur, item)
     return [f"{player.name}{_eat_verb(item)}掉了{item.name}"] + _eat_effect(cur, player, item, player)
+
+
+STUN_ESCAPE = 3                         # 古书残卷念出来的定身：敌人挣脱的难度（每回合 30%、60%、90% 醒过来）
+
+
+def _stun(cur: Cursor, player: Player, view: RoomView, item: ItemInstance, target: Optional[str]) -> list[str]:
+    """对敌人使用能定身的东西（古书残卷：props.stun 是状态说明）：不用判定，一定让它失去战斗能力，东西用掉"""
+    if not target or target not in view.refs:
+        raise ActionError(f"{item.name}要对着一个敌人用")
+    npc = _room_npc(cur, view, player, target)
+    if not (npc.template.hostile and npc.combatable):
+        raise ActionError(f"{item.name}只对敌人有用")
+    _consume(cur, item)
+    label = str(_prop(item, "stun"))[:20]
+    _set_status(cur, "npcs", npc.id, Status(kind="incapacitated", label=label, escape=STUN_ESCAPE,
+                                            since=datetime.now(timezone.utc).isoformat()))
+    return [f"{player.name}翻开{item.name}，对着{npc.name}念出上面的古老文字，书页化成灰烬散开",
+            f"{npc.name}{label}，失去了战斗能力"]
 
 
 RECALL_TO = "square"                    # 回城水晶把人传回这里
