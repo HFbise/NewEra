@@ -393,11 +393,11 @@ def run_turn(req: CommandReq):
         except ai.API_ERRORS as e:
             notes.append(f"AI 解析出错：{e.__class__.__name__}")
 
-    # 战斗中（房间里有怪、有人被发现了）：命令先排队，全队出完手或者到点一起结算（_resolve_round）。
-    # 说话、查看马上生效；倒下的人不用排
+    # 战斗中（房间里有怪、有人被发现了；或者自己在决斗）：命令先排队，在场的人都出完手一起结算（_resolve_round）。
+    # 说话、查看马上生效；倒下的人不用排；看别人决斗的人不用排
     if view.player.hp > 0 and not all(a.action in engine.ROUND_INSTANT for a in actions):
         with pool.connection() as conn:
-            fighting = engine.in_combat(engine._cursor(conn), view.room.id)
+            fighting = engine.in_round(engine._cursor(conn), view.room.id, pid)
             conn.commit()
             if fighting:
                 engine.queue_round(conn, pid, view.room.id, req.text, [a.model_dump() for a in actions], source, notes)

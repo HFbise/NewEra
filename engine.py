@@ -111,6 +111,8 @@ FORAGE_COOLDOWN = 0
 DUEL_WINDOW = "5 minutes"
 DUEL_DISTANCE = 3
 DUEL_RULES = ("决斗规则：对方接受后才开打，只有决斗中才会对彼此造成伤害；双方起始相隔 3 格；"
+              "按回合打，两个人都出完手才一起结算；"
+              "装备的特效在决斗里也生效（毒、流血、吸血、破甲、加伤害这些），只对怪有用的（专打亡灵、野兽的）不算；"
               "任何一方离开这里决斗就结束，但发起者必须先逃跑成功才能离开，被挑战的一方随时可以走开")
 
 
@@ -741,6 +743,34 @@ def _assassinated(cur: Cursor, player: Player, view: RoomView, npc: Npc, dead: b
         return []
     view.trained.append("stealth")
     return [f"{npc.name}到死都没发现{player.name}"] + _gain_skill(cur, player, "stealth")
+
+
+def _pvp_hit_extras(cur: Cursor, player: Player, target: Player, dmg: int, down: bool, fired: list[dict]) -> list[str]:
+    """决斗里打中对手以后装备触发的：上状态（对手的装备抗性照算）、吸血；打倒了就是杀敌效果。
+    打群体、连锁这种对怪的效果决斗里没有"""
+    facts = []
+    if down:
+        for e in _fire(cur, player, "kill"):
+            if e["do"] == "heal":
+                facts += _labels([e]) + _heal_player(cur, player, int(e.get("value", 1)))
+        return facts
+    depth = dungeon.parse_room(player.room_id)[1] if dungeon.is_dungeon(player.room_id) else 1
+    for e in fired:
+        if e["do"] == "status" and (resist := gear_resist(cur, target, e["kind"])) > 0 and (resist >= 1 or _roll(resist)):
+            facts += _inflict(cur, target, e["kind"], e.get("label", ""), depth, player.name)
+    if leech := max([0] + [e.get("value", 0) for e in fired if e["do"] == "leech"]):
+        facts += _heal_player(cur, player, math.ceil(dmg * leech))
+    return facts
+
+
+def _pvp_self_damage(cur: Cursor, player: Player, swung: list[dict]) -> list[str]:
+    """决斗里挥出去就触发的：握柄的刃咬手（打怪时的横扫到别的敌人，决斗里没有）"""
+    facts = []
+    for e in swung:
+        if e["do"] == "self_damage":
+            hurt, _ = _hurt_player(cur, player, int(e.get("value", 1)), "other", "手里的凶器")
+            facts += _labels([e]) + [f"{player.name}自己掉了 {e.get('value', 1)} 点血"] + hurt
+    return facts
 
 
 def _attack_extras(cur: Cursor, player: Player, npc: Npc, fired: list[dict]) -> list[str]:
@@ -1959,21 +1989,29 @@ def _on_hit(cur: Cursor, player: Player, npc: Npc) -> list[str]:
     if resist <= 0 or not _roll(hit.get("chance", 0.25) * resist):
         return []
     depth = npc.template.props.get("dungeon", {}).get("depth", 1)
-    kind, label = hit["kind"], hit.get("label", "")
-    if kind in ("restrained", "prone"):
+    return _inflict(cur, player, hit["kind"], hit.get("label", ""), depth, npc.name, hit.get("escape", 2))
+
+
+def _inflict(cur: Cursor, player: Player, kind: str, label: str, depth: int, source: str, escape: int = 2) -> list[str]:
+    """给玩家上一个效果：怪打中时附带的（_on_hit），决斗里对手装备触发的（_pvp_hit_extras）"""
+    if kind in ("restrained", "prone", "stun"):
         if player.status:
             return []
-        st = Status(kind=kind, label=label[:20], escape=hit.get("escape", 2), since=datetime.now(timezone.utc).isoformat())
+        label = label or {"stun": "被打得晕头转向", "restrained": "被缠住了", "prone": "被撞倒在地"}[kind]
+        st = Status(kind="incapacitated" if kind == "stun" else kind, label=label[:20], escape=escape,
+                    since=datetime.now(timezone.utc).isoformat())
         _set_status(cur, "players", player.id, st)
         player.status = st
-        return [f"{player.name}{label}" + ("，得先挣脱" if kind == "restrained" else "，得先爬起来")]
+        return [f"{player.name}{label}" + ("，得先挣脱" if kind == "restrained" else "，得先爬起来" if kind == "prone"
+                                            else "，失去战斗能力")]
+    label = label or EFFECT_NAMES[kind]
     value = 1 + depth // 6 if kind == "corrode" else 1 + depth // 5
     old = _effect(player, kind)
     if old:
         old.left = EFFECT_TURNS[kind]
         _save_effects(cur, player)
         return [f"{player.name}又{label}，{EFFECT_NAMES[kind]}的时间重新算"]
-    e = Effect(kind=kind, value=value, left=EFFECT_TURNS[kind], label=label[:20], source=npc.name)
+    e = Effect(kind=kind, value=value, left=EFFECT_TURNS[kind], label=label[:20], source=source)
     what = {"poison": f"接下来 {e.left} 回合每回合掉 {value} 点血，出手也不准了",
             "bleed": f"接下来 {e.left} 个动作每动一下掉 {value} 点血，使不上劲",
             "blind": "这一回合什么都看不清",
@@ -2303,6 +2341,27 @@ ROUND_INSTANT = {"say", "look", "reject"}
 
 
 def in_combat(cur: Cursor, room_id: str) -> bool:
+    """这个房间在打：有怪发现了人，或者有两个人在决斗"""
+    return _monster_fight(cur, room_id) or _duel_here(cur, room_id)
+
+
+def _duel_here(cur: Cursor, room_id: str) -> bool:
+    cur.execute("""select 1 from duels d join players a on a.id = d.challenger join players b on b.id = d.target
+                   where d.accepted and a.room_id = %(r)s and b.room_id = %(r)s limit 1""", {"r": room_id})
+    return cur.fetchone() is not None
+
+
+def in_round(cur: Cursor, room_id: str, player_id: UUID) -> bool:
+    """这个人的命令要不要排队：房间里有怪在打（在场的人都算），或者他自己在这里决斗（旁观的人不算）"""
+    if _monster_fight(cur, room_id):
+        return True
+    cur.execute("""select 1 from duels d join players a on a.id = d.challenger join players b on b.id = d.target
+                   where d.accepted and %(p)s in (d.challenger, d.target) and a.room_id = %(r)s and b.room_id = %(r)s""",
+                {"p": player_id, "r": room_id})
+    return cur.fetchone() is not None
+
+
+def _monster_fight(cur: Cursor, room_id: str) -> bool:
     cur.execute(
         """select 1 from npcs n join npc_templates t on t.id = n.template_id
            where n.room_id = %(r)s and n.alive and t.hostile
@@ -2313,9 +2372,11 @@ def in_combat(cur: Cursor, room_id: str) -> bool:
 
 
 def round_members(cur: Cursor, room_id: str) -> list[dict]:
-    """这一轮该出手的人：在这个房间、没倒下、在线的玩家"""
-    cur.execute(f"""select id, name from players where room_id = %s and hp > 0
-                    and last_active_at > now() - interval '{ONLINE_WINDOW}' order by name""", (room_id,))
+    """这一轮该出手的人：在这个房间、没倒下、在线的玩家；只是决斗（没有怪在打）的话只算决斗的两个人，旁观的不等"""
+    cur.execute(f"""select id, name from players p where room_id = %(r)s and hp > 0
+                    and last_active_at > now() - interval '{ONLINE_WINDOW}'
+                    and (%(fight)s or exists (select 1 from duels d where d.accepted and p.id in (d.challenger, d.target)))
+                    order by name""", {"r": room_id, "fight": _monster_fight(cur, room_id)})
     return cur.fetchall()
 
 
@@ -2508,13 +2569,24 @@ def do_attack(cur: Cursor, player: Player, view: RoomView, a: Attack) -> list[st
         if dodged:
             cur.execute("update duels set dodging = array_remove(dodging, %s) where challenger = %s",
                         (target.id, duel["challenger"]))
+        # 装备特效在决斗里也生效；只对怪有用的（vs 亡灵、野兽）对不上人，_fire 自己会跳过
+        swung = [e for e in _fire(cur, player, "attack") if e["do"] in ("bonus", "self_damage")]
         if not _roll(max(0.0, MELEE_HIT.get(d, 0) - (_dodge_bonus(target) if dodged else 0) - _drunk(player)
                          - _poisoned(player) + _prone_bonus(target, d))):
             return [f"{player.name}用{how}攻击{target.name}，" + (f"隔着 {distance_word(d)}够不着" if d not in MELEE_HIT
-                                                                else f"隔着 {distance_word(d)}，没打中")]
-        dmg = hurt_player_by(_bled(player, power), _defense(cur, target))
+                                                                else f"隔着 {distance_word(d)}，没打中")] \
+                + _pvp_self_damage(cur, player, swung)
+        fired = _fire(cur, player, "hit")
+        bonus = sum(int(e.get("value", 0)) for e in swung + fired if e["do"] == "bonus")
+        pierce = sum(int(e.get("value", 0)) for e in fired if e["do"] == "pierce")
+        whet = _effect(player, "whet")
+        power = power + (whet.value if whet else 0) + bonus + _aura(cur, player, "attack")
+        dmg = hurt_player_by(_bled(player, power), max(0, _defense(cur, target) - pierce))
         facts, down = _hurt_player(cur, target, dmg, "player", player.name)
-        return [f"{player.name}用{how}攻击{target.name}，造成 {dmg} 点伤害"] + facts + _duel_over(cur, down)
+        return ([f"{player.name}用{how}攻击{target.name}，造成 {dmg} 点伤害"]
+                + _labels([e for e in fired if e["do"] in ("bonus", "pierce")]) + facts
+                + _pvp_hit_extras(cur, player, target, dmg, down, fired) + _pvp_self_damage(cur, player, swung)
+                + _duel_over(cur, down))
 
     npc = _room_npc(cur, view, player, a.target)
     if not npc.combatable:
