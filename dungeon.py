@@ -19,7 +19,7 @@ from psycopg.types.json import Jsonb
 
 GATE = "dungeon_gate"                   # 地窖的入口、楼梯间往下都连到这个占位房间，引擎走到这里改由 through_gate 决定去哪
 ENTRANCE = "cellar"                     # 地牢第 1 层往上回到这里
-STALE = "30 minutes"                    # 没人在里面、这么久没动静的地牢删掉
+STALE = "30 minutes"                    # 没人在、这么久没动静的一层删掉（按层算，有人在的那一层留着）
 GRID = 3                                # 一层 GRID × GRID 个房间
 BOSS_EVERY = 5                          # 每几层楼梯间守着头目
 THEME_GAP = 3                           # 主题不跟上面几层重复
@@ -618,22 +618,30 @@ def waypoints_text(waypoints: list[int]) -> str:
 
 
 def touch(cur: Cursor, room_id: str) -> None:
-    """有人在地牢里走动：这份地牢还活着"""
+    """有人在地牢里走动：这份地牢、这一层还活着"""
     if is_dungeon(room_id):
-        cur.execute("update dungeon_runs set last_active_at = now() where id = %s", (parse_room(room_id)[0],))
+        run, depth = parse_room(room_id)
+        cur.execute("update dungeon_runs set last_active_at = now() where id = %s", (run,))
+        cur.execute("update dungeon_floors set last_active_at = now() where run_id = %s and depth = %s", (run, depth))
 
 
 def cleanup(cur: Cursor) -> None:
-    """删掉没人在里面、STALE 没动静的地牢：先删引用房间的事件和怪，再删房间（出口、地形、地上的东西跟着删）"""
+    """按层删：没人在、STALE 没动静的一层删掉（先删引用房间的事件、回合、怪，再删房间，出口、地形、地上的东西跟着删）。
+    一份地牢的层都删光了，这份地牢也删掉。上面的层删了，从下面往上走的路就断了（传送石、回城水晶、复活照常）。
+    进地牢、传送时顺手清一次，服务器也每隔几分钟清一次（server._sweep_dungeons）"""
     cur.execute(
-        f"""select id from dungeon_runs r where last_active_at < now() - interval '{STALE}'
-            and not exists (select 1 from players p where p.room_id like 'dg-' || replace(r.id::text, '-', '') || '-%')""")
+        f"""select f.run_id, f.depth from dungeon_floors f where f.last_active_at < now() - interval '{STALE}'
+            and not exists (select 1 from players p
+                            where p.room_id like 'dg-' || replace(f.run_id::text, '-', '') || '-' || f.depth || '-%')""")
     for row in cur.fetchall():
-        prefix = f"dg-{row['id'].hex}-%"
+        prefix = f"dg-{row['run_id'].hex}-{row['depth']}-%"
         cur.execute("delete from events where room_id like %s", (prefix,))
+        cur.execute("delete from combat_rounds where room_id like %s", (prefix,))
         cur.execute("delete from npcs where room_id like %s", (prefix,))
         cur.execute("delete from rooms where id like %s", (prefix,))
-        cur.execute("delete from dungeon_runs where id = %s", (row["id"],))
+        cur.execute("delete from dungeon_floors where run_id = %s and depth = %s", (row["run_id"], row["depth"]))
+    cur.execute(f"""delete from dungeon_runs r where last_active_at < now() - interval '{STALE}'
+                    and not exists (select 1 from dungeon_floors f where f.run_id = r.id)""")
 
 
 def light_word(light: int) -> str:

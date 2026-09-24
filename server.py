@@ -341,6 +341,22 @@ def _describe_floor(run, depth: int) -> None:
 
 dungeon.FLOOR_HOOK = _floor_hook
 
+SWEEP_SECONDS = 300                     # 每隔多久清一次没人的地牢层（不然没人进地牢时一直不清）
+
+
+def _sweep_dungeons() -> None:
+    while True:
+        time.sleep(SWEEP_SECONDS)
+        try:
+            with pool.connection() as conn, conn.transaction():
+                dungeon.cleanup(engine._cursor(conn))
+        except Exception:               # 清理失败下次再来，不影响游戏
+            import traceback
+            traceback.print_exc()
+
+
+threading.Thread(target=_sweep_dungeons, daemon=True).start()
+
 _busy: set[UUID] = set()               # 正在判定的玩家
 _busy_lock = threading.Lock()
 

@@ -4908,6 +4908,8 @@ def return_gift(conn: Connection, player_id: UUID, npc: Npc) -> list[ActionResul
         cur.execute("update player_npc_relations set gifts = array_append(gifts, %s) where player_id = %s and npc_template = %s",
                     (tier, player_id, npc.template.id))
         facts = [f"{npc.name}送给{player.name}：{g['text']}（{GIFT_BACK_FACT}，好感到了 {tier}）"]
+        if scene := g.get("scene"):
+            facts.append(f"{npc.name}{scene}")               # 送的时候的动作（诺艾尔从怀里的书里抽出书签）
         if item := g.get("item"):
             if item == "lina_blade":
                 facts += _exclusive_blade(cur, player, npc)

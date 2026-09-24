@@ -776,7 +776,9 @@ def npc_line(db, view: RoomView, text: str, results: list[ActionResult], npc: Np
                if any(engine.RELUCTANT_FACT in f for r in results if r.success for f in r.facts) else "")
             + (f"\n\n<important>{FEELINGS[feeling]}</important>" if (feeling := engine.affinity_word(affinity)) in FEELINGS else "")
             + "".join(f"\n\n<important>你们的交情到了这一步，你这回合要送他一份回礼：{f.split('：', 1)[1].split('（回礼', 1)[0]}。"
-                      "按你的性格和对他的感情把它交给他（嘴硬的也可以别扭地塞过去），说说这是什么、有什么用，别说成是交易</important>"
+                      "按你的性格和对他的感情把它交给他（嘴硬的也可以别扭地塞过去），说说这是什么、有什么用，别说成是交易"
+                      + (f"。送的时候的样子：{r.facts[1]}" if len(r.facts) > 1 and r.facts[1].startswith(npc.name) else "")
+                      + "</important>"
                       for r in results if r.success and r.action == "gift_back" for f in r.facts[:1])
             + ("\n\n<important>这件东西用完会空：一定要在台词里告诉他，用完了回来找你续杯（让他说「续杯」），按你的性格说</important>"
                if refill_gift else ""))
