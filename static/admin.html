@@ -364,7 +364,9 @@ async function load() {
 // 世界和玩家每 5 秒刷新；动态只刷新没翻页的第一页，而且输入框有焦点时不刷，免得打断输入；AI 用量手动刷新
 setInterval(() => {
   if (!token || document.hidden) return;
-  if (tab === "world" || tab === "players") load();
+  if (tab === "world") load();
+  // 玩家页开着"给道具"的小表单时不刷，不然表单会被重画掉
+  else if (tab === "players" && !document.querySelector("tr.give-row")) load();
   else if (tab === "events" && !paged && !document.activeElement?.matches("input")) load();
 }, 5000);
 
