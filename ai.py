@@ -741,6 +741,10 @@ def npc_line(db, view: RoomView, text: str, results: list[ActionResult], npc: Np
     """NPC 这回合说的话，单独演。失败返回 None（叙事自己写台词）。bonds 是可以提的别人的交情（engine.npc_bonds）"""
     services = npc_services(npc, sells)
     refill_gift = any(engine.REFILL_FACT in f for r in results if r.success and r.action == "gift_back" for f in r.facts)
+    with db.connection() as conn:
+        shops = engine.shop_directory(conn, npc)
+    own = {s["name"] for s in sells or []} | {g["name"] for g in made_before or []}
+    other = _other_shop_ask(text, shops, own)
     # 第一次见面、或者问起能干什么：把能办的事介绍一遍。这回合在交委托、做买卖就先办正事，不插介绍
     busy = any(r.success and (r.action in TRADE_ACTIONS or r.action in ("quest", "give", "sell", "upgrade", "rest", "gift_back"))
                for r in results)
@@ -761,6 +765,8 @@ def npc_line(db, view: RoomView, text: str, results: list[ActionResult], npc: Np
             + f"对他的记忆：\n{memory or '第一次见面'}\n"
             f"你卖的货、做过的东西：{goods}\n委托：{tasks}\n"
             + (f"你这儿能办的事：{'；'.join(services)}\n" if services else "")
+            + (f"村里别的店卖的：{shops_text(shops)}（客人要的东西你不卖、别家卖，就告诉他去哪家找谁买，不要自己报价、不要拿别的顶替）\n"
+               if shops else "")
             + (f"别人的交情：{'；'.join(bonds)}（可以偶尔在台词里提一句，按你对他的感情吃醋、调侃或者不在乎；"
                "别每次都提，你们各守各的店，不会为这个去找对方）\n" if bonds else "")
             + "</npc>\n\n"
@@ -781,6 +787,8 @@ def npc_line(db, view: RoomView, text: str, results: list[ActionResult], npc: Np
                "但你是有礼貌的人，最后一定要真心道谢（比如“……但、但还是谢谢你”），不能怪他</important>"
                if any(engine.RELUCTANT_FACT in f for r in results if r.success for f in r.facts) else "")
             + (f"\n\n<important>{FEELINGS[feeling]}</important>" if (feeling := engine.affinity_word(affinity)) in FEELINGS else "")
+            + (f"\n\n<important>他要的{other[0]}你这儿不卖，是{other[1]['npc']}（{other[1]['room']}）卖的："
+               f"这一句按你的说话方式告诉他去找{other[1]['npc']}买，不要报价，也不要说你卖过</important>" if other else "")
             + "".join(f"\n\n<important>你们的交情到了这一步，你这回合要送他一份回礼：{f.split('：', 1)[1].split('（回礼', 1)[0]}。"
                       "按你的性格和对他的感情把它交给他（嘴硬的也可以别扭地塞过去），说说这是什么、有什么用，别说成是交易"
                       + (f"。送的时候的样子：{r.facts[1]}" if len(r.facts) > 1 and r.facts[1].startswith(npc.name) else "")
@@ -794,6 +802,15 @@ def npc_line(db, view: RoomView, text: str, results: list[ActionResult], npc: Np
     owned = {i.name for i in view.inventory}
 
     def check(out: NpcLine, last: bool) -> NpcLine:
+        if not last and other and (PRICE_RE.search(out.line) and other[0][-1] in out.line
+                                   or other[1]["npc"] not in out.line and other[1]["room"] not in out.line):
+            raise ValueError(f"{other[0]}你不卖，是{other[1]['npc']}（{other[1]['room']}）卖的：这一句要告诉他去那儿找{other[1]['npc']}买，"
+                             "不要报价，也不要说你卖过")
+        # 这回合实际收了多少钱，台词里说的价钱要对得上（交易那步收了 4，台词别说"2 金币一杯"）；买好几件的单价也算对
+        paid = {int(x) for r in results if r.success for f in r.facts for x in re.findall(r"收了 (\d+) 金币", f)}
+        said = {_cn_int(x) for x in PRICE_RE.findall(out.line)}
+        if not last and paid and said and not said & (paid | {p // c for p in paid for c in range(2, 11) if p % c == 0}):
+            raise ValueError(f"这回合实际收了 {'、'.join(map(str, sorted(paid)))} 金币，台词里说的价钱要对得上")
         if not last and refill_gift and not re.search(r"续|灌满|再来|回来找我|添满|满上", out.line):
             raise ValueError("你送的东西用完会空，台词里要告诉他用完了回来找你续杯")
         out.line = out.line.strip().strip("“”\"'").strip()
@@ -980,6 +997,27 @@ def made_text(made_before: Optional[list[dict]]) -> str:
                     for g in made_before or []) or "无"
 
 
+COMMON_TAIL = set("把子的块条个只件瓶杯")
+
+
+def _other_shop_ask(text: str, shops: list[dict], own: set[str]) -> Optional[tuple[str, dict]]:
+    """客人要的是不是别家店的货（"绳子"是诺艾尔的麻绳）：返回 (那件货, 那家店)。
+    名字整个说出来算；去掉第一个字剩下的（麻绳 → 绳）不是"把、子"这种万能字、自己也不卖带这个字的东西也算"""
+    own_chars = set("".join(own))
+    for shop in shops:
+        for item in shop["items"]:
+            if item in own:
+                continue
+            tail = item[1:] if len(item) >= 2 else ""
+            if item in text or (tail and tail not in COMMON_TAIL and tail in text and not set(tail) & own_chars):
+                return item, shop
+    return None
+
+
+def shops_text(shops: list[dict]) -> str:
+    return "；".join(f"{s['npc']}（{s['room']}）卖{'、'.join(s['items'])}" for s in shops if s["items"])
+
+
 def decide_give(db, view: RoomView, text: str, npc: Npc, giveable: list[ItemInstance], creatable: dict[str, dict],
                 affinity: int, memory: str, recent: Optional[list[str]] = None, sells: Optional[list[dict]] = None,
                 offers: Optional[dict[str, dict]] = None, made_before: Optional[list[dict]] = None
@@ -1009,6 +1047,9 @@ def decide_give(db, view: RoomView, text: str, npc: Npc, giveable: list[ItemInst
             + ("<recent>\n" + "\n".join(recent) + "\n</recent>\n\n" if recent else "")
             + f"<player_input>\n{text}\n</player_input>")
 
+    with db.connection() as conn:
+        other = _other_shop_ask(text, engine.shop_directory(conn, npc), {x["name"] for x in sells or []})
+
     def check(out: GiveDecision, last: bool) -> GiveDecision:
         if out.give is not None:
             out.give = re.sub(r"\s.*", "", out.give.strip())   # 模型偶尔写成 "g1 地窖钥匙"
@@ -1030,7 +1071,7 @@ def decide_give(db, view: RoomView, text: str, npc: Npc, giveable: list[ItemInst
         # 交出去的得是玩家要的那样：模型会拿别的顶替（要绳子，卖了之前报过价的黑啤）。
         # 按字比对名字和描述，一个字都对不上就是挑错了，这回合不交易
         # 玩家常说统称（"来杯酒""吃的"），所以种类的说法也算进去
-        want = set(re.sub(r"[一二两三几个杯碗瓶份捆条把块些点的来要买再样同]", "", out.wants or ""))
+        want = set(re.sub(r"[一二两三几个杯碗瓶份捆条把块些点的来要买再样同子儿东西]", "", out.wants or ""))
         kind = (out.create.kind if out.create else
                 (made_offers.get(sell_refs[out.sell]["id"]) or {}).get("spec", {}).get("kind") if out.sell else None)
         chosen = (f"{give_refs[out.give].name}{give_refs[out.give].description}" if out.give
@@ -1038,6 +1079,9 @@ def decide_give(db, view: RoomView, text: str, npc: Npc, giveable: list[ItemInst
                   else f"{sell_refs[out.sell]['name']}{sell_refs[out.sell]['description']}" if out.sell else None)
         chosen = chosen and chosen + {"drink": "酒喝饮", "food": "吃食饭菜", "weapon": "武器刀剑"}.get(kind, "")
         if want and chosen and not want & set(chosen):
+            out.give = out.create = out.sell = None
+        # 客人要的是别家店的货（找麦琪要绳子）：她不卖，也不能拿自己的货顶替
+        if other and chosen and not (set(other[0]) - COMMON_TAIL) & set(chosen):
             out.give = out.create = out.sell = None
         return out
 

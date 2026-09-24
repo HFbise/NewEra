@@ -4100,6 +4100,20 @@ def npc_give(conn: Connection, player_id: UUID, npc_id: UUID, item_id: UUID, pri
         return ActionResult(action="npc_give", success=False, facts=[str(e)])
 
 
+def shop_directory(conn: Connection, npc: Npc) -> list[dict]:
+    """村里别的店卖什么（不含这个 NPC 自己）：[{npc, room, items}]。客人找她要别家的货，她指路，不自己报价"""
+    with conn.transaction():
+        cur = _cursor(conn)
+        cur.execute("""select distinct t.id, t.name, r.name as room, t.props->'sells' as sells from npcs n
+                       join npc_templates t on t.id = n.template_id join rooms r on r.id = n.room_id
+                       where n.alive and t.props ? 'sells' and t.id <> %s""", (npc.template.id,))
+        shops = cur.fetchall()
+        ids = [i for s in shops for i in s["sells"] or []]
+        cur.execute("select id, name from item_templates where id = any(%s)", (ids,))
+        names = dict((r["id"], r["name"]) for r in cur.fetchall())
+    return [{"npc": s["name"], "room": s["room"], "items": [names[i] for i in s["sells"] or [] if i in names]} for s in shops]
+
+
 def sellable(conn: Connection, npc: Npc, rare: Optional[str] = None, player_id: Optional[UUID] = None) -> list[dict]:
     """NPC 能卖的货（world.yaml 的 sells），给交易 AI 看：物品 id、名字、说明、伤害防御、按效果算的原价。
     rare 是这会儿有的稀罕货（rare_stock），标 rare，价钱固定；给了 player_id 就加上回礼解锁给他的货"""
