@@ -628,7 +628,7 @@ NPC 对话（只有 facts 里有对话时才用）：
 - NPC 按 <npc> 里的人设说话，要回应玩家说的内容，把 NPC 的台词写进叙事
 - 不要重复你在记忆里说过的原话，就算他问了一样的问题，也换个说法、接着最新的情况说
 - 话题也别老重复：最近几条记录里你已经提过的东西（某种酒、某个比方、某件旧事），这次就别再提，除非他主动问起；人设里列了好几样的（酒、比方），轮着用
-- 语气跟着 <npc> 里的好感度走：-30 以下嫌弃、刻薄、爱搭不理；-30 到 10 是人设的本色；10 到 50 嘴上照旧，但话里明显更关照、更愿意多说；50 以上是老交情，一定要流露出关心（嘴硬的人设也要露馅），不能只是冷冰冰地挖苦。人设里的口头禅、称呼可以用，但别每次都原样重复同一句，换着花样说
+- 语气跟着 <npc> 里的好感和关系走（每个玩家各算各的）：讨厌（-30 以下）刻薄、巴不得他走；戒备（-30 到 0）冷淡；客人（0 到 20）是人设的本色；熟客（20 到 40）嘴上照旧、手上关照；朋友（40 到 60）主动关心，愿意聊自己的事；心动（60 到 80）在他面前会害羞，嘴硬的人设也会露馅，在意他跟别人走得近；喜欢（80 到 95）明显偏心，快藏不住了；特别喜欢的人（95 以上）把他放在心上，真情流露。不到心动不要表现出恋爱的意思。人设里的口头禅、称呼可以用，但别每次都原样重复同一句，换着花样说
 - 物品交付以 facts 为准：facts 里有"把某物交给了""卖给了"就照写。facts 里没有交付时，只有"你卖的货""你以前做过、随时能再做的"里的东西，NPC 才能在这回合递给他，而且必须填 npc_handed（引擎会真的给他、按规矩收钱）；清单外的东西绝对不能写 NPC 给了、递了、塞了，也不要暗示马上会给。玩家要的东西 facts 里既没交付也没开价，NPC 就按人设说没有、不卖或者做不了（货架上、"你卖的货"里有的除外，那些可以报价），不能写拿出来、取出来
 - 玩家要的东西如果 <player> 里"身上带着"已经有了，NPC 就提醒他已经有了（"钥匙不是已经在你手上了吗"）。但 facts 里这回合刚交给他的东西也会出现在"身上带着"里，那是刚给的，不是他原来就有的
 - affinity_delta：根据玩家这回合的言行，NPC 好感变化，-5 到 5 的整数。一般聊天 0 到 1，礼貌帮忙加分，无礼威胁减分
@@ -665,7 +665,7 @@ class NpcLine(BaseModel):
 ROLEPLAY_SYSTEM = """你在文字 MUD 游戏里扮演一个 NPC，只写她这回合开口说的话（一到四句），不写动作、旁白、引号外的描写。
 演好这个人：
 - 完全照 <npc> 的人设、外表、说话方式来说，像真人一样接住玩家的话，有情绪、有态度、有她自己的关心和算计
-- 语气跟着好感度走：-30 以下嫌弃刻薄；-30 到 10 是人设本色；10 到 50 嘴上照旧、话里明显更关照；50 以上是老交情，一定流露关心（嘴硬也要露馅）
+- 语气跟着 <npc> 里的好感和关系走（每个玩家各算各的）：讨厌（-30 以下）刻薄、巴不得他走；戒备（-30 到 0）冷淡；客人（0 到 20）是人设的本色；熟客（20 到 40）嘴上照旧、手上关照；朋友（40 到 60）主动关心，愿意聊自己的事；心动（60 到 80）在他面前会害羞，嘴硬的人设也会露馅，在意他跟别人走得近；喜欢（80 到 95）明显偏心，快藏不住了；特别喜欢的人（95 以上）把他放在心上，真情流露。不到心动不要表现出恋爱的意思
 - 先回应玩家这句话本身：他问什么就答什么，他骂人就按人设回敬，他求助就按人设和交情决定帮不帮、怎么帮
 - 口头禅、称呼可以用，但一段话里最多一次；比方、话题每次换着来，记忆里最近提过的就别再提，除非他问
 - 开场白也换着来：别每次都用同一个开头（比如老是"哟，杂鱼"开场），有时直接回答、有时先反问、有时先动怒或先笑
@@ -701,11 +701,20 @@ def npc_services(npc: Npc, sells: Optional[list[dict]] = None) -> list[str]:
     return out
 
 
+# 好感到了朋友往上，每句台词都提醒一下这份感情，不然模型容易只演人设本色（好感 85 和 8 说得差不多）
+FEELINGS = {
+    "朋友": "他是你的朋友：这一句里带上一点真心的关心或者愿意跟他多聊，嘴硬的人设也一样",
+    "心动": "你对他心动了：在他面前会有点不自在或者害羞（眼神躲开、话说一半、嘴硬却露馅），在意他的安危和他跟谁走得近，但还没挑明",
+    "喜欢": "你喜欢他：明显偏心，关心和在意藏不住（嘴硬的人设会嘴上更凶、脸却红了，或者说漏嘴），他受伤、冒险会让你真的着急",
+    "特别喜欢的人": "他是你特别喜欢的人：把他放在心上，温柔和依赖会自然流露（嘴硬的人设偶尔也会坦率一次），他的事就是你最在意的事",
+}
+
+
 def npc_line(db, view: RoomView, text: str, results: list[ActionResult], npc: Npc, affinity: int, memory: str,
              recent: Optional[list[str]] = None, quests: Optional[list[tuple[str, dict]]] = None,
              sells: Optional[list[dict]] = None, made_before: Optional[list[dict]] = None,
-             buys: Optional[list[tuple[str, int]]] = None) -> Optional[str]:
-    """NPC 这回合说的话，单独演。失败返回 None（叙事自己写台词）"""
+             buys: Optional[list[tuple[str, int]]] = None, bonds: Optional[list[str]] = None) -> Optional[str]:
+    """NPC 这回合说的话，单独演。失败返回 None（叙事自己写台词）。bonds 是可以提的别人的交情（engine.npc_bonds）"""
     services = npc_services(npc, sells)
     # 第一次见面、或者问起能干什么：把能办的事介绍一遍。这回合在交委托、做买卖就先办正事，不插介绍
     busy = any(r.success and (r.action in TRADE_ACTIONS or r.action in ("quest", "give", "sell", "upgrade", "rest"))
@@ -722,9 +731,13 @@ def npc_line(db, view: RoomView, text: str, results: list[ActionResult], npc: Np
                                + "（价钱是定的，他问收不收、值多少就照这个说；自己用得上的给价高）"]
     user = (f"<npc>\n名字：{npc.name}\n所在的地方：{view.room.name}\n外表：{npc.template.description}\n"
             f"人设：{npc.template.persona}\n"
-            f"对{view.player.name}的好感：{affinity}（-100 到 100）\n对他的记忆：\n{memory or '第一次见面'}\n"
+            f"对{view.player.name}的好感：{affinity}（{engine.affinity_word(affinity)}）\n"
+            + (f"你对他的感情：{FEELINGS[engine.affinity_word(affinity)]}\n" if engine.affinity_word(affinity) in FEELINGS else "")
+            + f"对他的记忆：\n{memory or '第一次见面'}\n"
             f"你卖的货、做过的东西：{goods}\n委托：{tasks}\n"
             + (f"你这儿能办的事：{'；'.join(services)}\n" if services else "")
+            + (f"别人的交情：{'；'.join(bonds)}（可以偶尔在台词里提一句，按你对他的感情吃醋、调侃或者不在乎；"
+               "别每次都提，你们各守各的店，不会为这个去找对方）\n" if bonds else "")
             + "</npc>\n\n"
             + ("<recent>\n" + "\n".join(recent) + "\n</recent>\n\n" if recent else "")
             + f"<this_turn>\n{this_turn}\n</this_turn>\n\n<player>{view.player.name}</player>\n"
@@ -733,7 +746,7 @@ def npc_line(db, view: RoomView, text: str, results: list[ActionResult], npc: Np
                "用你自己的话、按人设把“你这儿能办的事”都带到（别念清单，可以挑重点、顺口带过），"
                "让他知道在你这儿能做什么</important>" if intro else "")
             + ("\n\n<important>他刚送了你最想要的礼物：这一句要有特别的反应，完全按你的性格和对他的好感来："
-               "好感低就嘴硬、别扭地收下，好感越高越藏不住高兴和感动，50 以上会真情流露；不要只说谢谢</important>"
+               "好感低就嘴硬、别扭地收下，好感越高越藏不住高兴和感动，心动往上会真情流露；不要只说谢谢</important>"
                if any(engine.GIFT_FACT in f for r in results if r.success for f in r.facts) else "")
             + ("\n\n<important>他在问你有什么卖：顺口提一下这次难得进到的稀罕货（只有一件），按人设说说它的来历或者你对它的感觉</important>"
                if any(s.get("rare") for s in sells or []) and engine.RARE_ASK_RE.search(text) and not busy else "")
@@ -741,7 +754,8 @@ def npc_line(db, view: RoomView, text: str, results: list[ActionResult], npc: Np
                if any(engine.RETURNED_FACT in f for r in results if r.success for f in r.facts) else "")
             + ("\n\n<important>你刚把一件自己很珍惜的东西卖给了他：演出舍不得（犹豫、再看一眼、小声念叨），"
                "但你是有礼貌的人，最后一定要真心道谢（比如“……但、但还是谢谢你”），不能怪他</important>"
-               if any(engine.RELUCTANT_FACT in f for r in results if r.success for f in r.facts) else ""))
+               if any(engine.RELUCTANT_FACT in f for r in results if r.success for f in r.facts) else "")
+            + (f"\n\n<important>{FEELINGS[feeling]}</important>" if (feeling := engine.affinity_word(affinity)) in FEELINGS else ""))
     trading = any(r.success and r.action in TRADE_ACTIONS for r in results)
     rewards = [m[1] for r in results if r.success and r.action == "quest"
                for f in r.facts if (m := re.search(r"把(.+?)交给了", f))]
@@ -809,8 +823,8 @@ class Quip(BaseModel):
     line: str                            # 以 NPC 名字开头的一两句：动作加说的话
 
 
-TONE = """按好感度定语气：-30 以下嫌弃、刻薄、巴不得他别来；-30 到 10 照人设的本色；10 到 50 嘴上照旧、手上明显关照；
-50 以上是老交情，一定要流露出关心或心疼（嘴硬的人设也要露馅：顺手给点吃的、多照料一下、念叨他小心），不能只是冷冰冰地挖苦。
+TONE = """语气跟着 <npc> 里的好感和关系走（每个玩家各算各的）：讨厌（-30 以下）刻薄、巴不得他走；戒备（-30 到 0）冷淡；客人（0 到 20）是人设的本色；熟客（20 到 40）嘴上照旧、手上关照；朋友（40 到 60）主动关心，愿意聊自己的事；心动（60 到 80）在他面前会害羞，嘴硬的人设也会露馅，在意他跟别人走得近；喜欢（80 到 95）明显偏心，快藏不住了；特别喜欢的人（95 以上）把他放在心上，真情流露。不到心动不要表现出恋爱的意思。
+朋友往上一定要流露出关心或心疼（嘴硬的人设也要露馅：顺手给点吃的、多照料一下、念叨他小心），不能只是冷冰冰地挖苦。
 口头禅可以用，但别每次都原样重复同一句，换着花样说"""
 
 QUIP_SYSTEM = f"""你在扮演文字 MUD 游戏里的一个 NPC。有人倒在你店里，你刚把他扶起来、照料到回满了血。
@@ -826,7 +840,7 @@ def keeper_quip(db, npc_name: str, persona: str, player_id: UUID, player_name: s
                 affinity: int, memory: str, example: str) -> Optional[str]:
     """看店 NPC 扶人时的一句话，AI 按人设、好感、倒下的原因现写；失败返回 None（用 example 保底）"""
     cause = DOWN_CAUSE.get(why.get("kind"), "不知怎么倒在了地上").format(by=why.get("by", ""))
-    user = (f"<npc>\n名字：{npc_name}\n人设：{persona}\n对他的好感：{affinity}（-100 到 100）\n"
+    user = (f"<npc>\n名字：{npc_name}\n人设：{persona}\n对他的好感：{affinity}（{engine.affinity_word(affinity)}）\n"
             f"对他的记忆：{memory or '第一次见面'}\n</npc>\n\n"
             f"<fallen>{player_name}，{cause}</fallen>\n\n"
             + (f"<example>语气参考（别照抄）：{example}</example>" if example else ""))
@@ -952,7 +966,7 @@ def decide_give(db, view: RoomView, text: str, npc: Npc, giveable: list[ItemInst
                      + (f"，防御 {s['defense']}" if s.get("defense") else "")
                      + (f"；已报价 {offers[s['id']]['price']} 金币" if s["id"] in offers else "；还没报价") + "）"
                      for ref, s in sell_refs.items()) or "无"
-    user = (f"<npc>\n名字：{npc.name}\n人设：{npc.template.persona}\n对玩家的好感：{affinity}（-100 到 100）\n"
+    user = (f"<npc>\n名字：{npc.name}\n人设：{npc.template.persona}\n对玩家的好感：{affinity}（{engine.affinity_word(affinity)}）\n"
             f"对这个玩家的记忆：{memory or '第一次见面'}\n"
             f"玩家做过的事：{'、'.join(view.player.flags) or '无'}\n可给物品：{gives}\n能现做的种类：{kinds}\n"
             f"卖货清单：{goods}\n"
@@ -1079,7 +1093,7 @@ def narrate(db, view: RoomView, text: str, results: list[ActionResult],
         owned = [i.name for i in view.inventory if i.template.id in gives and i.name not in just_got]
         parts.append(
             f"<npc>\n名字：{npc.name}\n描述：{npc.template.description}\n人设：{npc.template.persona}\n"
-            f"对玩家的好感：{affinity}（-100 到 100）\n对这个玩家的记忆：{memory or '第一次见面'}\n"
+            f"对玩家的好感：{affinity}（{engine.affinity_word(affinity)}）\n对这个玩家的记忆：{memory or '第一次见面'}\n"
             f"玩家做过的事：{deeds}\n"
             + (f"玩家已经有你能给的：{'、'.join(owned)}（他再要就提醒他已经在他身上了）\n" if owned else "")
             + "".join(f"委托（{QUEST_STAGES[stage]}）：{q['hook']}。要他做的：{q['goal']}\n" if stage != "closed"

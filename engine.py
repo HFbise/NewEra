@@ -3825,8 +3825,21 @@ def set_npc_memory(conn: Connection, player_id: UUID, npc_template: str, memory:
         )
 
 
+# 好感像可攻略角色：最高一档是特别喜欢的人。(下限, 关系)，每个玩家各算各的
+AFFINITY_TIERS = [(95, "特别喜欢的人"), (80, "喜欢"), (60, "心动"), (40, "朋友"), (20, "熟客"), (0, "客人"),
+                  (-30, "戒备"), (-100, "讨厌")]
+AFFINITY_GATES = (60, 80, 95)           # 聊天涨不过这几道坎（停在坎下一点），要送她心爱的礼物才跨得过去
+CHAT_STEP = ((60, 1), (40, 2))          # 好感到了这个数，聊天一回合最多再涨几（越往上越慢）
+CHAT_DAILY_FROM, CHAT_DAILY = 40, 10    # 好感 40 以上，每天靠聊天最多涨 10
+
+
+def affinity_word(affinity: int) -> str:
+    return next(word for low, word in AFFINITY_TIERS if affinity >= low)
+
+
 def adjust_affinity(conn: Connection, player_id: UUID, npc_id: UUID, delta: int) -> ActionResult:
-    """对话 AI 提议调整好感度，单次幅度和总范围都由这里限制，AI 给多大都没用"""
+    """对话 AI 提议调整好感度，单次幅度和总范围都由这里限制，AI 给多大都没用。
+    往上涨时越高越慢（CHAT_STEP）、40 以上每天有上限（CHAT_DAILY）、过不了 AFFINITY_GATES 的坎；往下掉不受这些限制"""
     delta = max(-AFFINITY_STEP, min(AFFINITY_STEP, delta))
     lo, hi = AFFINITY_RANGE
     try:
@@ -3838,16 +3851,44 @@ def adjust_affinity(conn: Connection, player_id: UUID, npc_id: UUID, delta: int)
                 raise ActionError("对方不在这里")
             npc = npcs[0]
             cur.execute(
-                """insert into player_npc_relations (player_id, npc_template, affinity)
-                   values (%(p)s, %(t)s, greatest(%(lo)s, least(%(hi)s, %(d)s)))
+                """select affinity, chat_gain, chat_day = (now() at time zone 'Asia/Shanghai')::date as today
+                   from player_npc_relations where player_id = %s and npc_template = %s for update""",
+                (player.id, npc.template.id))
+            row = cur.fetchone() or {"affinity": 0, "chat_gain": 0, "today": False}
+            now, gained = row["affinity"], row["chat_gain"] if row["today"] else 0
+            wanted, why = delta, ""
+            if delta > 0:
+                delta = min(delta, next((step for low, step in CHAT_STEP if now >= low), AFFINITY_STEP))
+                if now >= CHAT_DAILY_FROM and delta > CHAT_DAILY - gained:
+                    delta, why = max(0, CHAT_DAILY - gained), "今天已经聊得够多了，改天再来"
+                if (gate := next((g for g in AFFINITY_GATES if now < g), None)) and now + delta >= gate:
+                    delta, why = max(0, gate - 1 - now), f"要有特别的契机（比如送{npc.name}最想要的东西）才能更进一步"
+            value = max(lo, min(hi, now + delta))
+            cur.execute(
+                """insert into player_npc_relations (player_id, npc_template, affinity, chat_day, chat_gain)
+                   values (%(p)s, %(t)s, %(v)s, (now() at time zone 'Asia/Shanghai')::date, %(g)s)
                    on conflict (player_id, npc_template) do update
-                     set affinity = greatest(%(lo)s, least(%(hi)s, player_npc_relations.affinity + %(d)s))
-                   returning affinity""",
-                {"p": player.id, "t": npc.template.id, "d": delta, "lo": lo, "hi": hi},
+                     set affinity = %(v)s, chat_day = excluded.chat_day, chat_gain = %(g)s""",
+                {"p": player.id, "t": npc.template.id, "v": value, "g": gained + max(0, value - now)},
             )
-            value = cur.fetchone()["affinity"]
-        trend = "上升" if delta > 0 else "下降" if delta < 0 else "没有变化"
-        return ActionResult(action="affinity", success=True,
-                            facts=[f"{npc.name}对{player.name}的好感{trend}（当前 {value}）"])
+        trend = "上升" if value > now else "下降" if value < now else "没有变化"
+        fact = f"{npc.name}对{player.name}的好感{trend}（当前 {value}，{affinity_word(value)}）"
+        if wanted > 0 and value == now and why:
+            fact = f"{npc.name}对{player.name}的好感停在 {value}（{affinity_word(value)}）：{why}"
+        return ActionResult(action="affinity", success=True, facts=[fact])
     except ActionError as e:
         return ActionResult(action="affinity", success=False, facts=[str(e)])
+
+
+def npc_bonds(conn: Connection, player_id: UUID, npc: Npc) -> list[str]:
+    """NPC 台词里可以提的别人的交情：这个玩家跟别的 NPC（熟客以上），别的玩家跟这个 NPC（朋友以上）"""
+    with conn.transaction():
+        cur = _cursor(conn)
+        cur.execute("""select t.name, r.affinity from player_npc_relations r join npc_templates t on t.id = r.npc_template
+                       where r.player_id = %s and r.npc_template <> %s and r.affinity >= 20 order by r.affinity desc""",
+                    (player_id, npc.template.id))
+        bonds = [f"他跟{r['name']}是{affinity_word(r['affinity'])}" for r in cur.fetchall()]
+        cur.execute("""select p.name, r.affinity from player_npc_relations r join players p on p.id = r.player_id
+                       where r.npc_template = %s and r.player_id <> %s and r.affinity >= 40
+                       order by r.affinity desc limit 3""", (npc.template.id, player_id))
+        return bonds + [f"你跟另一个客人{r['name']}是{affinity_word(r['affinity'])}" for r in cur.fetchall()]

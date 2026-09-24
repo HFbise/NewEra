@@ -38,6 +38,7 @@ app.include_router(admin.router)
 # 这些动作的回合不调叙事 AI：facts 已经说清楚了，AI 反而容易替别的玩家编动作
 NO_NARRATION = {"say", "follow", "unfollow", "invite", "join", "leave_party", "challenge", "accept_duel", "decline_duel"}
 # NPC 对话里这些结果旁人也看得到（交东西、提委托、轰人），跟在对话原文后面
+AFFINITY_BY_RULE = {"npc_give", "npc_create", "npc_sell", "upgrade", "rest", "pay", "sell", "give"}
 NPC_OUTCOMES = {"npc_give", "npc_create", "npc_sell", "quote", "quest", "npc_eject", "upgrade", "rest", "pay", "sell"}
 
 
@@ -394,7 +395,7 @@ def run_turn(req: CommandReq):
     use_ai = ai.enabled() and not all(a.action in NO_NARRATION for a in actions)
     npc_id = npc = eject_to = None
     giveable, creatable, sells, quests, affinity, memory, recent = [], [], [], [], 0, "", []
-    offers, made_before = {}, []
+    offers, made_before, bonds = {}, [], []
     with pool.connection() as conn:
         results = engine.execute_all(conn, view, actions)
         # 跟 NPC 说话、把东西交给 NPC、找铁匠升级、住店都算跟他打交道：委托结算、NPC 回应
@@ -422,6 +423,7 @@ def run_turn(req: CommandReq):
                 offers = engine.get_offers(conn, pid, npc) if sells or creatable else {}
                 made_before = engine.known_goods(conn, npc) if creatable else []
                 affinity = engine.get_affinity(conn, pid, npc_id)
+                bonds = engine.npc_bonds(conn, pid, npc)          # 台词里可以提的别人的交情
                 memory = engine.get_npc_memory(conn, pid, npc_id, req.text)
                 if engine.can_eject(npc):
                     ex = engine._find_exit(engine._cursor(conn), npc.room_id, npc.template.props["eject_to"])
@@ -483,7 +485,7 @@ def run_turn(req: CommandReq):
                     with pool.connection() as conn:
                         buys = engine.buy_quotes(conn, pid, npc, now_view.inventory)
                 line = ai.npc_line(pool, now_view, req.text, results, npc, affinity, memory, recent, quests,
-                                   sells, made_before, buys)
+                                   sells, made_before, buys, bonds)
             out, u = ai.narrate(pool, now_view, req.text, results, npc, affinity, memory, recent,
                                 quests, eject_to, sells, offers, made_before, line)
             add(u)
@@ -509,8 +511,12 @@ def run_turn(req: CommandReq):
         observer = _observer_fallback(name, actions, results)
     with pool.connection() as conn:
         if npc and out:
-            if out.affinity_delta:
-                results.append(engine.adjust_affinity(conn, pid, npc_id, out.affinity_delta))
+            # 花钱、送东西、升级、住店那回合好感已经按规矩算过（照顾生意、心爱的礼物），AI 不再另外往上加
+            delta = out.affinity_delta
+            if delta > 0 and (talk.action != "talk" or any(r.success and r.action in AFFINITY_BY_RULE for r in results)):
+                delta = 0
+            if delta:
+                results.append(engine.adjust_affinity(conn, pid, npc_id, delta))
             # 叙事判定 NPC 把玩家轰出去：叙事和旁人描述已经写了，这里真的挪人（门外那边的人会看到他被轰出来）
             if out.eject and (kicked := engine.npc_eject(conn, pid, npc)):
                 results.append(kicked)
