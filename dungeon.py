@@ -73,8 +73,9 @@ def _pick(entries: list[dict], depth: int) -> Optional[str]:
     return random.choices([e["item"] for e in ok], [e.get("weight", 1) for e in ok])[0] if ok else None
 
 
-def _drops(kind: str, rank: str, theme: str, depth: int) -> list[str]:
-    """一只怪身上带的东西（打死掉在地上）。精英专属掉率 × elite_mult，另外有几率从通用池抽；头目二选一必掉"""
+def _drops(kind: str, rank: str, theme: str, depth: int, stair: bool = False) -> list[str]:
+    """一只怪身上带的东西（打死掉在地上）。精英专属掉率 × elite_mult，另外有几率从通用池抽；头目二选一必掉；
+    楼梯间守卫（stair）一件都没掷中就从 stair_guard 补给池保底抽一件"""
     loot, out = loot_data(), []
     rules = loot["rules"]
     if rank == "boss":
@@ -87,6 +88,8 @@ def _drops(kind: str, rank: str, theme: str, depth: int) -> list[str]:
     out += [d["item"] for d in loot["monsters"].get(kind) or []
             if depth >= d.get("min_floor", 1) and d["item"] not in LOOT_NOT_YET and random.random() < d["chance"] * mult]
     if rank == "elite" and random.random() < rules.get("elite_pool_chance", 0) and (p := _pick(loot["pool"], depth)):
+        out.append(p)
+    if stair and not out and (p := _pick(loot.get("stair_guard"), depth)):
         out.append(p)
     return out
 
@@ -208,16 +211,16 @@ def _spawn_group(cur: Cursor, room: str, depth: int, kind: str, rank: str, theme
 
 def _spawn_boss(cur: Cursor, room: str, depth: int, kind: str, rank: str, theme: str, size: int) -> None:
     """头目、楼梯间守卫：只有一只，组队时多些血、一轮多动几次（不召小怪：组队时场面已经够乱）"""
-    _spawn(cur, room, depth, kind, rank, theme, hp_mult=1 + BOSS_PARTY_HP * (size - 1), attacks=size)
+    _spawn(cur, room, depth, kind, rank, theme, hp_mult=1 + BOSS_PARTY_HP * (size - 1), attacks=size, stair=True)
 
 
 def _spawn(cur: Cursor, room: str, depth: int, kind: str, rank: str, theme: str, share: int = 1, hp_mult: float = 1.0,
-           minion: bool = False, loot: bool = True, attacks: int = 1) -> None:
+           minion: bool = False, loot: bool = True, attacks: int = 1, stair: bool = False) -> None:
     tid = _template(cur, depth, kind, rank, theme, share, hp_mult, minion, attacks)
     cur.execute("insert into npcs (template_id, room_id, hp) select id, %s, max_hp from npc_templates where id = %s"
                 " returning id", (room, tid))
     npc_id = cur.fetchone()["id"]
-    for item in _drops(kind, rank, theme, depth) if loot else []:     # 身上带的东西，打死了掉在地上
+    for item in _drops(kind, rank, theme, depth, stair) if loot else []:     # 身上带的东西，打死了掉在地上
         _put_item(cur, item, depth, npc=npc_id, boss=rank == "boss")
 
 

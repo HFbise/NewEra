@@ -64,6 +64,18 @@ bosses:
   library:   {pick_one: [curator_monocle, curator_ledger]}
 
 # 通用池：精英的额外掉落、宝箱房的一半从这里抽
+# 楼梯间守卫（精英）保底掉一件：身上的专属掉落一件都没掷中时，从这里抽。补给为主，不给好装备（保底只是不让人空手，不该比专属掉落还好）
+stair_guard:
+  - {item: bandage,        weight: 10}
+  - {item: herb,           weight: 10}
+  - {item: antidote_moss,  weight: 8}
+  - {item: lamp_oil,       weight: 8}
+  - {item: whetstone,      weight: 8}
+  - {item: torch,          weight: 6}
+  - {item: blood_potion,   weight: 6, min_floor: 3}
+  - {item: map_scrap,      weight: 5, min_floor: 2}
+  - {item: recall_crystal, weight: 3, min_floor: 4}
+
 pool:
   - {item: steel_shortsword, weight: 10, min_floor: 5}
   - {item: war_hammer,       weight: 4,  min_floor: 8}
