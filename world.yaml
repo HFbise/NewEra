@@ -404,7 +404,7 @@ npcs:
       # 现打武器，伤害最多 4（墙上的铁斧是 5）
       creates:
         weapon: {damage: 4}
-      # 能帮人升级武器：每级伤害 +1，费用和碎掉的几率随等级涨（engine.upgrade_terms）
+      # 能帮人升级武器：每级伤害 +1，费用和失败的几率随等级涨，失败退一级不会碎（engine.upgrade_terms）
       upgrades: true
       buys: {likes: [weapon, armor, ore]}
       gift_likes: [ore]

@@ -2324,7 +2324,8 @@ def do_give(cur: Cursor, player: Player, view: RoomView, a: Give) -> list[str]:
     return [f"{player.name}把{_label(item)}交给了{npc.name}"]
 
 
-# 铁匠升级武器：每级伤害 +1，名字后面标 +N。升到第 N 级有 N × UPGRADE_BREAK_STEP 的几率碎掉（最多 UPGRADE_BREAK_MAX），
+# 铁匠升级武器：每级伤害 +1，名字后面标 +N。升到第 N 级有 N × UPGRADE_BREAK_STEP 的几率失败（最多 UPGRADE_BREAK_MAX），
+# 失败不会碎，而是退一级（+3 升 +4 失败变 +2，+0 失败还是 +0），钱照收。
 # 等级不封顶。费用是升级后和升级前建议价的差（至少 UPGRADE_MIN_COST），跟着伤害指数涨
 UPGRADE_BREAK_STEP = 0.10
 UPGRADE_BREAK_MAX = 0.90
@@ -2332,7 +2333,7 @@ UPGRADE_MIN_COST = 5
 
 
 def upgrade_terms(item: ItemInstance) -> tuple[int, int, float]:
-    """(升到几级, 费用, 碎掉的几率)"""
+    """(升到几级, 费用, 失败的几率)"""
     level = item.props.get("plus", 0) + 1
     cost = max(UPGRADE_MIN_COST, base_price({"damage": item.damage + 1}) - base_price({"damage": item.damage}))
     return level, cost, min(UPGRADE_BREAK_MAX, UPGRADE_BREAK_STEP * level)
@@ -2348,7 +2349,8 @@ def do_upgrade(cur: Cursor, player: Player, view: RoomView, a: Upgrade) -> list[
     level, cost, risk = upgrade_terms(item)
     key = f"upgrade:{item.id}"
     offer = _offers(cur, player.id, npc).get(key)
-    terms = f"升到 +{level}（伤害 {item.damage} → {item.damage + 1}）要 {cost} 金币，有 {round(risk * 100)}% 的可能碎掉"
+    terms = (f"升到 +{level}（伤害 {item.damage} → {item.damage + 1}）要 {cost} 金币，有 {round(risk * 100)}% 的可能失败"
+             + ("，失败会退一级" if level > 1 else "，失败了钱白花"))
     if offer is None or offer["price"] != cost:
         # 第一次只开价，说清风险，玩家再说一次才动手
         _put_offer(cur, player.id, npc, key, cost)
@@ -2357,10 +2359,17 @@ def do_upgrade(cur: Cursor, player: Player, view: RoomView, a: Upgrade) -> list[
     cur.execute("update player_npc_relations set offers = offers - %s where player_id = %s and npc_template = %s",
                 (key, player.id, npc.template.id))
     facts = [f"{player.name}付了 {cost} 金币，{npc.name}把{item.name}放进炉火里重新锻打（{terms}）"] + patron
+    base = re.sub(r" \+\d+$", "", item.name)
     if _roll(risk):
-        cur.execute("delete from item_instances where id = %s", (item.id,))
-        return facts + [f"淬火的时候{item.name}裂成了两截，碎掉了"]
-    name = re.sub(r" \+\d+$", "", item.name) + f" +{level}"
+        down = max(0, level - 2)            # 现在是 level-1，失败退一级
+        if down == level - 1:
+            return facts + [f"淬火的时候火候没掌握好，{item.name}没升上去，好在也没伤着"]
+        dmg = item.damage - 1
+        name = base + (f" +{down}" if down else "")
+        cur.execute("update item_instances set props = props || %s where id = %s",
+                    (Jsonb({"plus": down, "damage": dmg, "name": name}), item.id))
+        return facts + [f"淬火的时候刃口崩了一块，{item.name}退回了{name}，伤害 {dmg}"]
+    name = base + f" +{level}"
     cur.execute("update item_instances set props = props || %s where id = %s",
                 (Jsonb({"plus": level, "damage": item.damage + 1, "name": name}), item.id))
     return facts + [f"升级成功：{item.name}变成了{name}，伤害 {item.damage + 1}"]

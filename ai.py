@@ -685,7 +685,7 @@ def npc_services(npc: Npc, sells: Optional[list[dict]] = None) -> list[str]:
     if inn := p.get("inn"):
         out.append(f"住店，一晚 {inn.get('price', 0)} 金币，价钱固定不讲价，睡一觉回满体力、醒酒（他说一句“住店”就能住）")
     if p.get("upgrades"):
-        out.append("帮人升级武器，每升一级更锋利，但级数越高越容易在淬火时碎掉")
+        out.append("帮人升级武器，每升一级更锋利，但级数越高越容易失败，失败会退一级（不会碎）")
     return out
 
 
