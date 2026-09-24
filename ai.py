@@ -847,7 +847,8 @@ KIND_NAMES = {"food": "食物（吃的）", "drink": "酒水（喝的）", "misc
 
 def _kind_caps(kind: str, caps: dict) -> str:
     """给 AI 看的某个种类能做到什么程度"""
-    parts = [f"回血最多 {caps['heal']}" if caps.get("heal") else "",
+    parts = [f"回血最多 {caps['heal']} 点（每点回血量上限的 {engine.HEAL_PCT}%，酒 {engine.HEAL_PCT_ALCOHOL}%）"
+             if caps.get("heal") else "",
              f"有毒的最多掉 {caps['harm']} 血" if caps.get("harm") else "",
              "可以下药把人放倒" if caps.get("knockout") else "",
              f"伤害最多 {caps['damage']}" if caps.get("damage") else ""]

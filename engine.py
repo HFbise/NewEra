@@ -1010,14 +1010,32 @@ def _recall(cur: Cursor, player: Player, item: ItemInstance) -> list[str]:
 
 
 def _eat_verb(item: ItemInstance) -> str:
-    return "喝" if item.template.id == "made_drink" else "吃"
+    """酒、水、汤是喝的"""
+    return "喝" if item.template.id == "made_drink" or _is_alcohol(item) or any(c in item.name for c in "水汤茶奶") else "吃"
+
+
+# 吃喝回血按血量上限的百分比算，耐性练高了药也跟着管用：heal 每 1 点回 HEAL_PCT%（血量 20 时正好 1 点），
+# 酒回得少一点，每点 HEAL_PCT_ALCOHOL%。毒（harm）还是按点数掉血
+HEAL_PCT = 5
+HEAL_PCT_ALCOHOL = 3
+
+
+def _is_alcohol(item: ItemInstance) -> bool:
+    return bool(_prop(item, "alcohol")) or "酒" in item.name
+
+
+def heal_amount(points: int, max_hp: int, alcohol: bool = False) -> int:
+    """heal 点数 → 这个人实际回多少血"""
+    return max(1, round(max_hp * points * (HEAL_PCT_ALCOHOL if alcohol else HEAL_PCT) / 100)) if points > 0 else 0
 
 
 def _eat_effect(cur: Cursor, eater: Player, item: ItemInstance, user: Player) -> list[str]:
     """吃喝下去的效果：有毒的掉血，蒙汗药这类把人放倒，正常的回血（倒下的人吃了回血药也能站起来）。
-    药草（模板 props.herbal）按用药的人（自己吃是自己，喂别人是喂的人）的自然等级多回血"""
+    回血按吃的人血量上限的百分比（heal_amount）；药草（模板 props.herbal）按用药的人（自己吃是自己，喂别人是喂的人）
+    的自然等级多回"""
     facts = []
-    heal = item.heal + (skill_level(user.skills.get("nature", 0)) if item.heal and item.template.props.get("herbal") else 0)
+    points = item.heal + (skill_level(user.skills.get("nature", 0)) if item.heal and item.template.props.get("herbal") else 0)
+    heal = heal_amount(points, eater.max_hp, _is_alcohol(item))
     hp = max(0, min(eater.max_hp, eater.hp + heal - item.harm))
     cur.execute("update players set hp = %s, updated_at = now() where id = %s", (hp, eater.id))
     if item.harm:
@@ -2573,7 +2591,7 @@ def effect_text(stats: dict) -> str:
     """给人看的效果说明：伤害 4 / 回 3 点血 / 有毒，掉 3 点血 / 能把人药倒"""
     parts = [f"伤害 {stats['damage']}" if stats.get("damage") else "",
              f"防御 {stats['defense']}" if stats.get("defense") else "",
-             f"回 {stats['heal']} 点血" if stats.get("heal") else "",
+             f"回 {stats['heal'] * (HEAL_PCT_ALCOHOL if stats.get('alcohol') else HEAL_PCT)}% 体力" if stats.get("heal") else "",
              f"有毒，掉 {stats['harm']} 点血" if stats.get("harm") else "",
              "能把人药倒" if stats.get("knockout") else ""]
     return "，".join(p for p in parts if p) or "没什么效果"
