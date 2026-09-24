@@ -879,6 +879,12 @@ def do_move(cur: Cursor, player: Player, view: RoomView, a: Move) -> list[str]:
             raise ActionError(f"{player.name}发起的决斗还没结束，得先逃跑成功才能离开")
         cur.execute("delete from duels where challenger = %s", (duel["challenger"],))
         facts.append(f"{player.name}走开了，和{duel['opponent']}的决斗结束了")
+    # 楼梯间的守卫（精英、头目）活着就下不去：得打倒它，或者把它定住、捆住趁机溜下去
+    if a.direction == "down" and dungeon.is_dungeon(player.room_id) and (guards := [
+            n.name for n in _enemies(cur, player.room_id)
+            if n.template.props.get("dungeon", {}).get("rank") in ("elite", "boss")
+            and (n.status is None or n.status.kind == "prone")]):
+        raise ActionError(f"{'、'.join(guards)}守在楼梯口，不打倒它（或者把它定住、捆住）下不去")
     # 被敌人发现、正在交手：得先逃跑成功（甩开了就不算被发现）才能离开
     if _stealth(player).detected and (foes := [n.name for n in _enemies(cur, player.room_id) if n.status is None]):
         raise ActionError(f"{'、'.join(foes)}正缠着{player.name}，得先逃跑成功才能离开")
@@ -2209,8 +2215,9 @@ def do_attack(cur: Cursor, player: Player, view: RoomView, a: Attack) -> list[st
         chance = _light_hit(light, MELEE_HIT.get(d, 0))
         if not _roll(max(0.0, chance - _drunk(player) - _poisoned(player) + _prone_bonus(npc, d))):
             swung = _fire(cur, player, "attack", npc=npc)
+            dim = "，太暗了看不太清" if d in MELEE_HIT and light < LIGHT_FULL else ""     # 让玩家知道是黑的缘故
             return [f"{player.name}用{how}攻击{npc.name}，" + (f"隔着 {distance_word(d)}够不着" if d not in MELEE_HIT
-                                                             else f"隔着 {distance_word(d)}，没打中")] \
+                                                             else f"隔着 {distance_word(d)}，没打中{dim}")] \
                 + _attack_extras(cur, player, npc, [e for e in swung if e["do"] in ("splash", "self_damage")])
     # 这场仗的第一次出手（伏击者短刀）
     st = _stealth(player)
