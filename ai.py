@@ -10,6 +10,7 @@ AI 调用：意图解析 + 叙事（含 NPC 对话）。
 import json
 import os
 import re
+import threading
 import time
 from typing import Literal, Optional, Union
 from uuid import UUID
@@ -36,6 +37,8 @@ API_ERRORS = (anthropic.APIError, genai_errors.APIError, ZaiError)
 
 ZHIPU_TIMEOUT = 15                      # 秒；后面还有备用模型时，超时就换下一个，别在限流的模型上干等
 ZHIPU_TIMEOUT_LAST = 40                 # 备用链最后一个模型没得换了，多等一会儿（4.5 慢的时候要二三十秒）
+ZHIPU_TIMEOUT_SLOW = 120                # 后台长活（写一整层地牢房间）：玩家不用等，输出又长，15 秒写不完
+_slow = threading.local()               # 这个线程里的调用是不是后台长活（见 _patient）
 
 _clients: dict = {}
 _action = TypeAdapter(PlayerAction).validate_python
@@ -78,7 +81,7 @@ class Usage(BaseModel):
 def _generate_zhipu(system: str, user: str, fmt: type[BaseModel], max_tokens: int, mdl: str):
     # 智谱只有 json_object 模式，不强制 schema，所以把 schema 写进 system，回来再用 Pydantic 校验
     chain = list(dict.fromkeys([model()] + fallback_models()))
-    timeout = ZHIPU_TIMEOUT_LAST if mdl == chain[-1] else ZHIPU_TIMEOUT
+    timeout = ZHIPU_TIMEOUT_SLOW if getattr(_slow, "on", False) else ZHIPU_TIMEOUT_LAST if mdl == chain[-1] else ZHIPU_TIMEOUT
     if ("zhipu", timeout) not in _clients:
         # 读 ZAI_API_KEY，默认连国内 bigmodel.cn。SDK 默认限流、超时时自己等着重试 3 次，会拖很久；
         # 这里不让它重试，出问题直接换备用模型（见 _generate_with_fallback）
@@ -1015,6 +1018,89 @@ def decide_give(db, view: RoomView, text: str, npc: Npc, giveable: list[ItemInst
     return Trade(give_id=give_refs[out.give].id if out.give else None, made=out.create,
                  sell_id=sell_refs[out.sell]["id"] if out.sell else None, price=out.price,
                  count=max(1, min(engine.SELL_MAX_COUNT, out.count)) if out.sell and out.sell.startswith("s") else 1), usage
+
+
+# ============ 地牢房间：AI 按主题写（后台，失败就用模板）============
+
+ROOMS_SYSTEM = """你在给文字 MUD 游戏的远古地牢写房间。给你这一层的主题、会出没的怪，和几个要写的房间（格子编号、种类、现在的模板）。
+每个房间写：
+- name：房间名，2 到 8 个字，名词短语（"塌了一半的祭坛""渗水的矿道岔口"），不要带层数
+- description：一句话外观，20 到 60 字，别人一眼能看到的样子
+- details：只给叙事者看的环境细节，40 到 150 字，写能看见、摸到、听到、闻到的具体东西，可以埋一点这里过去发生过什么的线索
+- light：bright（明亮）、dim（昏暗）、dark（漆黑）三选一，要跟描写对得上（有天光、火盆的亮，深处、没光源的暗）
+- ground：normal 或 water（积水、泥沼，行动不便）。只有描写里真有水、泥的才填 water
+- cover：有能躲藏的掩体（柱子、柜子、乱石堆）填 true
+- features：房间里能拿来利用的东西 1 到 2 样（砸人、推倒、点火、绊人用的），name 2 到 8 个字；max_tier：大件、能砸出重伤的填 heavy，小件填 light；
+  lamp：点着火、照亮房间的东西（火盆、烛台、油灯）填 true，其他 false。features 里的东西描写或细节里要提到
+种类的要求：
+- stairs 是楼梯间：一定要写出往下的路（石阶、竖井、铁梯……），气氛比别的房间更压迫，因为有守卫
+- treasure 是宝箱房：写出藏东西的地方（箱子、暗格、供台……）
+- combat 是普通房间，会有怪在里面，但描写里不要写怪、不要写活物，只写房间本身
+- empty 是空房：安静、能歇脚的感觉
+硬性规则：
+- 全部用中文；不要写物品、金币、宝物的具体名字，不要写人物、NPC、怪物
+- 不要写能拿走的小东西（刀、匕首、钥匙、书信、首饰、锁着的箱子），也不要暗示这里藏着宝物：玩家会想去拿，可那些东西并不存在。
+  大件的固定物（石棺、书架、熔炉、栈道）可以写；宝箱房写"藏东西的地方"就行，不写里面有什么
+- 贴合主题，每个房间各不相同，不要重复用词
+- rooms 按给你的格子编号一一对应，一个不能少"""
+
+
+class AIFeature(BaseModel):
+    name: str
+    max_tier: Literal["light", "heavy"]
+    lamp: bool = False
+
+
+class AIRoom(BaseModel):
+    cell: int
+    name: str
+    description: str
+    details: str
+    light: Literal["bright", "dim", "dark"]
+    ground: Literal["normal", "water"] = "normal"
+    cover: bool = False
+    features: list[AIFeature]
+
+
+class AIRooms(BaseModel):
+    rooms: list[AIRoom]
+
+
+def dungeon_rooms(db, material: dict) -> Optional[list[dict]]:
+    """后台按主题写一层的房间。校验不过（缺房间、字数不对、混进英文、写了怪）就重来一次，还不行返回 None（留着模板）"""
+    want = {r["cell"]: r for r in material["rooms"]}
+    user = (f"<theme>{material['theme_name']}（第 {material['depth']} 层）：{material['intro']}\n"
+            f"会出没的怪：{'、'.join(material['monsters'])}</theme>\n\n<rooms>\n"
+            + "\n".join(f"格子 {r['cell']}：{r['kind']}（现在的模板：{r['name']}，{r['description']}）" for r in material["rooms"])
+            + "\n</rooms>")
+    names = set(material["monsters"])
+
+    def check(out: AIRooms, last: bool) -> AIRooms:
+        got = {r.cell: r for r in out.rooms}
+        if missing := sorted(set(want) - set(got)):
+            raise ValueError(f"少了格子 {missing}")
+        out.rooms = [got[c] for c in want]
+        for r in out.rooms:
+            r.name = r.name.strip().strip("“”\"")
+            text = r.name + r.description + r.details + "".join(f.name for f in r.features)
+            if re.search(r"[A-Za-z]", text):
+                raise ValueError(f"格子 {r.cell} 混进了英文，全部用中文")
+            if not (2 <= len(r.name) <= 10) or not (12 <= len(r.description) <= 80) or not (30 <= len(r.details) <= 220):
+                raise ValueError(f"格子 {r.cell} 字数不对：名字 2 到 8 字，外观 20 到 60 字，细节 40 到 150 字")
+            if not (1 <= len(r.features) <= 2) or any(not (2 <= len(f.name) <= 10) for f in r.features):
+                raise ValueError(f"格子 {r.cell} 的环境物品要 1 到 2 样，名字 2 到 8 字")
+            if any(n in text for n in names):
+                raise ValueError(f"格子 {r.cell} 写了怪（{'、'.join(n for n in names if n in text)}），只写房间本身")
+            if want[r.cell]["kind"] == "stairs" and not re.search(r"下|井|阶|梯|深", r.description + r.details):
+                raise ValueError(f"格子 {r.cell} 是楼梯间，要写出往下的路")
+        return out
+
+    _slow.on = True
+    try:
+        out, _ = _call(db, None, "rooms", ROOMS_SYSTEM, user, AIRooms, 4096, check, prefer=background_model())
+    finally:
+        _slow.on = False
+    return [r.model_dump() for r in out.rooms] if out else None
 
 
 # ============ 战斗回合（tick）的叙事：整队共用一段，第三人称 ============

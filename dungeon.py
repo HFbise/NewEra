@@ -128,6 +128,59 @@ def _room_id(run: UUID, depth: int, cell: tuple[int, int]) -> str:
 
 
 OPPOSITE = {"north": "south", "south": "north", "east": "west", "west": "east"}
+FLOOR_HOOK = None                        # 新生成了一层时调用 (run, depth)：server 挂上后台 AI 写房间
+
+
+# ============ AI 写的房间 ============
+# 一层先用模板生成（玩家不用等），后台让 AI 重写战斗房、空房、宝箱房、楼梯间的名字、描写、环境（亮暗、积水、掩体）
+# 和能利用的环境物品。入口（玩家已经站在里面）、事件房（文字跟事件绑着）、传送石、牢房不改；已经有人进过的房间也不改
+AI_KINDS = ("combat", "empty", "treasure", "stairs")
+
+
+def rooms_for_ai(cur: Cursor, run: UUID, depth: int) -> Optional[dict]:
+    """给 AI 写的材料：这一层的主题，和还没人进过、可以重写的房间（格子、种类、现在的模板文字）"""
+    cur.execute("select theme, seen from dungeon_floors where run_id = %s and depth = %s", (run, depth))
+    f = cur.fetchone()
+    if f is None:
+        return None
+    cur.execute("select id, name, description, props from rooms where id like %s", (f"dg-{run.hex}-{depth}-%",))
+    rooms = [{"cell": _cell_of(r["id"]), "kind": r["props"]["dungeon"]["kind"], "name": r["name"].split("·", 1)[-1],
+              "description": r["description"]}
+             for r in cur.fetchall()
+             if r["props"].get("dungeon", {}).get("kind") in AI_KINDS and _cell_of(r["id"]) not in (f["seen"] or [])]
+    t = data()["themes"][f["theme"]]
+    return {"theme": f["theme"], "theme_name": t["name"], "intro": t["intro"], "depth": depth,
+            "monsters": [data()["monsters"][m]["name"] for m in t["monsters"]], "rooms": sorted(rooms, key=lambda r: r["cell"])}
+
+
+def apply_ai_rooms(cur: Cursor, run: UUID, depth: int, theme: str, texts: list[dict]) -> int:
+    """把 AI 写好的房间写进去（期间有人进去了的跳过），返回改了几间。
+    环境物品换成 AI 给的（点着的灯让房间更亮），光亮按主题的自然光亮 + 亮暗档重新算"""
+    cur.execute("select seen from dungeon_floors where run_id = %s and depth = %s", (run, depth))
+    seen = set(cur.fetchone()["seen"] or [])
+    base = data()["themes"][theme].get("light", 35)
+    done = 0
+    for t in texts:
+        rid = f"dg-{run.hex}-{depth}-{t['cell']}"
+        cur.execute("select 1 from players where room_id = %s limit 1", (rid,))
+        if t["cell"] in seen or cur.fetchone():
+            continue
+        light = max(0, min(100, base + LIGHT_OFFSET[t["light"]]))
+        lamps = [f"f{i}" for i, ft in enumerate(t["features"]) if ft["lamp"]]
+        env = {"light": min(100, light + LAMP_LIGHT * len(lamps)), "ground": t["ground"], "cover": t["cover"]}
+        if lamps:
+            env["lamps"] = lamps
+        cur.execute("""update rooms set name = %s, description = %s, details = %s, props = jsonb_set(props, '{env}', %s)
+                       where id = %s""",
+                    (f"第 {depth} 层·{t['name']}", t["description"], t["details"], Jsonb(env), rid))
+        cur.execute("select count(*) as n from room_features where room_id = %s", (rid,))
+        if cur.fetchone()["n"]:         # 模板放了环境物品的房间（战斗房、楼梯间、有守卫的宝箱房）才换
+            cur.execute("delete from room_features where room_id = %s", (rid,))
+            for i, ft in enumerate(t["features"]):
+                cur.execute("""insert into room_features (room_id, key, name, max_tier, max_uses, uses_left, respawn_seconds)
+                               values (%s, %s, %s, %s, 1, 1, %s)""", (rid, f"f{i}", ft["name"], ft["max_tier"], FEATURE_RESPAWN))
+        done += 1
+    return done
 CELL_INDEX = GRID * GRID                # 城堡层的牢房接在九宫格外面，编号在格子后面
 
 
@@ -458,6 +511,8 @@ def _make_floor(cur: Cursor, run: UUID, depth: int, above: Optional[str], size: 
     if theme_key == "castle" and theme.get("cell"):
         _prison_cell(cur, run, depth, theme, cells, start, size)
     entry = _room_id(run, depth, start)
+    if FLOOR_HOOK:
+        FLOOR_HOOK(run, depth)              # 后台让 AI 重写还没人进过的房间（server._describe_floor）
     if above:
         cur.execute("insert into room_exits (room_id, direction, to_room) values (%s, 'up', %s)", (entry, above))
     cur.execute("""insert into dungeon_floors (run_id, depth, theme, entry_room, stairs_room, party_size)

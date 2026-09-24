@@ -16,6 +16,7 @@ import os
 import re
 import secrets
 import threading
+import time
 from typing import Optional
 from uuid import UUID, uuid4
 
@@ -301,6 +302,39 @@ def _revive_quip(room_id: str, keeper_tid: str, player_id: UUID, player_name: st
 
 
 engine.REVIVE_HOOK = _revive_hook
+
+
+def _floor_hook(run, depth: int) -> None:
+    """新生成了一层地牢：后台让 AI 按主题重写还没人进过的房间（玩家不用等，写不好就留着模板）"""
+    if ai.enabled() and AI_ROOMS:
+        threading.Thread(target=_describe_floor, args=(run, depth), daemon=True).start()
+
+
+AI_ROOMS = os.environ.get("AI_ROOMS", "1") != "0"      # 设 AI_ROOMS=0 就只用模板
+
+
+def _describe_floor(run, depth: int) -> None:
+    try:
+        material = None
+        for _ in range(20):                  # 生成那一层的事务提交了才看得到
+            with pool.connection() as conn:
+                material = dungeon.rooms_for_ai(engine._cursor(conn), run, depth)
+                conn.commit()
+            if material:
+                break
+            time.sleep(0.5)
+        if not material or not material["rooms"]:
+            return
+        texts = ai.dungeon_rooms(pool, material)
+        if texts:
+            with pool.connection() as conn, conn.transaction():
+                dungeon.apply_ai_rooms(engine._cursor(conn), run, depth, material["theme"], texts)
+    except Exception:                        # 后台失败就留着模板，不影响游戏
+        import traceback
+        traceback.print_exc()
+
+
+dungeon.FLOOR_HOOK = _floor_hook
 
 _busy: set[UUID] = set()               # 正在判定的玩家
 _busy_lock = threading.Lock()
