@@ -127,7 +127,7 @@ from item_instances i join item_templates t on t.id = i.template_id
 """
 
 NPC_SELECT = """
-select n.id, n.room_id, n.hp, n.alive, n.memory, n.status, row_to_json(t) as template
+select n.id, n.room_id, n.hp, n.alive, n.memory, n.status, n.effects, row_to_json(t) as template
 from npcs n join npc_templates t on t.id = n.template_id
 """
 
@@ -640,6 +640,158 @@ def gear_gold(cur: Cursor, player: Player) -> float:
     return max([0.0] + [e.get("value", 0) for e in _fx(_worn(cur, player), "gold")])
 
 
+def _ally_down(cur: Cursor, player: Player) -> bool:
+    if not player.party_id:
+        return False
+    cur.execute("select 1 from players where party_id = %s and room_id = %s and hp <= 0 and id <> %s limit 1",
+                (player.party_id, player.room_id, player.id))
+    return cur.fetchone() is not None
+
+
+def _fire(cur: Cursor, player: Player, when: str, do: Optional[str] = None, npc: Optional[Npc] = None) -> list[dict]:
+    """这一刻（when）身上装备触发了哪些效果：对得上 vs 标签、满足 if 条件、掷中 chance 的"""
+    out = []
+    for e in (e for i in _worn(cur, player) for e in (_prop(i, "effects") or [])
+              if e.get("when") == when and (do is None or e.get("do") == do)):
+        if (vs := e.get("vs")) and not (npc and any(npc.template.props.get(t) for t in vs)):
+            continue
+        cond = e.get("if") or {}
+        if "hp_below" in cond and not player.hp < player.max_hp * cond["hp_below"]:
+            continue
+        if "target_hp_below" in cond and not (npc and npc.combatable and npc.hp < npc.template.max_hp * cond["target_hp_below"]):
+            continue
+        if cond.get("ally_down") and not _ally_down(cur, player):
+            continue
+        if e.get("chance", 1) < 1 and not _roll(e["chance"]):
+            continue
+        out.append(e)
+    return out
+
+
+def _labels(effects: list[dict]) -> list[str]:
+    return [e["label"] for e in effects if e.get("label")]
+
+
+def _aura(cur: Cursor, player: Player, kind: str) -> int:
+    """军团徽记这类光环：同房间的队友（和自己）身上最强的一件"""
+    cur.execute("""select i.id from item_instances i join players p on p.id = i.player_id
+                   where i.equipped_slot is not null and p.room_id = %s
+                     and (p.id = %s or (p.party_id is not null and p.party_id = %s))""",
+                (player.room_id, player.id, player.party_id))
+    ids = [r["id"] for r in cur.fetchall()]
+    items = load_items(cur, "i.id = any(%s)", (ids,)) if ids else []
+    return max([0] + [int(e.get("value", 0)) for e in _fx(items, "aura", kind=kind)])
+
+
+# 装备打到怪身上的状态：怪也能中毒、流血（每轮敌人行动掉血）、看不清（命中 ×NPC_BLIND_HIT）、腐蚀（防御 -NPC_CORRODE_DEF）；
+# 定身 stun、缠住、撞倒用怪原来的状态
+NPC_EFFECT_TURNS = {"poison": 3, "bleed": 3, "blind": 2, "corrode": 3}
+NPC_BLIND_HIT, NPC_CORRODE_DEF = 0.25, 2
+
+
+def _npc_effect(npc: Npc, kind: str) -> Optional[Effect]:
+    return next((e for e in npc.effects if e.kind == kind), None)
+
+
+def _save_npc_effects(cur: Cursor, npc: Npc) -> None:
+    cur.execute("update npcs set effects = %s where id = %s", (Jsonb([e.model_dump() for e in npc.effects]), npc.id))
+
+
+def _npc_affect(cur: Cursor, player: Player, npc: Npc, kind: str, label: str) -> list[str]:
+    """给怪上一个状态（装备触发的）"""
+    if not npc.alive or npc.hp is None or npc.hp <= 0:
+        return []
+    if kind in ("stun", "restrained", "prone"):
+        if npc.status:
+            return []
+        st = Status(kind="incapacitated" if kind == "stun" else kind, label=(label or "动弹不得")[:20], escape=2,
+                    since=datetime.now(timezone.utc).isoformat())
+        _set_status(cur, "npcs", npc.id, st)
+        npc.status = st
+        return [f"{npc.name}{label}" if label else f"{npc.name}{st.describe()}"]
+    depth = npc.template.props.get("dungeon", {}).get("depth", 1)
+    value = NPC_CORRODE_DEF if kind == "corrode" else 1 + depth // 5
+    npc.effects = [e for e in npc.effects if e.kind != kind] + [
+        Effect(kind=kind, value=value, left=NPC_EFFECT_TURNS[kind], label=(label or EFFECT_NAMES[kind])[:20], source=player.name)]
+    _save_npc_effects(cur, npc)
+    return [f"{npc.name}{label or ''}（{EFFECT_NAMES[kind]}）"]
+
+
+def _tick_npc_effects(cur: Cursor, player: Player, npcs: list[Npc]) -> list[str]:
+    """敌人每轮行动前：身上的中毒、流血掉血，时间到了消退"""
+    facts = []
+    for npc in npcs:
+        if not npc.effects:
+            continue
+        keep = []
+        for e in npc.effects:
+            if e.left <= 0:
+                facts.append(f"{npc.name}身上的{EFFECT_NAMES[e.kind]}消退了")
+                continue
+            if e.kind in ("poison", "bleed") and npc.hp > 0:
+                hurt, dead = _hurt_npc(cur, player, npc, e.value)
+                npc.hp = max(0, npc.hp - e.value)
+                facts += [f"{npc.name}{EFFECT_NAMES[e.kind]}，掉了 {e.value} 点血"] + hurt
+                if dead:
+                    npc.alive = False
+                    break
+            e.left -= 1
+            keep.append(e)
+        if npc.alive:
+            npc.effects = keep
+            _save_npc_effects(cur, npc)
+    return facts
+
+
+def _attack_extras(cur: Cursor, player: Player, npc: Npc, fired: list[dict]) -> list[str]:
+    """普通攻击出手时（打没打中都算）触发的：甩开铁链扫到别的敌人、握柄的刃咬手"""
+    facts = []
+    for e in fired:
+        if e["do"] == "splash":
+            for other in [n for n in _enemies(cur, player.room_id) if n.id != npc.id]:
+                hurt, _ = _hurt_npc(cur, player, other, int(e.get("value", 1)))
+                facts += [f"{other.name}被扫到，受到 {e.get('value', 1)} 点伤害"] + hurt
+        elif e["do"] == "self_damage":
+            hurt, _ = _hurt_player(cur, player, int(e.get("value", 1)), "other", "手里的凶器")
+            facts += [f"{player.name}自己掉了 {e.get('value', 1)} 点血"] + hurt
+    return _labels(fired) + facts
+
+
+def _hit_extras(cur: Cursor, player: Player, npc: Npc, dmg: int, dead: bool, fired: list[dict]) -> list[str]:
+    """普通攻击打中以后触发的：上状态、全体上状态、连锁、吸血；杀死了就是杀敌效果"""
+    facts = []
+    if dead:
+        for e in _fire(cur, player, "kill", npc=npc):
+            if e["do"] == "heal":
+                facts += _labels([e]) + _heal_player(cur, player, int(e.get("value", 1)))
+        return facts
+    for e in fired:
+        if e["do"] == "status":
+            facts += _npc_affect(cur, player, npc, e["kind"], e.get("label", ""))
+        elif e["do"] == "status_all":
+            facts += _labels([e])
+            for other in _enemies(cur, player.room_id):
+                facts += _npc_affect(cur, player, other, e["kind"], "")
+        elif e["do"] == "chain":
+            others = [n for n in _enemies(cur, player.room_id) if n.id != npc.id]
+            if others:
+                other = random.choice(others)
+                hurt, _ = _hurt_npc(cur, player, other, int(e.get("value", 1)))
+                facts += _labels([e]) + [f"{other.name}受到 {e.get('value', 1)} 点伤害"] + hurt
+    if leech := max([0] + [e.get("value", 0) for e in fired if e["do"] == "leech"]):      # 吸血取最好的一件
+        facts += _heal_player(cur, player, math.ceil(dmg * leech))
+    return facts
+
+
+def _heal_player(cur: Cursor, player: Player, amount: int) -> list[str]:
+    hp = min(player.max_hp, player.hp + amount)
+    if hp == player.hp:
+        return []
+    cur.execute("update players set hp = %s where id = %s", (hp, player.id))
+    gained, player.hp = hp - player.hp, hp
+    return [f"{player.name}回了 {gained} 点血，当前 HP {hp}/{player.max_hp}"]
+
+
 def _sync_gear_hp(cur: Cursor, player_id: UUID) -> list[str]:
     """装备带的血量上限（活力之戒 +3、贪婪之戒 -3）：跟 players.gear_hp 比，差多少就改多少，当前血量不超过上限"""
     player = load_player(cur, player_id, lock=True)
@@ -680,7 +832,8 @@ def hurt_player_by(atk: int, defense: int, depth: int = 0, pierce: int = 0, guar
 def _defense(cur: Cursor, player: Player) -> int:
     """基础防御加上所有装备的防御（护甲、护符、以后的盾）"""
     corrode = _effect(player, "corrode")
-    return max(0, player.defense + sum(i.defense for i in _worn(cur, player)) - (corrode.value if corrode else 0))
+    return max(0, player.defense + sum(i.defense for i in _worn(cur, player)) + _aura(cur, player, "defense")
+               - (corrode.value if corrode else 0))
 
 
 OFFHAND_SHARE = 0.25                    # 双持时副手（左手）武器只加这么多伤害，向下取整；只拿一把的不管在哪只手都算主手
@@ -743,6 +896,8 @@ def do_move(cur: Cursor, player: Player, view: RoomView, a: Move) -> list[str]:
                 (to, Jsonb(Stealth(room=to, chance=DETECT_START).model_dump()), player.id))
     room = load_room(cur, to)
     facts.append(f"{player.name}往{dir_name(a.direction)}走，来到了{room.name}")
+    if heal := sum(int(e.get("value", 0)) for e in _fire(cur, player, "enter", "heal")):
+        facts += _heal_player(cur, player, heal)
     facts += arrived + (_torch_floor(cur, [player.name], to) if arrived else [])
     # 同房间跟着他的人一起走：睡着、倒下、带着负面状态的跟不上
     cur.execute(
@@ -1588,21 +1743,48 @@ def _npc_counter(cur: Cursor, player: Player, npc: Npc) -> list[str]:
 
 def _npc_strike(cur: Cursor, player: Player, npc: Npc, verb: str, chance: float = 1.0) -> list[str]:
     """NPC 打玩家一下（反击、主动攻击），chance 是命中率。player.hp 跟着更新，同一回合几个敌人连着打能接上"""
+    if _npc_effect(npc, "blind"):
+        chance *= NPC_BLIND_HIT                 # 被墨汁糊了眼的怪
     if not _roll(chance):
         return [f"{npc.name}{verb}，没打中{player.name}"]
+    # 影步靴这类：几率完全躲开（几件取最高）
+    dodges = _fire(cur, player, "hurt", "dodge", npc)
+    if dodges:
+        return [f"{npc.name}{verb}，" + (dodges[0].get("label") or f"被{player.name}躲开了")]
     light = _light(cur, npc.room_id)
     atk = npc.template.attack + (math.floor(_dark_factor(light) + 0.5) if dungeon.is_dungeon(npc.room_id) else 0)
     if npc.template.props.get("light_averse") and light >= LIGHT_BRIGHT:
         atk -= 1                                # 怕光的怪在亮处缩手缩脚
     depth = npc.template.props.get("dungeon", {}).get("depth", 0)
-    dmg = hurt_player_by(atk, _defense(cur, player), depth)
+    guard = sum(int(e.get("value", 0)) for e in _fire(cur, player, "hurt", "guard", npc))       # 恶犬项圈
+    dmg = hurt_player_by(atk, _defense(cur, player), depth, guard=guard)
+    saved = []
+    if dmg >= player.hp and (cd := _fire(cur, player, "hurt", "cheat_death", npc)) and _cheat_death_ready(cur, player):
+        dmg, saved = player.hp - 1, _labels(cd) or [f"{player.name}硬撑着没倒下"]
     player.hp = max(0, player.hp - dmg)
     cur.execute("update players set hp = %s, updated_at = now() where id = %s", (player.hp, player.id))
-    facts = [f"{npc.name}{verb}，对{player.name}造成 {dmg} 点伤害", f"{player.name} HP {player.hp}/{player.max_hp}"]
+    hit = (f"{npc.name}{verb}，这一下本该要了{player.name}的命" if saved
+           else f"{npc.name}{verb}，对{player.name}造成 {dmg} 点伤害")
+    facts = [hit, f"{player.name} HP {player.hp}/{player.max_hp}"] + saved
     if player.hp == 0:
         facts.append(f"{player.name}倒下了")
         _downed_by(cur, player, "npc", npc.name)
+    # 荆棘软甲：扑上来的挨一下（不减防御）
+    if reflect := sum(int(e.get("value", 0)) for e in _fire(cur, player, "hurt", "reflect", npc)):
+        hurt, _ = _hurt_npc(cur, player, npc, reflect)
+        facts += [f"{npc.name}被扎了一下，受到 {reflect} 点伤害"] + hurt
     return facts + _toughen(cur, player, ENDURE_HIT_CHANCE) + _on_hit(cur, player, npc)
+
+
+def _cheat_death_ready(cur: Cursor, player: Player) -> bool:
+    """不熄的羽毛：每层地牢一次（记在 players.flags 的 cheat_death 里）"""
+    here = ":".join(map(str, dungeon.parse_room(player.room_id))) if dungeon.is_dungeon(player.room_id) else "surface"
+    if player.flags.get("cheat_death") == here:
+        return False
+    cur.execute("""update players set flags = flags || jsonb_build_object('cheat_death', %s::text) where id = %s""",
+                (here, player.id))
+    player.flags["cheat_death"] = here
+    return True
 
 
 def _stealth(player: Player) -> Stealth:
@@ -1912,6 +2094,8 @@ def enemy_turn(conn: Connection, player_id: UUID, actions: list[PlayerAction],
         if any(a.action == "move" and r.success for a, r in done) or all(a.action == "reject" for a, _ in done)                 or player.hp <= 0:
             return [], False            # 刚进门这一下不算；没做成的空话不算；倒下的不管
         alive = _enemies(cur, player.room_id)
+        ticked = _tick_npc_effects(cur, player, alive)          # 被装备打中毒、流血的怪先掉血
+        alive = [n for n in alive if n.alive]
         if not alive:
             st = Stealth(room=player.room_id, chance=DETECT_START)   # 敌人都死了，下一只（搜出来、刷回来的）重新算
         # 被放倒、被捆住的看不见也打不了人，正是偷袭的时候
@@ -1926,7 +2110,7 @@ def enemy_turn(conn: Connection, player_id: UUID, actions: list[PlayerAction],
                 st.hidden, st.detected, hid = True, False, True
             elif a.action == "dodge" and r.success:
                 dodge = True
-        stood = _enemies_stand(cur, alive)          # 倒地的这一轮爬起来，不算打断
+        stood = ticked + _enemies_stand(cur, alive)          # 倒地的这一轮爬起来，不算打断
         if not enemies or hid:
             _save_stealth(cur, player, st)
             return stood, False
@@ -2007,12 +2191,29 @@ def do_attack(cur: Cursor, player: Player, view: RoomView, a: Attack) -> list[st
             light = max(light, LIGHT_FULL)      # 石像鬼之眼：暗处命中不打折
         chance = _light_hit(light, MELEE_HIT.get(d, 0))
         if not _roll(max(0.0, chance - _drunk(player) - _poisoned(player) + _prone_bonus(npc, d))):
+            swung = _fire(cur, player, "attack", npc=npc)
             return [f"{player.name}用{how}攻击{npc.name}，" + (f"隔着 {distance_word(d)}够不着" if d not in MELEE_HIT
-                                                             else f"隔着 {distance_word(d)}，没打中")]
+                                                             else f"隔着 {distance_word(d)}，没打中")] \
+                + _attack_extras(cur, player, npc, [e for e in swung if e["do"] in ("splash", "self_damage")])
+    # 这场仗的第一次出手（伏击者短刀）
+    st = _stealth(player)
+    first = not st.struck
+    if first:
+        st.struck = True
+        _save_stealth(cur, player, st)
+    swung = _fire(cur, player, "attack", npc=npc)
+    fired = _fire(cur, player, "hit", npc=npc) + (_fire(cur, player, "fight", npc=npc) if first else [])
+    bonus = sum(int(e.get("value", 0)) for e in swung + fired if e["do"] == "bonus")
+    pierce = sum(int(e.get("value", 0)) for e in fired if e["do"] == "pierce")
+    corrode = _npc_effect(npc, "corrode")
+    armor = max(0, npc.template.defense - pierce - (corrode.value if corrode else 0))
     whet = _effect(player, "whet")
-    dmg = _bled(player, max(1, power + (whet.value if whet else 0) - npc.template.defense))
+    dmg = _bled(player, max(1, power + (whet.value if whet else 0) + bonus + _aura(cur, player, "attack") - armor))
     facts, dead = _hurt_npc(cur, player, npc, dmg)
-    facts = [f"{player.name}用{how}攻击{npc.name}，造成 {dmg} 点伤害"] + facts
+    facts = ([f"{player.name}用{how}攻击{npc.name}，造成 {dmg} 点伤害"]
+             + _labels([e for e in fired if e["do"] in ("bonus", "pierce")]) + facts
+             + _hit_extras(cur, player, npc, dmg, dead, fired)
+             + _attack_extras(cur, player, npc, [e for e in swung if e["do"] in ("splash", "self_damage")]))
     return facts if dead else facts + _npc_counter(cur, player, npc)
 
 

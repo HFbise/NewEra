@@ -422,6 +422,7 @@ class Npc(BaseModel):
     alive: bool = True
     memory: str = ""                    # 长期记忆摘要
     status: Optional[Status] = None
+    effects: list["Effect"] = []        # 玩家装备打上去的中毒、流血、看不清、腐蚀（engine 装备效果部分）
 
     @property
     def name(self) -> str:
@@ -495,6 +496,7 @@ class Stealth(BaseModel):
     detected: bool = False              # 被发现了：敌人每个动作都打他
     hidden: bool = False                # 躲着：几率不再上涨
     distance: dict[str, int] = {}       # 和每只 NPC（id）隔几格，没记的是 engine.START_DISTANCE
+    struck: bool = False                # 这场仗已经出过手了（伏击者短刀这类"每场第一次攻击"的效果用）
 
 
 Player.model_rebuild()                  # stealth 引用了后面才定义的 Stealth
@@ -556,3 +558,7 @@ class ActionResult(BaseModel):
     success: bool
     facts: list[str]                    # 客观事实，叙事 AI 只能基于这些写，不能编造结果
     # 例: ["玩家用生锈的短剑攻击哥布林", "造成 4 点伤害", "哥布林剩余 HP 4/8"]
+
+
+# Npc.effects 用到后面定义的 Effect
+Npc.model_rebuild()
