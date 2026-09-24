@@ -326,6 +326,78 @@ items:
     type: consumable
     heal: 10
     props: {price: 24, kind: potion}
+  # 回礼：好感到了某一档，来聊天时 NPC 送的东西（见各 NPC 的 return_gifts）
+  maggie_trap_map:
+    name: 麦琪的陷阱图
+    description: 一张被酒渍泡皱的羊皮纸，上面用炭笔标满了她记得的陷阱和安全的落脚处，角落歪歪扭扭写着"别死了笨蛋"。带在身上，地牢路上的陷阱更容易看出来。
+    type: misc
+    props: {price: 30, trap_sense: 2}      # 走路碰到陷阱时察觉的难度 -2
+  # 麦琪的酒壶和药（回礼）：用完变成"（空）"，找麦琪说"续杯"灌满（props.refill_by 是她的模板 id，refill_to 是满的样子）
+  maggie_antidote:
+    name: 解毒酒壶
+    description: 一只小小的皮酒壶，里面是麦琪泡了解毒草的烈酒，闻着又苦又冲。喝下去能解毒，还能缓一口气；喝完了回酒馆找她续杯。
+    type: misc
+    props: {price: 60, antidote: 4, empty: maggie_antidote_empty}     # 解毒，回 4 点（20%）
+  maggie_antidote_empty:
+    name: 解毒酒壶（空）
+    description: 麦琪的解毒酒壶，已经喝空了，晃一晃只剩一股苦味。回酒馆找她说"续杯"。
+    type: misc
+    props: {price: 60, refill_by: innkeeper, refill_to: maggie_antidote}
+  maggie_drug:
+    name: 特制迷药
+    description: 一只拇指大的小瓷瓶，封口的蜡上按着麦琪的指印。泼向一个敌人（或者骗它喝下去），它会一下子醉倒，动弹不得一阵子；用完了回酒馆找她续上。
+    type: misc
+    props: {price: 80, drug: 醉倒在地，动弹不得, empty: maggie_drug_empty}
+  maggie_drug_empty:
+    name: 特制迷药（空）
+    description: 麦琪的特制迷药瓶，已经空了，瓶底还沾着一点甜腻的味道。回酒馆找她说"续杯"。
+    type: misc
+    props: {price: 80, refill_by: innkeeper, refill_to: maggie_drug}
+  maggie_flask:
+    name: 回头见❤
+    description: 一只磨得发亮的旧锡酒壶，壶身上刻着一个歪歪扭扭的"杂"字，壶底贴着一张小纸条："回头见❤"。喝下去伤一下子就好了，偶尔还会觉得浑身是劲。每次下地牢前找她灌满。
+    type: misc
+    props: {price: 200, flask: true, empty: maggie_flask_empty}      # 回满血；20% 两层内攻击 +25%（engine._flask）
+  maggie_flask_empty:
+    name: 回头见❤（空）
+    description: 麦琪给的那只旧锡酒壶，已经喝空了，壶底的纸条还在："回头见❤"。回酒馆找她说"续杯"。
+    type: misc
+    props: {price: 200, refill_by: innkeeper, refill_to: maggie_flask}
+  # 远程武器（props.ranged）：贴身难射、离远了准（engine.RANGED_HIT）；steady 的远近都一样准。
+  # 射完换成 unloaded 那个"空"的样子，说"装填"才换回来（算一个动作）
+  maggie_crossbow:
+    name: 麦琪的轻弩
+    description: 麦琪藏在吧台下的那把轻弩，弩臂上缠着磨旧的皮绳，扳机护圈里刻着一个歪歪扭扭的"杂"字。单手就能端平，射出去又稳又准，远近都一样；射完要重新上弦（说"装填"）。
+    type: weapon
+    slot: hand
+    damage: 8
+    props: {price: 150, ranged: true, steady: true, unloaded: maggie_crossbow_empty}
+  maggie_crossbow_empty:
+    name: 麦琪的轻弩（空）
+    description: 麦琪的那把轻弩，弦松着，槽里空空的。说"装填"重新上弦才能再射。
+    type: weapon
+    slot: hand
+    damage: 8
+    props: {price: 150, loads: maggie_crossbow}
+  # 莉娜的回礼（好感 100）：伤害按玩家走到过的最深层数定，带一个武器词条，能自己起名（engine._exclusive_blade）
+  lina_blade:
+    name: 莉娜打的剑
+    description: 莉娜熬了好几个晚上亲手打的一把剑，剑脊上錾着一个小小的火焰纹，那是她的记号。握柄的长短正好合你的手。
+    type: weapon
+    slot: hand
+    damage: 6
+    props: {price: 150, exclusive: true}
+  noelle_bookmark:
+    name: 守护书签
+    description: 一枚压得平平整整的干花书签，夹在书里的那一面写着一行细小的字。带在身上，本该倒下的那一击会被它挡下来，每层一次。
+    type: misc
+    props: {price: 150, guard_once: true}  # 地牢里每层一次，挡下一次致命的攻击（engine._npc_strike）
+  noelle_tome:
+    name: 诺艾尔的古书
+    description: 诺艾尔最珍惜的那本古书，皮面被摸得发亮。在敌人面前念出来，周围所有敌人都会僵住动弹不得；书不会化成灰，每层能念一次。
+    type: misc
+    props: {price: 200, stun: 被古老的文字定住了身形, per_floor: true}
+
   # 地牢随机事件房里的东西。矿石、古酒、古书以后是送给莉娜、麦琪、诺艾尔的礼物
   ore:
     name: 奥利哈刚矿石
@@ -398,6 +470,14 @@ npcs:
       buys: {likes: [food, drink, herb, wine]}
       # 心爱的礼物（物品 props.gift 的种类）：送了好感 +10，有特别的台词
       gift_likes: [wine]
+      # 回礼：好感到了这一档，他来聊天时送一次（每档一次，好感掉了再涨回来也不会再送；engine.return_gift）
+      #   item 是送的东西，perk 是解锁的本事（引擎认），text 是给台词看的说明。40、60 还没定
+      return_gifts:
+        20: {item: maggie_trap_map, text: 一张她亲手标了陷阱的破地图（带在身上，地牢路上的陷阱更容易看出来）}
+        40: {item: maggie_antidote, text: 一只装着解毒草泡的烈酒的皮酒壶（喝了解毒，喝完回来找她续杯）}
+        60: {item: maggie_drug, text: 一小瓶她的特制迷药（泼向敌人能让它醉倒，用完回来找她续上）}
+        80: {item: maggie_crossbow, text: 她吧台下那把上了弦的轻弩（单手就能端平，远近一样准，射完要重新上弦）}
+        100: {item: maggie_flask, text: 一只壶底贴着"回头见❤"的旧锡酒壶（喝了回满血，偶尔浑身是劲；每次下地牢前找她灌满）}
       # 吧台上的货，价钱由 AI 按建议价浮动
       sells: [dwarf_stout, elf_mead, dragon_breath, sober_potion]
       eject_to: south
@@ -421,6 +501,12 @@ npcs:
       upgrades: true
       buys: {likes: [weapon, armor, ore]}
       gift_likes: [ore]
+      return_gifts:
+        20: {perk: discount, text: 熟客价：以后找她升级打九折}
+        40: {item: ore, text: 一块她珍藏的奥利哈刚矿石（升级时用上，那一次必定成功）}
+        60: {perk: transfer, text: 传承锻造：能把旧装备的强化等级转到新装备上（按新装备算钱，说「把A的强化转到B上」）}
+        80: {perk: reroll, text: 刷新词条：带特效的装备能找她重新锻出别的特效（同一件越刷越贵，说「刷新A的词条」）}
+        100: {item: lina_blade, text: 她亲手为他打的一把专属武器（想起名就说「给它起名叫某某」）}
       eject_to: west
       revive_lines:
         npc: 莉娜单手把{name}拎起来靠在铁砧边，瞥了一眼：“……{by}？太弱。”又盯着那把武器皱眉：“刃口也钝了。”
@@ -442,6 +528,12 @@ npcs:
       uncurse: true
       buys: {likes: [misc, book]}
       gift_likes: [book]
+      return_gifts:
+        20: {perk: map_scrap, text: 以后能在她这儿买地图残片（她珍藏的地牢地图拓本）}
+        40: {perk: curse_sense, text: 一本手抄的诅咒辨识笔记：装备上有没有诅咒，一眼就能看出来}
+        60: {perk: bestiary, text: 她整理的怪物图鉴：能看出地牢里各种怪物的习性和弱点}
+        80: {item: noelle_bookmark, text: 一枚守护书签（每层能替他挡下一次致命的攻击）}
+        100: {item: noelle_tome, text: 她最珍惜的那本古书（念了不会化成灰，每层能用一次，让所有敌人僵住）}
       revive_lines:
         npc: 诺艾尔从书堆后面探出头，犹豫了好一会儿，才小心翼翼地把药瓶推到{name}手边：“被、被{by}打成这样……书、书上说要先止血……”
         player: 诺艾尔抱着书缩在柜台后，声音细得快听不见：“和{by}打、打架了吗……请、请不要在店里打……会碰倒书的……”

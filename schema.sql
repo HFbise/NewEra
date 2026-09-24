@@ -143,9 +143,10 @@ create table player_npc_relations (
   memory       text not null default '',        -- NPC 对这个玩家的记忆摘要，对话时由 AI 更新，限 150 字
   last_created_at timestamptz,                   -- NPC 上次给这个玩家现造东西的时间，冷却用（engine.CREATE_COOLDOWN）
   offers       jsonb not null default '{}',     -- NPC 给这个玩家报过的价 {物品 id: {price, at}}，卖货只按报价成交
-  rare         jsonb,
+  rare         jsonb,                           -- 偶尔进的稀罕货 {at, item}：问货时判一次，这段时间里 item 就是有的那件（null 是没进到或卖掉了）
   chat_day     date,                            -- 聊天涨好感按天封顶（engine.CHAT_DAILY）：这一天
-  chat_gain    int not null default 0,          -- 这一天聊天已经涨了多少                           -- 偶尔进的稀罕货 {at, item}：问货时判一次，这段时间里 item 就是有的那件（null 是没进到或卖掉了）
+  chat_gain    int not null default 0,          -- 这一天聊天已经涨了多少
+  gifts        int[] not null default '{}',     -- 领过的回礼档位（好感 20/40/…），掉了再涨回来也不会再送（engine.return_gift）
   primary key (player_id, npc_template)
 );
 

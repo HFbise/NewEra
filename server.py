@@ -40,8 +40,8 @@ app.include_router(admin.router)
 # 这些动作的回合不调叙事 AI：facts 已经说清楚了，AI 反而容易替别的玩家编动作
 NO_NARRATION = {"say", "follow", "unfollow", "leave_party", "challenge", "accept_duel", "decline_duel"}
 # NPC 对话里这些结果旁人也看得到（交东西、提委托、轰人），跟在对话原文后面
-AFFINITY_BY_RULE = {"npc_give", "npc_create", "npc_sell", "upgrade", "rest", "pay", "sell", "give"}
-NPC_OUTCOMES = {"npc_give", "npc_create", "npc_sell", "quote", "quest", "npc_eject", "upgrade", "rest", "pay", "sell"}
+AFFINITY_BY_RULE = {"npc_give", "npc_create", "npc_sell", "upgrade", "rest", "pay", "sell", "give", "gift_back"}
+NPC_OUTCOMES = {"npc_give", "npc_create", "npc_sell", "quote", "quest", "npc_eject", "upgrade", "rest", "pay", "sell", "gift_back"}
 
 
 class LoginReq(BaseModel):
@@ -109,6 +109,8 @@ def state(conn, view: RoomView, after: Optional[int] = None) -> dict:
     combat = engine.round_info(conn, view.player)                                  # 战斗回合：谁出手了、在等谁
     minimap = dungeon.minimap(engine._cursor(conn), view.room.id)                   # 地牢这一层的小地图
     totals = engine.gear_totals(view.player.attack, view.player.defense, view.inventory)
+    unlocked = engine.perks(engine._cursor(conn), view.player.id)                    # 回礼解锁的本事
+    sense = "curse_sense" in unlocked
     conn.commit()
     return {
         "player": view.player.model_dump(mode="json"),
@@ -118,14 +120,17 @@ def state(conn, view: RoomView, after: Optional[int] = None) -> dict:
         "minimap": minimap,
         "exits": [{"direction": e.direction, "label": dir_name(e.direction), "to": room_names[e.to_room],
                    "locked": e.locked} for e in view.exits],
-        "items": [{"ref": by_id[i.id], "name": i.name, "quantity": i.quantity, "detail": engine.item_detail(i)}
+        "items": [{"ref": by_id[i.id], "name": i.name, "quantity": i.quantity, "detail": engine.item_detail(i, sense)}
                   for i in view.items]
                  # 搜索能找到的：点一下填"搜索"
                  + [{"ref": "", "name": n, "quantity": 1, "fill": "搜索"} for n in view.forage],
         "npcs": [{"ref": by_id[n.id], "name": n.name, "hp": n.hp, "max_hp": n.template.max_hp,
                   "beast": bool(n.template.hostile and n.template.props.get("animal")
                                 and n.template.props.get("dungeon", {}).get("rank") != "boss"),
-                  "status": n.status and n.status.label} for n in view.npcs]
+                  "status": n.status and n.status.label,
+                  # 诺艾尔的怪物图鉴（回礼）：点一下看怪的习性
+                  "detail": engine.monster_notes(n) if "bestiary" in unlocked and n.template.hostile else ""}
+                 for n in view.npcs]
                 # 武器桶这类物件跟 NPC 列在一起，点一下填"拿…"
                 + [{"ref": by_id[d.id], "name": d.container, "status": f"{d.where}面有{d.item_name}",
                     "fill": f"拿{d.take_label}"} if d.available
@@ -133,10 +138,10 @@ def state(conn, view: RoomView, after: Optional[int] = None) -> dict:
                    for d in view.dispensers],
         # 装备栏按固定顺序列全部格子，空的 item 为 null；背包只列没装备的
         "equipment": [{"slot": slot, "label": label,
-                       "item": next(({"ref": by_id[i.id], "name": i.name, "detail": engine.item_detail(i)}
+                       "item": next(({"ref": by_id[i.id], "name": i.name, "detail": engine.item_detail(i, sense)}
                                      for i in view.inventory
                                      if i.equipped_slot == slot), None)} for slot, label in SLOT_NAMES.items()],
-        "inventory": [{"ref": by_id[i.id], "name": i.name, "quantity": i.quantity, "detail": engine.item_detail(i)}
+        "inventory": [{"ref": by_id[i.id], "name": i.name, "quantity": i.quantity, "detail": engine.item_detail(i, sense)}
                       for i in view.inventory if not i.equipped_slot],
         # 攻防算上装备（engine.gear_totals）
         "attack_total": totals[0],
@@ -471,6 +476,9 @@ def run_turn(req: CommandReq):
             # 跟发布任务的 NPC 说话：做完的委托自动发奖励（有没有 AI 都一样），没接过的这次提起
             quest_results, quests = engine.quest_turn(conn, pid, npc_id)
             results += quest_results
+            # 回礼：好感到了某一档，来聊天时送一次（每档一次）
+            if talk.action == "talk":
+                results += engine.return_gift(conn, pid, npc)
         now_view = engine.load_view(conn, pid)       # 执行后的房间：移动之后要写新地方
         if npc and npc.room_id != now_view.room.id:
             npc = None                               # 说完话就走了（"先赊账，然后往西走"）：不再跟他交易、他也不回话
@@ -480,7 +488,7 @@ def run_turn(req: CommandReq):
                 giveable = engine.giveable_items(conn, pid, npc_id)
                 creatable = engine.creatable_kinds(conn, pid, npc)
                 # 偶尔进的稀罕货：问有什么卖的时判一次，有的话这一小时里跟墙上的货一起卖
-                sells = engine.sellable(conn, npc, engine.rare_stock(conn, pid, npc, req.text))
+                sells = engine.sellable(conn, npc, engine.rare_stock(conn, pid, npc, req.text), pid)
                 offers = engine.get_offers(conn, pid, npc) if sells or creatable else {}
                 made_before = engine.known_goods(conn, npc) if creatable else []
                 affinity = engine.get_affinity(conn, pid, npc_id)

@@ -27,7 +27,7 @@ from schema import (
     ActionResult, Attack, Drop, Equip, Feature, Follow, Freeform, Give, ItemInstance, LeaveParty, Look,
     Move, Npc, OtherPlayer, Player, PlayerAction, Reject, Revive, Room, RoomExit, RoomView, Say, Status, Struggle,
     Stunt, Take, Talk, Unfollow, Unequip, Use, dir_name, Dispenser, SLOT_CHOICES, SLOT_NAMES, Dodge, Hide, Maneuver, Search, Stealth, Tame,
-    Uncurse,
+    Uncurse, Reload, Refill, Transfer, Reroll, Rename,
     AcceptDuel, Challenge, DeclineDuel, Duel, Flee, SKILL_NAMES, Upgrade, Respawn, Stand, Rest, Pay, Camp, Teleport, Sell,
     Effect,
 )
@@ -313,7 +313,7 @@ def _keeper_revive(cur: Cursor, room_id: str) -> list[str]:
     if keeper is None:
         return []
     cur.execute(f"""update players set hp = max_hp + {RESTORE_MAX_HP}, max_hp = max_hp + {RESTORE_MAX_HP},
-                        effects = '[]', updated_at = now() where room_id = %s and hp <= 0
+                        effects = coalesce((select jsonb_agg(e) from jsonb_array_elements(effects) e where e->>'kind' in ('whet', 'cheer')), '[]'::jsonb), updated_at = now() where room_id = %s and hp <= 0
                     returning id, name, max_hp, downed_by""", (room_id,))
     facts = []
     for r in cur.fetchall():
@@ -873,7 +873,8 @@ OFFHAND_SHARE = 0.5                     # 双持时副手（左手）武器只�
 
 def gear_totals(attack: int, defense: int, equipped: list[ItemInstance]) -> tuple[int, int]:
     """算上装备的攻、防（侧栏、后台看的）：双持时副手武器按 OFFHAND_SHARE，所有装备的防御相加"""
-    weapons = [i for i in equipped if i.equipped_slot in ("left_hand", "right_hand") and i.template.type == "weapon"]
+    weapons = [i for i in equipped if i.equipped_slot in ("left_hand", "right_hand") and i.template.type == "weapon"
+               and not _prop(i, "ranged") and not _prop(i, "loads")]            # 远程武器射的时候单算
     return attack + weapon_damage(weapons), defense + sum(i.defense for i in equipped if i.equipped_slot)
 
 
@@ -987,9 +988,10 @@ def _road_event(cur: Cursor, player: Player, view: RoomView, to: str) -> list[st
     depth, r = f["depth"], random.random()
     if r < ROAD_TRAP:
         trap = random.choice(dungeon.data()["traps"])
-        ok, rolled = _check(cur, player, view, "perception", 2 + depth // 3)
+        sense = _carries(cur, player, "trap_sense")          # 麦琪的陷阱图：难度降几级
+        ok, rolled = _check(cur, player, view, "perception", max(1, 2 + depth // 3 - (_prop(sense, "trap_sense") if sense else 0)))
         if ok:
-            return [f"路上{trap}"] + rolled + [f"{player.name}及时察觉，躲了过去"]
+            return [f"路上{trap}"] + rolled + [f"{player.name}{'想起陷阱图上画过这种地方，' if sense else ''}及时察觉，躲了过去"]
         dmg = 2 + depth // 3
         hurt, down = _hurt_player(cur, player, dmg, "other", "陷阱")
         return [f"路上{trap}"] + rolled + [f"{player.name}没能躲开，受到 {dmg} 点伤害"] + hurt             + ([] if down else _toughen(cur, player))
@@ -1075,7 +1077,7 @@ def do_camp(cur: Cursor, player: Player, view: RoomView, a: Camp) -> list[str]:
         player.max_hp += sum(e.hp for e in player.effects)
         facts.append(f"{player.name}身上的{'、'.join(EFFECT_NAMES[e.kind] for e in player.effects)}都缓过来了")
         player.effects = []
-        cur.execute("update players set max_hp = %s, effects = '[]' where id = %s", (player.max_hp, player.id))
+        cur.execute("update players set max_hp = %s, effects = coalesce((select jsonb_agg(e) from jsonb_array_elements(effects) e where e->>'kind' in ('whet', 'cheer')), '[]'::jsonb) where id = %s", (player.max_hp, player.id))
     hp = min(player.max_hp, player.hp + round(player.max_hp * share))
     cur.execute("update players set hp = %s, updated_at = now() where id = %s", (hp, player.id))
     return facts + [f"{player.name}恢复了 {hp - player.hp} 点 HP，当前 HP {hp}/{player.max_hp}"]
@@ -1316,7 +1318,7 @@ def do_use(cur: Cursor, player: Player, view: RoomView, a: Use) -> list[str]:
     item = _inv_item(cur, view, player, a.item)
     if _prop(item, "stun"):
         return _stun(cur, player, view, item, a.target)
-    for key, fn in (("refuel", _refuel), ("whet", _whet), ("room_light", _room_light), ("holy", _holy)):
+    for key, fn in (("refuel", _refuel), ("whet", _whet), ("room_light", _room_light), ("holy", _holy), ("drug", _drug)):
         if _prop(item, key):
             return fn(cur, player, view, item, a.target)
 
@@ -1334,6 +1336,12 @@ def do_use(cur: Cursor, player: Player, view: RoomView, a: Use) -> list[str]:
 
     if _prop(item, "reveal_floor"):
         return _read_map(cur, player, item)
+    if _prop(item, "flask"):
+        return _flask(cur, player, item)
+    if _prop(item, "antidote"):
+        return _antidote(cur, player, item)
+    if _prop(item, "refill_by"):
+        raise ActionError(f"{item.name}已经空了，回酒馆找麦琪说「续杯」")
     if _prop(item, "recall"):
         return _recall(cur, player, item)
     if item.template.type != "consumable":
@@ -1351,6 +1359,76 @@ def _unlock(cur: Cursor, player: Player, key: ItemInstance, direction: str) -> l
         _consume(cur, key)
         facts.append(f"{key.name}转到底就卡死在锁里，拔不出来了")
     return facts
+
+
+CHEER_CHANCE, CHEER_ATTACK, CHEER_FLOORS = 0.2, 25, 2     # 回头见❤：20% 在两层内攻击 +25%
+
+
+def _empty(cur: Cursor, item: ItemInstance) -> str:
+    """麦琪的酒壶、药用完了：换成空的样子，返回新名字"""
+    return _swap_template(cur, item, _prop(item, "empty"))
+
+
+def _flask(cur: Cursor, player: Player, item: ItemInstance) -> list[str]:
+    """麦琪的回头见❤：一口回满血，20% 浑身是劲（CHEER_FLOORS 层内攻击 +CHEER_ATTACK%）。喝完就空了，找她续杯"""
+    if player.hp >= player.max_hp:
+        raise ActionError(f"{player.name}没受伤，舍不得喝（这一壶喝完就得回酒馆续了）")
+    cur.execute("update players set hp = max_hp where id = %s", (player.id,))
+    facts = [f"{player.name}拧开{item.name}灌了一大口，一股辛辣的暖流冲遍全身，壶底的纸条晃了晃",
+             f"{player.name}恢复到满血，HP {player.max_hp}/{player.max_hp}"]
+    if _roll(CHEER_CHANCE):
+        player.effects = [e for e in player.effects if e.kind != "cheer"] + [
+            Effect(kind="cheer", value=CHEER_ATTACK, left=CHEER_FLOORS, label="回头见❤ 的酒劲", source=item.name)]
+        _save_effects(cur, player)
+        facts.append(f"{player.name}忽然浑身是劲，攻击 +{CHEER_ATTACK}%（接下来 {CHEER_FLOORS} 层）")
+    return facts + [f"{_empty(cur, item)}，回酒馆找麦琪续杯"]
+
+
+def _antidote(cur: Cursor, player: Player, item: ItemInstance) -> list[str]:
+    """麦琪的解毒酒壶：解毒、回一点血，喝完就空了"""
+    poison = _effect(player, "poison")
+    if not poison and player.hp >= player.max_hp:
+        raise ActionError(f"{player.name}没中毒也没受伤，用不着喝")
+    facts = [f"{player.name}灌了一口{item.name}，又苦又冲，呛得直咳嗽"]
+    if poison:
+        player.effects.remove(poison)
+        _save_effects(cur, player)
+        facts.append(f"{player.name}身上的中毒好了")
+    heal = heal_amount(int(_prop(item, "antidote")), player.max_hp)
+    hp = min(player.max_hp, player.hp + heal)
+    cur.execute("update players set hp = %s where id = %s", (hp, player.id))
+    return facts + [f"{player.name}恢复 {hp - player.hp} 点 HP，当前 HP {hp}/{player.max_hp}", f"{_empty(cur, item)}，回酒馆找麦琪续杯"]
+
+
+def _drug(cur: Cursor, player: Player, view: RoomView, item: ItemInstance, target: Optional[str]) -> list[str]:
+    """麦琪的特制迷药：泼向一个敌人，它醉倒动弹不得（不用判定），瓶子空了"""
+    foes = _enemies(cur, player.room_id)
+    if target and target in view.refs:
+        npc = _room_npc(cur, view, player, target)
+    elif len(foes) == 1:
+        npc = foes[0]
+    else:
+        raise ActionError("这里没有敌人" if not foes else f"要泼向谁？（{'、'.join(n.name for n in foes)}）")
+    if not npc.template.hostile:
+        raise ActionError(f"不能拿{item.name}对付{npc.name}")
+    label = str(_prop(item, "drug"))[:20]
+    _set_status(cur, "npcs", npc.id, Status(kind="incapacitated", label=label, escape=2,
+                                            since=datetime.now(timezone.utc).isoformat()))
+    return [f"{player.name}拔开{item.name}的塞子，朝{npc.name}泼了过去，一股甜腻的酒气散开",
+            f"{npc.name}{label}", f"{_empty(cur, item)}，回酒馆找麦琪续上"]
+
+
+def do_refill(cur: Cursor, player: Player, view: RoomView, a: Refill) -> list[str]:
+    """找麦琪续杯：她给的酒壶、药空了的都灌满，不收钱"""
+    npc = _room_npc(cur, view, player, a.target)
+    empties = [i for i in view.inventory if _prop(i, "refill_by") == npc.template.id]
+    if not empties:
+        mine = [i for i in view.inventory if _prop(i, "empty") and any(
+            t.get("item") == i.template.id for t in (npc.template.props.get("return_gifts") or {}).values())]
+        raise ActionError(f"{player.name}身上{'的' + '、'.join(i.name for i in mine) + '都还满着' if mine else f'没有{npc.name}能续的东西'}")
+    names = [_swap_template(cur, i, _prop(i, "refill_to")) for i in empties]
+    return [f"{npc.name}接过{'、'.join(i.name for i in empties)}，哼了一声，背过身去一样一样灌满了又塞回{player.name}手里",
+            f"{'、'.join(names)}又满了"]
 
 
 def _read_map(cur: Cursor, player: Player, item: ItemInstance) -> list[str]:
@@ -1428,6 +1506,15 @@ def _stun(cur: Cursor, player: Player, view: RoomView, item: ItemInstance, targe
     foes = _enemies(cur, player.room_id)
     if not foes:
         raise ActionError(f"这里没有敌人，{item.name}念了也没用")
+    if _prop(item, "per_floor"):
+        if not _once_per_floor(cur, player, "tome"):
+            raise ActionError(f"{item.name}这一层已经念过了，书页上的字暗着，要到下一层才会再亮起来")
+        label = str(_prop(item, "stun"))[:20]
+        for npc in foes:
+            _set_status(cur, "npcs", npc.id, Status(kind="incapacitated", label=label, escape=STUN_ESCAPE,
+                                                    since=datetime.now(timezone.utc).isoformat()))
+        return [f"{player.name}翻开{item.name}，念出上面的古老文字，书页上的字一行行亮起来又暗下去（这一层用过了）",
+                f"{'、'.join(n.name for n in foes)}{label}，失去了战斗能力"]
     _use_up(cur, item)
     label = str(_prop(item, "stun"))[:20]
     for npc in foes:
@@ -1693,6 +1780,8 @@ def do_equip(cur: Cursor, player: Player, view: RoomView, a: Equip) -> list[str]
         cur.execute("update item_instances set equipped_slot = null where id = %s", (old.id,))
         facts.append(f"{player.name}卸下了{old.name}")
     cur.execute("update item_instances set equipped_slot = %s where id = %s", (slot, item.id))
+    if _prop(item, "cursed"):
+        facts.append(f"{item.name}一上身就像长在了{player.name}身上，怎么也甩不掉：它被诅咒了（找杂货铺的诺艾尔解咒）")
     if lit := _prop(item, "lights"):
         cur.execute("update item_instances set template_id = %s, props = '{}' where id = %s", (lit, item.id))
         return facts + [f"{player.name}把{item.name}拿在{SLOT_NAMES[slot]}点着了，火光一下子亮起来"]
@@ -1932,6 +2021,9 @@ def _npc_strike(cur: Cursor, player: Player, npc: Npc, verb: str, chance: float 
     guard = sum(int(e.get("value", 0)) for e in _fire(cur, player, "hurt", "guard", npc))       # 恶犬项圈
     dmg = hurt_player_by(atk, _defense(cur, player), depth, guard=guard)
     saved = []
+    if dmg >= player.hp and (mark := _carries(cur, player, "guard_once")) and _once_per_floor(cur, player, "guard_once"):
+        return [f"{npc.name}{verb}，这一下本该要了{player.name}的命",
+                f"{player.name}身上的{mark.name}亮了一下，硬生生挡下了这一击（这一层用过了）"]
     if dmg >= player.hp and (cd := _fire(cur, player, "hurt", "cheat_death", npc)) and _cheat_death_ready(cur, player):
         dmg, saved = player.hp - 1, _labels(cd) or [f"{player.name}硬撑着没倒下"]
     player.hp = max(0, player.hp - dmg)
@@ -1951,13 +2043,7 @@ def _npc_strike(cur: Cursor, player: Player, npc: Npc, verb: str, chance: float 
 
 def _cheat_death_ready(cur: Cursor, player: Player) -> bool:
     """不熄的羽毛：每层地牢一次（记在 players.flags 的 cheat_death 里）"""
-    here = ":".join(map(str, dungeon.parse_room(player.room_id))) if dungeon.is_dungeon(player.room_id) else "surface"
-    if player.flags.get("cheat_death") == here:
-        return False
-    cur.execute("""update players set flags = flags || jsonb_build_object('cheat_death', %s::text) where id = %s""",
-                (here, player.id))
-    player.flags["cheat_death"] = here
-    return True
+    return _once_per_floor(cur, player, "cheat_death")
 
 
 def _stealth(player: Player) -> Stealth:
@@ -1984,7 +2070,8 @@ def _set_distance(st: Stealth, npc: Npc, d: int) -> int:
 # 中毒：每回合（每条消息）掉血、命中和判定 -POISON_HIT；流血：每个动作掉血、打出的伤害 ×BLEED_DAMAGE；
 # 看不清：光亮算 0（命中只剩 5%）；腐蚀：防御 -value、血量上限临时扣 hp（消退还回来）。
 # 同一种再中一次只刷新时间。住店、扎营、被扶起来、急救都会清掉
-EFFECT_NAMES = {"poison": "中毒", "bleed": "流血", "blind": "看不清", "corrode": "腐蚀", "whet": "磨利"}
+EFFECT_NAMES = {"poison": "中毒", "bleed": "流血", "blind": "看不清", "corrode": "腐蚀", "whet": "磨利", "cheer": "浑身是劲"}
+# 住店、扎营、被扶起来清掉的只是坏效果，磨利、浑身是劲这种好的留着（那几处 update 里直接写了 jsonb 过滤）
 EFFECT_TURNS = {"poison": 3, "bleed": 4, "blind": 1, "corrode": 3}
 POISON_HIT, BLEED_DAMAGE, CORRODE_HP = 0.15, 0.75, 0.15
 # 清掉所有效果时把腐蚀扣的血量上限还回去（SQL 片段，用在 update players set ... 里，得在改 hp 之前算）
@@ -2069,6 +2156,9 @@ def _tick_effects(cur: Cursor, player: Player, unit: str) -> list[str]:
         return []
     facts, keep = [], []
     for e in player.effects:
+        if e.kind == "cheer":
+            keep.append(e)                      # 按层数算，下到新的一层才减（_torch_floor）
+            continue
         if e.kind == "whet":
             if unit == "turn" and dungeon.is_dungeon(player.room_id) and e.source != "{}:{}".format(
                     dungeon.parse_room(player.room_id)[0].hex, dungeon.parse_room(player.room_id)[1]):
@@ -2426,13 +2516,8 @@ def _duel_here(cur: Cursor, room_id: str) -> bool:
 
 
 def in_round(cur: Cursor, room_id: str, player_id: UUID) -> bool:
-    """这个人的命令要不要排队：房间里有怪在打（在场的人都算），或者他自己在这里决斗（旁观的人不算）"""
-    if _monster_fight(cur, room_id):
-        return True
-    cur.execute("""select 1 from duels d join players a on a.id = d.challenger join players b on b.id = d.target
-                   where d.accepted and %(p)s in (d.challenger, d.target) and a.room_id = %(r)s and b.room_id = %(r)s""",
-                {"p": player_id, "r": room_id})
-    return cur.fetchone() is not None
+    """这个人的命令要不要排队：他是这一轮该出手的人（被怪发现了、或者是被发现的人的队友；或者在这里决斗）"""
+    return any(m["id"] == player_id for m in round_members(cur, room_id))
 
 
 def _monster_fight(cur: Cursor, room_id: str) -> bool:
@@ -2446,10 +2531,15 @@ def _monster_fight(cur: Cursor, room_id: str) -> bool:
 
 
 def round_members(cur: Cursor, room_id: str) -> list[dict]:
-    """这一轮该出手的人：在这个房间、没倒下、在线的玩家；只是决斗（没有怪在打）的话只算决斗的两个人，旁观的不等"""
+    """这一轮该出手的人：在这个房间、没倒下、在线，而且真的在打：被怪发现了的人和他们的队友（队友藏着也等他），
+    或者在这里决斗的两个人。路过的、没被发现又不是队友的人不算，不然他发呆就把别人的仗卡住了"""
     cur.execute(f"""select id, name from players p where room_id = %(r)s and hp > 0
                     and last_active_at > now() - interval '{ONLINE_WINDOW}'
-                    and (%(fight)s or exists (select 1 from duels d where d.accepted and p.id in (d.challenger, d.target)))
+                    and ((%(fight)s and (p.stealth->>'room' = %(r)s and (p.stealth->>'detected')::boolean
+                                         or p.party_id in (select q.party_id from players q where q.room_id = %(r)s
+                                                           and q.party_id is not null and q.stealth->>'room' = %(r)s
+                                                           and (q.stealth->>'detected')::boolean)))
+                         or exists (select 1 from duels d where d.accepted and p.id in (d.challenger, d.target)))
                     order by name""", {"r": room_id, "fight": _monster_fight(cur, room_id)})
     return cur.fetchall()
 
@@ -2628,16 +2718,17 @@ def _enemies_stand(cur: Cursor, alive: list[Npc]) -> list[str]:
 
 def do_attack(cur: Cursor, player: Player, view: RoomView, a: Attack) -> list[str]:
     # target 是 ref 就是打 NPC，不是 ref 就当玩家名字（PvP）
-    # 双持：主手全额，副手加一半
+    # 双持：主手全额，副手加一半。手上有装好的远程武器、对方没贴身（或者是麦琪的弩这种远近都准的）就射
     weapons = _weapons(cur, player)
-    how = _wielding(weapons)
-    power = player.attack + weapon_damage(weapons)
+    want = _inv_item(cur, view, player, a.item) if a.item else None
     if a.target not in view.refs:
         target = _pvp_target(cur, player, a.target)
         duel = _active_duel(cur, player.id, target.id)
         if duel is None:
             raise ActionError(f"{player.name}和{target.name}没有在决斗，不能伤害对方（先申请决斗，对方接受了才行）")
         d = duel["distance"]
+        melee, shooter = _choose_weapons(weapons, d, want)
+        how, power = _how(player, melee, shooter)
         # 对手上一回合摆好了闪避：这一下更难打中，用掉就没了
         dodged = target.id in duel["dodging"]
         if dodged:
@@ -2645,11 +2736,12 @@ def do_attack(cur: Cursor, player: Player, view: RoomView, a: Attack) -> list[st
                         (target.id, duel["challenger"]))
         # 装备特效在决斗里也生效；只对怪有用的（vs 亡灵、野兽）对不上人，_fire 自己会跳过
         swung = [e for e in _fire(cur, player, "attack") if e["do"] in ("bonus", "self_damage")]
-        if not _roll(max(0.0, MELEE_HIT.get(d, 0) - (_dodge_bonus(target) if dodged else 0) - _drunk(player)
+        spent = _spend(cur, player, shooter)
+        if not _roll(max(0.0, _hit_base(shooter, d) - (_dodge_bonus(target) if dodged else 0) - _drunk(player)
                          - _poisoned(player) + _prone_bonus(target, d))):
-            return [f"{player.name}用{how}攻击{target.name}，" + (f"隔着 {distance_word(d)}够不着" if d not in MELEE_HIT
-                                                                else f"隔着 {distance_word(d)}，没打中")] \
-                + _pvp_self_damage(cur, player, swung)
+            return [f"{player.name}{how}{target.name}，" + (f"隔着 {distance_word(d)}够不着" if d not in MELEE_HIT and not shooter
+                                                            else f"隔着 {distance_word(d)}，没打中")] \
+                + _pvp_self_damage(cur, player, swung) + spent
         fired = _fire(cur, player, "hit")
         bonus = sum(int(e.get("value", 0)) for e in swung + fired if e["do"] == "bonus")
         pierce = sum(int(e.get("value", 0)) for e in fired if e["do"] == "pierce")
@@ -2657,27 +2749,30 @@ def do_attack(cur: Cursor, player: Player, view: RoomView, a: Attack) -> list[st
         power = power + (whet.value if whet else 0) + bonus + _aura(cur, player, "attack")
         dmg = hurt_player_by(_bled(player, power), max(0, _defense(cur, target) - pierce))
         facts, down = _hurt_player(cur, target, dmg, "player", player.name)
-        return ([f"{player.name}用{how}攻击{target.name}，造成 {dmg} 点伤害"]
+        return ([f"{player.name}{how}{target.name}，造成 {dmg} 点伤害"]
                 + _labels([e for e in fired if e["do"] in ("bonus", "pierce")]) + facts
                 + _pvp_hit_extras(cur, player, target, dmg, down, fired) + _pvp_self_damage(cur, player, swung)
-                + _duel_over(cur, down))
+                + spent + _duel_over(cur, down))
 
     npc = _room_npc(cur, view, player, a.target)
     if not npc.combatable:
         raise ActionError(f"{npc.name}不是能打的对象")
+    d = _distance(_stealth(player), npc) if npc.template.hostile else 0
+    melee, shooter = _choose_weapons(weapons, d, want)
+    how, power = _how(player, melee, shooter)
+    spent = _spend(cur, player, shooter)
     if npc.template.hostile:
-        # 近战按距离算命中；敌人以外的 NPC 就在跟前说话，不算距离
-        d = _distance(_stealth(player), npc)
+        # 按距离算命中（近战贴身准，远程离远了准）；敌人以外的 NPC 就在跟前说话，不算距离
         light = _light(cur, player.room_id, player=player)
         if gear_has(cur, player, "darkvision") and not _effect(player, "blind"):
             light = max(light, LIGHT_FULL)      # 石像鬼之眼：暗处命中不打折
-        chance = _light_hit(light, MELEE_HIT.get(d, 0))
+        chance = _light_hit(light, _hit_base(shooter, d))
         if not _roll(max(0.0, chance - _drunk(player) - _poisoned(player) + _prone_bonus(npc, d))):
             swung = _fire(cur, player, "attack", npc=npc)
-            dim = "，太暗了看不太清" if d in MELEE_HIT and light < LIGHT_FULL else ""     # 让玩家知道是黑的缘故
-            return [f"{player.name}用{how}攻击{npc.name}，" + (f"隔着 {distance_word(d)}够不着" if d not in MELEE_HIT
-                                                             else f"隔着 {distance_word(d)}，没打中{dim}")] \
-                + _attack_extras(cur, player, npc, [e for e in swung if e["do"] in ("splash", "self_damage")])
+            dim = "，太暗了看不太清" if (d in MELEE_HIT or shooter) and light < LIGHT_FULL else ""     # 让玩家知道是黑的缘故
+            return [f"{player.name}{how}{npc.name}，" + (f"隔着 {distance_word(d)}够不着" if d not in MELEE_HIT and not shooter
+                                                       else f"隔着 {distance_word(d)}，没打中{dim}")] \
+                + _attack_extras(cur, player, npc, [e for e in swung if e["do"] in ("splash", "self_damage")]) + spent
     # 这场仗的第一次出手（伏击者短刀）
     st = _stealth(player)
     first = not st.struck
@@ -2694,11 +2789,87 @@ def do_attack(cur: Cursor, player: Player, view: RoomView, a: Attack) -> list[st
     dmg = _bled(player, max(1, power + (whet.value if whet else 0) + bonus + _aura(cur, player, "attack") - armor))
     facts, dead = _hurt_npc(cur, player, npc, dmg)
     facts += _assassinated(cur, player, view, npc, dead, not st.detected)
-    facts = ([f"{player.name}用{how}攻击{npc.name}，造成 {dmg} 点伤害"]
+    facts = ([f"{player.name}{how}{npc.name}，造成 {dmg} 点伤害"]
              + _labels([e for e in fired if e["do"] in ("bonus", "pierce")]) + facts
              + _hit_extras(cur, player, npc, dmg, dead, fired)
-             + _attack_extras(cur, player, npc, [e for e in swung if e["do"] in ("splash", "self_damage")]))
+             + _attack_extras(cur, player, npc, [e for e in swung if e["do"] in ("splash", "self_damage")]) + spent)
     return facts if dead else facts + _npc_counter(cur, player, npc)
+
+
+# ============ 远程武器 ============
+# props.ranged 的武器：贴身难射，离得越远越准（RANGED_HIT）；steady 的（麦琪的弩）远近都是 STEADY_HIT。
+# 射完换成 props.unloaded 那个"空"的样子（弩没弦），说"装填"换回来（props.loads），算一个动作。
+# 射的时候只算这件远程武器的伤害；"空"的远程武器不算近战武器
+RANGED_HIT = {0: 0.45, 1: 0.75, 2: 0.9, 3: 0.9, 4: 0.85}
+STEADY_HIT = 0.9
+
+
+def _choose_weapons(weapons: list[ItemInstance], d: int, want: Optional[ItemInstance]
+                    ) -> tuple[list[ItemInstance], Optional[ItemInstance]]:
+    """这一下用什么打：(近战用的武器, 射的远程武器)。说了用哪件就用哪件；
+    没说：手上有装好的远程武器，对方又没贴身（或者这件远近都准、或者手上没有别的武器）就射，不然近战"""
+    loaded = [w for w in weapons if _prop(w, "ranged")]
+    melee = [w for w in weapons if not _prop(w, "ranged") and not _prop(w, "loads")]
+    if want is not None:
+        if _prop(want, "loads"):
+            raise ActionError(f"{want.name}还没装填，射不了（先说「装填」）")
+        if _prop(want, "ranged"):
+            return [], want
+        if want not in melee and want.id not in {w.id for w in melee}:
+            raise ActionError(f"{want.name}没拿在手上")
+        return [w for w in melee if w.id == want.id], None
+    if loaded and (d > 0 or not melee or _prop(loaded[0], "steady")):
+        return [], loaded[0]
+    return melee, None
+
+
+def _how(player: Player, melee: list[ItemInstance], shooter: Optional[ItemInstance]) -> tuple[str, int]:
+    """(怎么打的说法, 攻击力)"""
+    cheer = 1 + (_effect(player, "cheer").value / 100 if _effect(player, "cheer") else 0)
+    if shooter:
+        return f"端起{shooter.name}射向", round((player.attack + shooter.damage) * cheer)
+    return f"用{_wielding(melee)}攻击", round((player.attack + weapon_damage(melee)) * cheer)
+
+
+def _hit_base(shooter: Optional[ItemInstance], d: int) -> float:
+    if shooter is None:
+        return MELEE_HIT.get(d, 0)
+    return STEADY_HIT if _prop(shooter, "steady") else RANGED_HIT.get(d, RANGED_HIT[max(RANGED_HIT)])
+
+
+def _swap_template(cur: Cursor, item: ItemInstance, template_id: str) -> str:
+    """换成另一个模板（弩：装好的 ↔ 空的），升级过的名字跟着换（麦琪的轻弩 +1 ↔ 麦琪的轻弩（空） +1），返回新名字"""
+    cur.execute("select name from item_templates where id = %s", (template_id,))
+    base = cur.fetchone()["name"]
+    props = dict(item.props)
+    if props.get("plus"):
+        props["name"] = f"{base} +{props['plus']}"
+    else:
+        props.pop("name", None)
+    cur.execute("update item_instances set template_id = %s, props = %s where id = %s", (template_id, Jsonb(props), item.id))
+    return props.get("name", base)
+
+
+def _spend(cur: Cursor, player: Player, shooter: Optional[ItemInstance]) -> list[str]:
+    """射出去了：换成空的，要重新装填"""
+    if shooter is None or not (empty := _prop(shooter, "unloaded")):
+        return []
+    name = _swap_template(cur, shooter, empty)
+    return [f"{name}射空了，要重新装填（说「装填」）才能再射"]
+
+
+def do_reload(cur: Cursor, player: Player, view: RoomView, a: Reload) -> list[str]:
+    if a.item:
+        item = _inv_item(cur, view, player, a.item)
+        if not _prop(item, "loads"):
+            raise ActionError(f"{item.name}用不着装填" if not _prop(item, "ranged") else f"{item.name}已经装好了")
+    else:
+        empties = [i for i in view.inventory if _prop(i, "loads")]
+        if not empties:
+            raise ActionError(f"{player.name}身上没有要装填的东西")
+        item = sorted(empties, key=lambda i: i.equipped_slot is None)[0]     # 拿在手上的先装
+    name = _swap_template(cur, item, _prop(item, "loads"))
+    return [f"{player.name}拉开弦、把一支箭卡进槽里，{name}又能射了"]
 
 
 def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]:
@@ -2895,7 +3066,7 @@ def do_rest(cur: Cursor, player: Player, view: RoomView, a: Rest) -> list[str]:
         raise ActionError("这里没有能住的地方")
     price = host.template.props["inn"].get("price", 0)
     patron = _pay(cur, player, price, host)
-    cur.execute(f"""update players set hp = max_hp + {RESTORE_MAX_HP}, max_hp = max_hp + {RESTORE_MAX_HP}, effects = '[]',
+    cur.execute(f"""update players set hp = max_hp + {RESTORE_MAX_HP}, max_hp = max_hp + {RESTORE_MAX_HP}, effects = coalesce((select jsonb_agg(e) from jsonb_array_elements(effects) e where e->>'kind' in ('whet', 'cheer')), '[]'::jsonb),
                    status = null, drunk_until = null, drinks = 0, updated_at = now()
                    where id = %s""", (player.id,))
     return [f"{player.name}付了 {price} 金币，在{host.name}这儿要了间房，美美睡了一觉",
@@ -2943,7 +3114,7 @@ def do_revive(cur: Cursor, player: Player, view: RoomView, a: Revive) -> list[st
         if not ok:
             return facts + [f"{player.name}给{target.name}做了急救，但没能救醒"]
         hp = min(target.max_hp, 1 + skill_level(player.skills.get("medicine", 0)))
-        cur.execute(f"""update players set hp = %s, max_hp = max_hp + {RESTORE_MAX_HP}, effects = '[]', updated_at = now()
+        cur.execute(f"""update players set hp = %s, max_hp = max_hp + {RESTORE_MAX_HP}, effects = coalesce((select jsonb_agg(e) from jsonb_array_elements(effects) e where e->>'kind' in ('whet', 'cheer')), '[]'::jsonb), updated_at = now()
                         where id = %s""", (hp, target.id))
         facts += [f"{player.name}给{target.name}做了急救，{target.name}醒了过来", f"{target.name} HP {hp}/{target.max_hp}"]
     if target.status:
@@ -3196,8 +3367,12 @@ def upgrade_terms(item: ItemInstance) -> tuple[int, int, float]:
     return level, cost, min(UPGRADE_BREAK_MAX, UPGRADE_BREAK_STEP * level)
 
 
-def _upgrade_text(item: ItemInstance) -> str:
+UPGRADE_DISCOUNT = 0.9                  # 莉娜的回礼（好感 20）：熟客价九折
+
+
+def _upgrade_text(item: ItemInstance, price: Optional[int] = None) -> str:
     level, cost, risk = upgrade_terms(item)
+    cost = price if price is not None else cost
     stat = upgrade_stat(item)
     now = getattr(item, stat)
     return (f"升到 +{level}（{STAT_WORDS[stat]} {now} → {now + 1}）要 {cost} 金币，有 {round(risk * 100)}% 的可能失败"
@@ -3233,8 +3408,10 @@ def do_upgrade(cur: Cursor, player: Player, view: RoomView, a: Upgrade) -> list[
     stat = upgrade_stat(item)
     now = getattr(item, stat)
     level, cost, risk = upgrade_terms(item)
+    if "discount" in perks(cur, player.id, npc.template.id):
+        cost = max(1, round(cost * UPGRADE_DISCOUNT))
     key = f"upgrade:{item.id}"
-    terms = _upgrade_text(item)
+    terms = _upgrade_text(item, cost)
     ore = next((i for i in view.inventory if i.template.id == UPGRADE_ORE), None)
     if a.ore and ore is None:
         raise ActionError(f"{player.name}身上没有奥利哈刚矿石")
@@ -3266,6 +3443,111 @@ def do_upgrade(cur: Cursor, player: Player, view: RoomView, a: Upgrade) -> list[
     cur.execute("update item_instances set props = props || %s where id = %s",
                 (Jsonb({"plus": level, stat: now + 1, "name": name}), item.id))
     return facts + [f"升级成功：{item.name}变成了{name}，{STAT_WORDS[stat]} {now + 1}"]
+
+
+# ============ 莉娜的回礼：传承锻造、刷新词条、专属武器 ============
+TRANSFER_SHARE = 0.5                    # 传承锻造：按"把接过去的那件从现在升到那么多级"的升级费的一半收
+REROLL_BASE = 20                        # 刷新词条：参考价的一半（至少 20）×（这件刷过几次 + 1）
+BAD_EFFECTS = {"self_damage", "cheat_death"}      # 刷词条、专属武器不会抽到的：咬手的、太稀有的
+
+
+def _affix_pool(cur: Cursor, kind: str) -> list[dict]:
+    """某一类装备（weapon / armor）能刷出来的词条：所有这类装备身上的特效（不含诅咒装备、坏效果、负数）"""
+    cur.execute("""select props->'effects' as effects from item_templates
+                   where type = %s and props ? 'effects' and not coalesce((props->>'cursed')::boolean, false)""", (kind,))
+    seen, pool = set(), []
+    for r in cur.fetchall():
+        for e in r["effects"] or []:
+            key = (e.get("when"), e.get("do"), e.get("kind"), tuple(e.get("vs") or []))
+            if e.get("do") in BAD_EFFECTS or (isinstance(e.get("value"), (int, float)) and e["value"] < 0) or key in seen:
+                continue
+            seen.add(key)
+            pool.append(e)
+    return pool
+
+
+def _lina(cur: Cursor, view: RoomView, player: Player, ref: str, perk: str, what: str) -> Npc:
+    npc = _room_npc(cur, view, player, ref)
+    if not npc.template.props.get("upgrades"):
+        raise ActionError(f"{npc.name}不会{what}")
+    if perk not in perks(cur, player.id, npc.template.id):
+        raise ActionError(f"{npc.name}还没教过{player.name}这个（{what}要跟她交情更深才行）")
+    return npc
+
+
+def do_transfer(cur: Cursor, player: Player, view: RoomView, a: Transfer) -> list[str]:
+    """传承锻造：A 的强化等级转到 B 上（同一类），A 变回 +0。按 B 从现在升到那一级的升级费的一半收钱"""
+    npc = _lina(cur, view, player, a.target, "transfer", "传承锻造")
+    src, dst = _inv_item(cur, view, player, a.item), _inv_item(cur, view, player, a.to)
+    stat = upgrade_stat(src)
+    if not stat or upgrade_stat(dst) != stat:
+        raise ActionError("传承只能在同一类装备之间：武器给武器，带防御的防具给防具")
+    have, now = src.props.get("plus", 0), dst.props.get("plus", 0)
+    if have <= now:
+        raise ActionError(f"{src.name}的强化（+{have}）不比{dst.name}（+{now}）高，没什么可传的")
+    price, probe = 0, dst.model_copy(deep=True)
+    for lv in range(now + 1, have + 1):            # 按接过去那件一级一级升上去的费用算
+        price += upgrade_terms(probe)[1]
+        probe.props = {**probe.props, "plus": lv, stat: getattr(probe, stat) + 1}
+    price = max(UPGRADE_MIN_COST, round(price * TRANSFER_SHARE))
+    patron = _pay(cur, player, price, npc)
+    gain = have - now
+    base_src, base_dst = re.sub(r" \+\d+$", "", src.name), re.sub(r" \+\d+$", "", dst.name)
+    cur.execute("update item_instances set props = props || %s where id = %s",
+                (Jsonb({"plus": 0, stat: getattr(src, stat) - have, "name": base_src}), src.id))
+    cur.execute("update item_instances set props = props || %s where id = %s",
+                (Jsonb({"plus": have, stat: getattr(dst, stat) + gain, "name": f"{base_dst} +{have}"}), dst.id))
+    return [f"{player.name}付了 {price} 金币，{npc.name}把{src.name}和{dst.name}一起放进炉火，锤了一整个下午",
+            f"{src.name}上的锻纹褪了下去，变回了{base_src}；{base_dst}接过了这份锻打，变成了{base_dst} +{have}，"
+            f"{STAT_WORDS[stat]} {getattr(dst, stat) + gain}"] + patron
+
+
+def do_reroll(cur: Cursor, player: Player, view: RoomView, a: Reroll) -> list[str]:
+    """刷新词条：带特效的装备重新锻出别的特效（条数不变），同一件越刷越贵"""
+    npc = _lina(cur, view, player, a.target, "reroll", "刷新词条")
+    item = _inv_item(cur, view, player, a.item)
+    old = _prop(item, "effects") or []
+    kind = item.template.type
+    if not old or kind not in ("weapon", "armor"):
+        raise ActionError(f"{item.name}身上没有特效，没什么可刷的（只有带特效的武器、防具能刷）")
+    times = item.props.get("rerolls", 0)
+    price = max(REROLL_BASE, base_price(item_stats(item)) // 2) * (times + 1)
+    pool = [e for e in _affix_pool(cur, kind) if e not in old]
+    if len(pool) < len(old):
+        raise ActionError(f"{npc.name}想不出还能给{item.name}锻出什么别的特效了")
+    patron = _pay(cur, player, price, npc)
+    new = random.sample(pool, len(old))
+    cur.execute("update item_instances set props = props || %s where id = %s",
+                (Jsonb({"effects": new, "rerolls": times + 1}), item.id))
+    return ([f"{player.name}付了 {price} 金币（这件第 {times + 1} 次刷），{npc.name}把{item.name}烧红了重新锻打，"
+             f"原来的特效随着火星散掉了"] + patron
+            + [f"{item.name}新的特效：{'；'.join(_effect_line(e) for e in new)}"])
+
+
+def _exclusive_blade(cur: Cursor, player: Player, npc: Npc) -> list[str]:
+    """莉娜的回礼（好感 100）：一把专属武器。伤害按他走到过的最深层数（5 + 层数/3，最多 12），带一个武器词条"""
+    cur.execute("select deepest_floor from players where id = %s", (player.id,))
+    deep = cur.fetchone()["deepest_floor"] or 0
+    dmg = min(12, 5 + deep // 3)
+    affix = random.choice(_affix_pool(cur, "weapon") or [{}])
+    props = {"damage": dmg, "effects": [affix] if affix else []}
+    cur.execute("insert into item_instances (template_id, player_id, props) values ('lina_blade', %s, %s)",
+                (player.id, Jsonb(props)))
+    return [f"莉娜打的剑：伤害 {dmg}" + (f"，{_effect_line(affix)}" if affix else "")]
+
+
+def do_rename(cur: Cursor, player: Player, view: RoomView, a: Rename) -> list[str]:
+    """给专属武器起名（莉娜打的那把）"""
+    item = _inv_item(cur, view, player, a.item)
+    if not _prop(item, "exclusive"):
+        raise ActionError(f"{item.name}不是你的专属武器，名字改不了")
+    name = a.name.strip().strip("「」“”\"'")
+    if not (1 <= len(name) <= 10) or re.search(r"[<>]", name):
+        raise ActionError("名字 1 到 10 个字")
+    plus = item.props.get("plus", 0)
+    full = name + (f" +{plus}" if plus else "")
+    cur.execute("update item_instances set props = props || %s where id = %s", (Jsonb({"name": full}), item.id))
+    return [f"{player.name}给{item.name}起了名字：{full}"]
 
 
 # ============ 诅咒 ============
@@ -3353,7 +3635,8 @@ HANDLERS: dict[str, Callable[..., list[str]]] = {
     "equip": do_equip, "unequip": do_unequip, "attack": do_attack, "talk": do_talk, "give": do_give, "freeform": do_freeform,
     "say": do_say, "revive": do_revive, "stunt": do_stunt, "struggle": do_struggle,
     "follow": do_follow, "unfollow": do_unfollow, "leave_party": do_leave_party,
-    "maneuver": do_maneuver, "dodge": do_dodge, "tame": do_tame, "uncurse": do_uncurse, "hide": do_hide, "search": do_search, "reject": do_reject,
+    "maneuver": do_maneuver, "dodge": do_dodge, "tame": do_tame, "uncurse": do_uncurse, "reload": do_reload, "refill": do_refill,
+    "transfer": do_transfer, "reroll": do_reroll, "rename": do_rename, "hide": do_hide, "search": do_search, "reject": do_reject,
     "upgrade": do_upgrade, "pay": do_pay, "sell": do_sell, "respawn": do_respawn, "stand": do_stand, "rest": do_rest, "camp": do_camp, "teleport": do_teleport, "challenge": do_challenge, "accept_duel": do_accept_duel, "decline_duel": do_decline_duel, "flee": do_flee,
 }
 
@@ -3451,7 +3734,20 @@ def _torch_floor(cur: Cursor, names: list[str], room_id: str) -> list[str]:
         else:
             cur.execute("delete from item_instances where id = %s", (r["id"],))
             facts.append(f"{r['who']}手上的火把烧到了头，熄灭了")
+    # 回头见❤ 的劲头：每下一层少一层
+    for p in [load_player(cur, r["id"]) for r in _rows_by_names(cur, names)]:
+        if e := _effect(p, "cheer"):
+            e.left -= 1
+            if e.left <= 0:
+                p.effects.remove(e)
+                facts.append(f"{p.name}身上那股浑身是劲的感觉过去了")
+            _save_effects(cur, p)
     return facts
+
+
+def _rows_by_names(cur: Cursor, names: list[str]) -> list[dict]:
+    cur.execute("select id from players where name = any(%s)", (names,))
+    return cur.fetchall()
 
 
 def _douse(cur: Cursor, player: Player, item: ItemInstance) -> list[str]:
@@ -3569,10 +3865,14 @@ def npc_give(conn: Connection, player_id: UUID, npc_id: UUID, item_id: UUID, pri
         return ActionResult(action="npc_give", success=False, facts=[str(e)])
 
 
-def sellable(conn: Connection, npc: Npc, rare: Optional[str] = None) -> list[dict]:
+def sellable(conn: Connection, npc: Npc, rare: Optional[str] = None, player_id: Optional[UUID] = None) -> list[dict]:
     """NPC 能卖的货（world.yaml 的 sells），给交易 AI 看：物品 id、名字、说明、伤害防御、按效果算的原价。
-    rare 是这会儿有的稀罕货（rare_stock），标 rare，价钱固定"""
-    ids = npc.template.props.get("sells", []) + ([rare] if rare else [])
+    rare 是这会儿有的稀罕货（rare_stock），标 rare，价钱固定；给了 player_id 就加上回礼解锁给他的货"""
+    extra = []
+    if player_id:
+        with conn.transaction():
+            extra = perk_sells(_cursor(conn), player_id, npc)
+    ids = npc.template.props.get("sells", []) + extra + ([rare] if rare else [])
     if not ids:
         return []
     with conn.transaction():
@@ -3629,10 +3929,17 @@ def _rare_price(npc: Npc, stats: dict) -> int:
     return round(base_price(stats) * npc.template.props["rare_sells"].get("markup", 2))
 
 
+PERK_SELLS = {"map_scrap": "map_scrap"}  # 回礼解锁的货：本事 → 物品（诺艾尔好感 20 以后卖地图残片）
+
+
+def perk_sells(cur: Cursor, player_id: UUID, npc: Npc) -> list[str]:
+    return [item for perk, item in PERK_SELLS.items() if perk in perks(cur, player_id, npc.template.id)]
+
+
 def _sells(cur: Cursor, player_id: UUID, npc: Npc) -> list[str]:
-    """这个客人能在 NPC 这儿买的货：墙上的 + 这会儿有的稀罕货"""
+    """这个客人能在 NPC 这儿买的货：墙上的 + 回礼解锁的 + 这会儿有的稀罕货"""
     rare = _rare_now(cur, player_id, npc)
-    return npc.template.props.get("sells", []) + ([rare] if rare else [])
+    return npc.template.props.get("sells", []) + perk_sells(cur, player_id, npc) + ([rare] if rare else [])
 
 
 def _sell_rare(cur: Cursor, player: Player, npc: Npc, template_id: str, name: str, price: int) -> list[str]:
@@ -3680,7 +3987,9 @@ def _put_offer(cur: Cursor, player_id: UUID, npc: Npc, key: str, price: int, spe
 def set_offer(conn: Connection, player_id: UUID, npc: Npc, key: str, price: int) -> None:
     """叙事里 NPC 报了价、砍价让了步就记下来：卖货清单里的物品 id，或者已经报过价的现造东西"""
     offers = get_offers(conn, player_id, npc)
-    if key not in npc.template.props.get("sells", []) and key not in offers:
+    with conn.transaction():
+        unlocked = perk_sells(_cursor(conn), player_id, npc)
+    if key not in npc.template.props.get("sells", []) + unlocked and key not in offers:
         return                              # 稀罕货不在这里：价钱固定，不砍价
     with conn.transaction():
         cur = _cursor(conn)
@@ -3910,7 +4219,7 @@ def _effect_line(e: dict) -> str:
         "leech": f"吸回造成伤害的 {round(v * 100)}%", "status": f"让对方{STATE_NAMES.get(k, k)}",
         "status_all": f"让所有敌人{STATE_NAMES.get(k, k)}", "reflect": f"打你的敌人挨 {v} 点", "dodge": "完全躲开这一下",
         "resist": f"免疫{STATE_NAMES.get(k, k)}" if v == 0 else f"{STATE_NAMES.get(k, k)}的几率 ×{v}",
-        "max_hp": f"血量上限 {v:+d}", "skill": f"{SKILL_NAMES.get(k, k)} +{v}", "gold": f"打怪掉的金币 +{round(v * 100)}%",
+        "max_hp": f"血量上限 {'+' if v >= 0 else ''}{v}", "skill": f"{SKILL_NAMES.get(k, k)} +{v}", "gold": f"打怪掉的金币 +{round(v * 100)}%",
         "flee": "逃跑更容易" if v < 0 else "逃跑更难", "wade": "积水里行动不受影响", "darkvision": "暗处攻击不打折",
         "self_damage": f"自己掉 {v} 点血", "cheat_death": "本该倒下时留 1 点血",
         "aura": f"同房间的队友和自己{'攻击' if k == 'attack' else '防御'} +{v}",
@@ -3930,8 +4239,25 @@ def _effect_line(e: dict) -> str:
     return "，".join(p for p in pre if p) + ("：" if any(pre) else "") + what + tail
 
 
-def item_detail(item: ItemInstance) -> str:
-    """给人看的物品详情：类型、数值、特殊效果、参考价、描述"""
+def monster_notes(npc: Npc) -> str:
+    """诺艾尔的怪物图鉴：怪的习性，玩家点怪看"""
+    p = npc.template.props
+    notes = [f"{npc.name}（攻 {npc.template.attack} · 防 {npc.template.defense}）"]
+    notes += [text for key, text in (("keen", "嗅觉、警觉极好：一进门就会发现你，偷袭不了"),
+                                     ("animal", "野兽：可以试着安抚它避战（驯兽）"),
+                                     ("undead", "亡灵：怕圣水"),
+                                     ("light_averse", "怕光：光亮 70 以上攻击变弱，也会避开拿火把的人"))
+              if p.get(key)]
+    if hit := p.get("on_hit"):
+        notes.append(f"打中人时有几率让人{EFFECT_NAMES.get(hit['kind'], STATE_NAMES.get(hit['kind'], hit['kind']))}")
+    if (a := p.get("attacks", 1)) > 1:
+        notes.append(f"一轮出手 {a} 次")
+    return "\n".join(notes + ["（诺艾尔的怪物图鉴）"])
+
+
+def item_detail(item: ItemInstance, curse_sense: bool = False) -> str:
+    """给人看的物品详情：类型、数值、特殊效果、参考价、描述。诅咒平时看不出来，
+    有诺艾尔的诅咒辨识笔记（回礼 curse_sense）才看得出；戴上了的自己知道"""
     t = item.template
     head = item.name + f"（{USE_KINDS[_use_kind(item)] if t.type == 'consumable' else TYPE_NAMES.get(t.type, t.type)}"
     if t.slot:
@@ -3960,7 +4286,8 @@ def item_detail(item: ItemInstance) -> str:
     }
     if t.type == "consumable" and _use_kind(item) in MEDICINE_KINDS:
         lines.append("能给别人用：用药的人医药越高回得越多，给人用药能练医药")
-    lines += [text for key, text in extra.items() if _prop(item, key)]
+    lines += [text for key, text in extra.items() if _prop(item, key)
+              and (key != "cursed" or curse_sense or item.equipped_slot)]
     if uses := _prop(item, "uses"):
         lines.append(f"能用 {item.props.get('uses_left', uses)} 次")
     if gift := _prop(item, "gift"):
@@ -4302,6 +4629,68 @@ def adjust_affinity(conn: Connection, player_id: UUID, npc_id: UUID, delta: int)
         return ActionResult(action="affinity", success=True, facts=[fact])
     except ActionError as e:
         return ActionResult(action="affinity", success=False, facts=[str(e)])
+
+
+# ============ 回礼 ============
+# NPC 的 props.return_gifts：好感到了某一档（20/40/60/80/100），玩家来聊天时送一次；领过的档记在 player_npc_relations.gifts，
+# 好感掉下去再涨回来也不会重领。送的是东西（item），或者解锁一样本事（perk：九折、买地图残片、看出诅咒、怪物图鉴……）
+GIFT_BACK_FACT = "回礼"                  # 台词那边认这两个字，演送礼
+
+
+def return_gift(conn: Connection, player_id: UUID, npc: Npc) -> list[ActionResult]:
+    """聊天时看看有没有该送的回礼：送最低的那一档（一次一档）"""
+    gifts = npc.template.props.get("return_gifts") or {}
+    if not gifts:
+        return []
+    with conn.transaction():
+        cur = _cursor(conn)
+        cur.execute("select affinity, gifts from player_npc_relations where player_id = %s and npc_template = %s for update",
+                    (player_id, npc.template.id))
+        row = cur.fetchone()
+        if row is None:
+            return []
+        due = sorted(int(t) for t in gifts if int(t) <= row["affinity"] and int(t) not in (row["gifts"] or []))
+        if not due:
+            return []
+        tier, g = due[0], gifts[str(due[0])] if str(due[0]) in gifts else gifts[due[0]]
+        player = load_player(cur, player_id)
+        cur.execute("update player_npc_relations set gifts = array_append(gifts, %s) where player_id = %s and npc_template = %s",
+                    (tier, player_id, npc.template.id))
+        facts = [f"{npc.name}送给{player.name}：{g['text']}（{GIFT_BACK_FACT}，好感到了 {tier}）"]
+        if item := g.get("item"):
+            if item == "lina_blade":
+                facts += _exclusive_blade(cur, player, npc)
+            else:
+                cur.execute("insert into item_instances (template_id, player_id) values (%s, %s)", (item, player_id))
+        return [ActionResult(action="gift_back", success=True, facts=facts)]
+
+
+def perks(cur: Cursor, player_id: UUID, npc_template: Optional[str] = None) -> set[str]:
+    """这个玩家从回礼里解锁了哪些本事（npc_template 给了就只看这个 NPC 的）"""
+    cur.execute("""select r.gifts, t.props->'return_gifts' as table from player_npc_relations r
+                   join npc_templates t on t.id = r.npc_template
+                   where r.player_id = %s and cardinality(r.gifts) > 0 and t.props ? 'return_gifts'"""
+                + (" and r.npc_template = %s" if npc_template else ""),
+                (player_id, npc_template) if npc_template else (player_id,))
+    return {g["perk"] for r in cur.fetchall() for t, g in (r["table"] or {}).items() if int(t) in r["gifts"] and g.get("perk")}
+
+
+def _once_per_floor(cur: Cursor, player: Player, key: str) -> bool:
+    """每层地牢一次的东西（不熄的羽毛、无底酒壶、守护书签、诺艾尔的古书）：这一层用过了就是 False，没用过记下来返回 True"""
+    here = ":".join(map(str, dungeon.parse_room(player.room_id))) if dungeon.is_dungeon(player.room_id) else "surface"
+    if player.flags.get(key) == here:
+        return False
+    cur.execute("update players set flags = flags || jsonb_build_object(%s::text, %s::text) where id = %s", (key, here, player.id))
+    player.flags[key] = here
+    return True
+
+
+def _carries(cur: Cursor, player: Player, prop: str) -> Optional[ItemInstance]:
+    """身上（背包里、装备着都算）带着有这个特性的东西"""
+    cur.execute("""select i.id from item_instances i join item_templates t on t.id = i.template_id
+                   where i.player_id = %s and (t.props ? %s or i.props ? %s) limit 1""", (player.id, prop, prop))
+    row = cur.fetchone()
+    return load_items(cur, "i.id = %s", (row["id"],))[0] if row else None
 
 
 def npc_bonds(conn: Connection, player_id: UUID, npc: Npc) -> list[str]:

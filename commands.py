@@ -108,6 +108,11 @@ def upgrade_request(view: RoomView, t: str, smith: str) -> Optional[dict]:
     return out
 
 
+def _is_refill(item, npc) -> bool:
+    """这件东西空了、是这个 NPC 能续的（麦琪的酒壶、迷药）"""
+    return item.template.props.get("refill_by") == npc.template.id
+
+
 def _player(view: RoomView, text: str) -> Optional[str]:
     """同房间其他玩家的名字匹配，先精确后模糊"""
     text = text.strip()
@@ -214,6 +219,31 @@ def _parse_one(view: RoomView, t: str) -> dict:
                 out["item"] = _find(view, said, "inv")
             return out
 
+    # 莉娜的回礼本事：传承锻造"把铁斧的强化转到精钢短剑上"、刷新词条"刷新余烬长剑的词条""重铸余烬长剑"
+    if smith := next((n for n in view.npcs if n.template.props.get("upgrades")), None):
+        ref = {uid: ref for ref, uid in view.refs.items()}[smith.id]
+        u = re.sub(rf"^(?:对|跟|找|向)\s*{re.escape(smith.name)}\s*(?:说|讲)?[:：]?\s*(?:帮我|请|我要|我想)?\s*", "", t)
+        if m := re.fullmatch(r"(?:把)?\s*(.+?)\s*(?:的|上的)\s*(?:强化|等级|锻打|升级)?\s*(?:转到|传到|传给|转给|移到|挪到)\s*(.+?)\s*(?:上|身上)?", u):
+            return {"action": "transfer", "item": _find(view, m[1], "inv"), "to": _find(view, m[2], "inv"), "target": ref}
+        if m := (re.fullmatch(r"(?:刷新|重洗|洗|重铸)\s*(.+?)\s*(?:的)?\s*(?:词条|特效)?", u)
+                 or re.fullmatch(r"(?:给|把)\s*(.+?)\s*(?:刷新|重洗|重铸)\s*(?:一下)?\s*(?:词条|特效)?", u)):
+            return {"action": "reroll", "item": _find(view, m[1], "inv"), "target": ref}
+    # 专属武器起名："给莉娜打的剑起名叫破晓""把它改名为破晓"
+    if m := re.fullmatch(r"(?:给|把)\s*(.+?)\s*(?:起名|取名|改名|命名)\s*(?:叫|为|成|作)?\s*(.+)", t):
+        return {"action": "rename", "item": _find(view, m[1], "inv"), "name": m[2]}
+
+    # 找麦琪续杯："续杯""对麦琪说 续杯""帮我灌满""把酒壶灌满"
+    if keeper := next((n for n in view.npcs if any(_is_refill(i, n) for i in view.inventory)), None):
+        u = re.sub(rf"^(?:对|跟|找|向)\s*{re.escape(keeper.name)}\s*(?:说|讲)?[:：]?\s*(?:帮我|请|给我)?\s*", "", t)
+        if re.fullmatch(r"(?:续杯|续上|续一下|再续一杯|灌满|加满|满上|续满)(?:吧|一下)?|(?:把|给)?\s*.{0,8}?\s*(?:灌满|续上|满上|加满)", u):
+            return {"action": "refill", "target": {uid: ref for ref, uid in view.refs.items()}[keeper.id]}
+    # 泼迷药："把特制迷药泼向哥布林""对哥布林用特制迷药"
+    if (drug := next((i for i in view.inventory if "drug" in i.template.props and (i.name in t or "迷药" in t)), None)) \
+            and re.search(r"泼|洒|用|喂|倒", t):
+        foe = next((n for n in view.npcs if n.template.hostile and (n.name in t or n.name[-2:] in t)), None)
+        return {"action": "use", "item": {uid: ref for ref, uid in view.refs.items()}[drug.id],
+                "target": {uid: ref for ref, uid in view.refs.items()}[foe.id] if foe else None}
+
     # 驯兽："安抚狼""驯服巨鼠""安抚一下那只狼"（只对野兽有用，是不是野兽引擎查）
     if m := re.fullmatch(r"(?:试着|试试|慢慢)?(?:安抚|驯服|驯养|平息|哄走|哄哄|安慰)\s*(?:一下)?\s*(?:那只|这只|那群|这群)?\s*(.+)", t):
         return {"action": "tame", "target": _find(view, m[1], "npc")}
@@ -303,6 +333,21 @@ def _parse_one(view: RoomView, t: str) -> dict:
 
     # 打的是玩家就是 PvP，target 填名字；否则是 NPC 的 ref。
     # 先认准确的玩家名，再找 NPC，最后才模糊匹配玩家，免得有人叫"布"时"打哥布林"打到他
+    # 远程："装填""给弩上弦"；"射哥布林""用弩射哥布林""用短剑砍哥布林"
+    if m := re.fullmatch(r"(?:重新)?(?:装填|上弦|装箭|填装)|(?:给|把)\s*(.+?)\s*(?:重新)?(?:装填|上弦|装上箭|上好弦|装好)", t):
+        return {"action": "reload", "item": _find(view, m[1], "inv") if m[1] else None}
+    if m := re.fullmatch(r"(?:用|拿)\s*(.+?)\s*(?:射|攻击|打|砍|刺|劈)\s*(.+)", t):
+        try:
+            item = _find(view, m[1], "inv")
+        except _Unsure:
+            item = None                     # 拿地形、手边的东西砸人是花样（stunt），交给 AI
+        if item and any(i.equipped_slot and view.refs.get(item) == i.id for i in view.inventory):
+            name = m[2].strip()
+            target = name if any(p.name == name for p in view.others) else _find(view, name, "npc")
+            return {"action": "attack", "target": target, "item": item}
+    if m := re.fullmatch(r"(?:射|射击)\s*(.+)", t):
+        name = m[1].strip()
+        return {"action": "attack", "target": name if any(p.name == name for p in view.others) else _find(view, name, "npc")}
     if m := re.fullmatch(r"(?:attack|kill|hit|攻击|杀|打)\s*(.+)", t, re.I):
         name = m[1].strip()
         if any(p.name == name for p in view.others):

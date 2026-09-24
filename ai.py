@@ -209,7 +209,7 @@ class AIAction(BaseModel):
     action: Literal["move", "look", "take", "drop", "use", "equip", "unequip", "attack", "talk", "give", "sell", "pay", "say",
                     "upgrade", "respawn", "stand", "rest", "camp", "teleport", "revive", "uncurse", "leave_party", "follow", "unfollow", "challenge", "accept_duel",
                     "decline_duel", "flee", "stunt", "struggle",
-                    "maneuver", "dodge", "tame", "hide", "search", "freeform", "reject"]
+                    "maneuver", "dodge", "tame", "reload", "refill", "transfer", "reroll", "rename", "hide", "search", "freeform", "reject"]
     direction: Optional[str] = None
     item: Optional[str] = None
     target: Optional[str] = None
@@ -231,6 +231,10 @@ class AIAction(BaseModel):
     floor: Optional[int] = None          # teleport 传送到第几层
     steps: Optional[int] = None
     consume: Optional[bool] = None
+    to: Optional[str] = None             # transfer：接过强化的那件
+    name: Optional[str] = None           # rename：新名字
+    ore: Optional[bool] = None           # upgrade：用不用奥利哈刚
+    quote: Optional[bool] = None         # upgrade：只问价
 
 
 class AIParsed(BaseModel):
@@ -252,7 +256,7 @@ INTENT_SYSTEM = """你是文字 MUD 游戏的指令解析器。读玩家的输�
   灯油（倒在快灭的火把上）、磨刀石、光明卷轴、地图残片（这几样 target 都不填）；绷带、解毒苔是吃的，也是 use。拿东西打人、砸人、抽人是 stunt（item 填那样东西），不是 use
 - equip: item（背包物品的 ref），slot 可空。穿上、戴上、装备、拿在手里当武器都是 equip。玩家说了哪只手就填 slot：左手 left_hand、右手 right_hand（第二个戒指位 ring2）；没说就不填。武器两只手都能拿，可以双持。换手（"把斧子换到左手"）就是一个 equip 填 slot，不要先 unequip：两只手会自动互换
 - unequip: item（已装备的背包物品 ref）。卸下、脱下、摘下、收起武器
-- attack: target（NPC 的 ref；打其他玩家时填"其他玩家"里的名字。玩家之间只有决斗中才会受伤，没在决斗也照样输出 attack，由引擎拒绝）
+- attack: target（NPC 的 ref；打其他玩家时填"其他玩家"里的名字。玩家之间只有决斗中才会受伤，没在决斗也照样输出 attack，由引擎拒绝），item（说了用哪件武器才填，比如"用弩射它"；射、放箭也是 attack）
 - talk: target（NPC 的 ref），message（玩家说的话，保留原话）。找 NPC 买东西、问价、砍价、点菜、要东西都是 talk
 - give: item（背包物品的 ref），target（NPC 的 ref；给其他玩家时填"其他玩家"里的名字）。给、递、交、送、塞到他手里是 give：东西到了对方手上，吃不吃是他的事。喂他吃、塞进他嘴里（强行的也算）、给他灌下去是 use 不是 give
 - uncurse: target（会解咒的 NPC 的 ref），item（被诅咒的装备 ref，没说就不填）。找人解除装备上的诅咒
@@ -287,6 +291,11 @@ INTENT_SYSTEM = """你是文字 MUD 游戏的指令解析器。读玩家的输�
   - status_label：状态的说法，简短，如"被石头砸晕了""被绳子捆住了"。泼酒、撒沙、撒石灰迷眼是短暂的 incapacitated，写"被迷了眼"这类，不要写成晕了，escape 填 1；escape：这个状态挣脱或醒来的难度 1 到 10（松松绕两圈是 1，捆得结结实实是 3，铁链锁住是 5）
 - struggle: description（第三人称简述怎么挣脱的），difficulty（这次挣脱或醒来的难度 1 到 10，看方法合不合理、状态有多严重）。玩家自己带着负面状态时想摆脱它就是 struggle；失去战斗能力时说什么做什么都算 struggle（挣扎着醒来）
 - maneuver: target（NPC 的 ref；决斗中靠近、退开对手就填对手的名字，距离看"决斗"那行），steps（整数格数，靠近填正数、退开填负数，每次最多 2 格：后退一步、挪开一点是 -1，拔腿往后跑、拉开距离是 -2，凑近一步是 1，冲上去是 2），description。同一个区域里走近、退开某个 NPC 都是 maneuver，不是 move；"冲上去砍它"是 maneuver 加 attack，"悄悄摸到它背后扭断脖子""绕过去把它打晕"是 maneuver（steps 填把距离缩到 0 的格数，最多 2）加 stunt。看"敌人"那行的距离，扭脖子、打晕、掐、割喉这类贴身动作，玩家说了摸过去、凑近、绕到背后，就先 maneuver
+- reload: item（要装填的远程武器 ref，可不填）。给弩上弦、装填、装箭
+- refill: target（麦琪的 ref）。找她续杯，把她给的空酒壶、空药瓶灌满
+- transfer: item（转出强化的装备 ref），to（接过去的装备 ref），target（铁匠的 ref）。找铁匠把一件装备的强化等级转到另一件上
+- reroll: item（装备 ref），target（铁匠的 ref）。找铁匠刷新、重铸装备的词条（特效）
+- rename: item（装备 ref），name（新名字）。给自己的专属武器起名
 - tame: target（野兽的 ref），description（怎么安抚的）。安抚、驯服、哄走野兽，让它不打了自己走开（只对野兽有用，引擎判驯兽）
 - dodge: description。闪避、闪躲、侧身躲开、护住要害准备挨打：这一下敌人更难打中
 - hide: description（第三人称简述怎么躲的），difficulty（隐匿的难度 1 到 10，看环境里有没有好藏身的地方、敌人离得多近）。躲起来、藏到树后、趴进草丛、屏住呼吸不让敌人发现
@@ -722,7 +731,7 @@ def npc_line(db, view: RoomView, text: str, results: list[ActionResult], npc: Np
     """NPC 这回合说的话，单独演。失败返回 None（叙事自己写台词）。bonds 是可以提的别人的交情（engine.npc_bonds）"""
     services = npc_services(npc, sells)
     # 第一次见面、或者问起能干什么：把能办的事介绍一遍。这回合在交委托、做买卖就先办正事，不插介绍
-    busy = any(r.success and (r.action in TRADE_ACTIONS or r.action in ("quest", "give", "sell", "upgrade", "rest"))
+    busy = any(r.success and (r.action in TRADE_ACTIONS or r.action in ("quest", "give", "sell", "upgrade", "rest", "gift_back"))
                for r in results)
     intro = bool(services) and not busy and (not memory or bool(ASK_SERVICE_RE.search(text)))
     this_turn = "\n".join("；".join(EFFECT_RE.sub("", f) for f in r.facts) for r in results if r.success) or "没什么特别的"
@@ -760,7 +769,10 @@ def npc_line(db, view: RoomView, text: str, results: list[ActionResult], npc: Np
             + ("\n\n<important>你刚把一件自己很珍惜的东西卖给了他：演出舍不得（犹豫、再看一眼、小声念叨），"
                "但你是有礼貌的人，最后一定要真心道谢（比如“……但、但还是谢谢你”），不能怪他</important>"
                if any(engine.RELUCTANT_FACT in f for r in results if r.success for f in r.facts) else "")
-            + (f"\n\n<important>{FEELINGS[feeling]}</important>" if (feeling := engine.affinity_word(affinity)) in FEELINGS else ""))
+            + (f"\n\n<important>{FEELINGS[feeling]}</important>" if (feeling := engine.affinity_word(affinity)) in FEELINGS else "")
+            + "".join(f"\n\n<important>你们的交情到了这一步，你这回合要送他一份回礼：{f.split('：', 1)[1].split('（回礼', 1)[0]}。"
+                      "按你的性格和对他的感情把它交给他（嘴硬的也可以别扭地塞过去），说说这是什么、有什么用，别说成是交易</important>"
+                      for r in results if r.success and r.action == "gift_back" for f in r.facts[:1]))
     trading = any(r.success and r.action in TRADE_ACTIONS for r in results)
     rewards = [m[1] for r in results if r.success and r.action == "quest"
                for f in r.facts if (m := re.search(r"把(.+?)交给了", f))]
@@ -1366,7 +1378,7 @@ def narrate(db, view: RoomView, text: str, results: list[ActionResult],
             out.npc_offer = None
         # 这回合没交付，叙事却写了 NPC 把东西递给、抛给他（npc_handed 认出来的除外）：重写一次，还写就把那句删掉
         # 委托只有结算、真的给了奖励才算交付；只是提起委托不算（麦琪提委托那回合，叙事凭空递了一把短剑没拦住）
-        delivered = any(r.success and (r.action in ("npc_give", "npc_create", "npc_sell")
+        delivered = any(r.success and (r.action in ("npc_give", "npc_create", "npc_sell", "gift_back")
                                        or r.action == "quest" and any("交给了" in f for f in r.facts)) for r in results)
         if npc and not delivered and not out.npc_handed and GAVE_RE.search(out.narrative):
             if not last:

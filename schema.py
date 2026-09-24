@@ -58,6 +58,41 @@ class Unequip(BaseModel):
 class Attack(BaseModel):
     action: Literal["attack"]
     target: str                         # NPC 的 ref，或者同房间玩家的名字（PvP）
+    item: Optional[str] = None          # 用哪件武器（"用弩射哥布林"）；不填：手上有装好的远程武器、对方没贴身就射，不然近战
+
+
+class Transfer(BaseModel):
+    """找莉娜传承锻造（回礼解锁）：把一件装备的强化等级转到另一件同类的上（武器给武器、防具给防具）"""
+    action: Literal["transfer"]
+    item: str                           # 转出强化的那件
+    to: str                             # 接过去的那件
+    target: str                         # 铁匠 NPC 的 ref
+
+
+class Reroll(BaseModel):
+    """找莉娜刷新词条（回礼解锁）：带特效的装备重新锻出别的特效，同一件越刷越贵"""
+    action: Literal["reroll"]
+    item: str
+    target: str
+
+
+class Rename(BaseModel):
+    """给自己的专属武器起名"""
+    action: Literal["rename"]
+    item: str
+    name: str
+
+
+class Refill(BaseModel):
+    """找送酒壶的 NPC（麦琪）续杯：把她给的解毒酒壶、特制迷药、回头见❤ 这些空了的都灌满"""
+    action: Literal["refill"]
+    target: str                         # NPC 的 ref
+
+
+class Reload(BaseModel):
+    """给射完的远程武器重新装填（弩上弦），算一个动作"""
+    action: Literal["reload"]
+    item: Optional[str] = None
 
 
 class Talk(BaseModel):
@@ -279,7 +314,7 @@ class Reject(BaseModel):
 
 PlayerAction = Annotated[
     Union[Move, Look, Take, Drop, Use, Equip, Unequip, Attack, Talk, Give, Sell, Pay, Upgrade, Say, Revive, Respawn, Stand, Rest, Camp, Teleport, LeaveParty,
-          Follow, Unfollow, Challenge, AcceptDuel, DeclineDuel, Flee, Stunt, Struggle, Maneuver, Dodge, Tame, Uncurse, Hide, Search,
+          Follow, Unfollow, Challenge, AcceptDuel, DeclineDuel, Flee, Stunt, Struggle, Maneuver, Dodge, Tame, Uncurse, Reload, Refill, Transfer, Reroll, Rename, Hide, Search,
           Freeform, Reject],
     Field(discriminator="action"),
 ]
@@ -452,7 +487,8 @@ class Status(BaseModel):
                                      "prone": "倒在地上，还没爬起来"}[self.kind]
 
 
-EffectKind = Literal["poison", "bleed", "blind", "corrode", "whet"]     # whet 是好的：磨刀石，这一层伤害 +value
+EffectKind = Literal["poison", "bleed", "blind", "corrode", "whet", "cheer"]
+# whet、cheer 是好的：whet 磨刀石，这一层伤害 +value；cheer 麦琪的"回头见❤"，攻击 +value%，left 是还剩几层
 
 
 class Effect(BaseModel):

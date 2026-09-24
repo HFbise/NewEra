@@ -190,7 +190,8 @@ function render(s) {
     ${p.hp <= 0 ? `<div class="sys">你倒下了，只能看和说话，等别人来急救；或者输入“复活”被抬回酒馆（“回铁匠铺复活”去莉娜那）</div>` : ""}
     ${s.stealth ? `<div class="sys">${esc(s.stealth)}</div>` : ""}
     ${p.status ? `<div class="sys">你${esc(p.status.label)}，${p.status.kind === "incapacitated" ? "说什么都算挣扎着醒来" : p.status.kind === "prone" ? "输入“站起来”爬起来" : "动不了，试试挣脱"}</div>` : ""}
-    ${(p.effects || []).map(e => e.kind === "whet" ? `<div class="sys">磨利：普通攻击伤害 +${e.value}（这一层）</div>` : `<div class="sys">${{poison: "中毒", bleed: "流血", blind: "看不清", corrode: "腐蚀"}[e.kind]}：${esc(e.label)}（还剩 ${e.left} ${e.kind === "bleed" ? "个动作" : "回合"}）</div>`).join("")}
+    ${(p.effects || []).map(e => e.kind === "whet" ? `<div class="sys">磨利：普通攻击伤害 +${e.value}（这一层）</div>` :
+      e.kind === "cheer" ? `<div class="sys">浑身是劲（回头见❤）：攻击 +${e.value}%（还剩 ${e.left} 层）</div>` : `<div class="sys">${{poison: "中毒", bleed: "流血", blind: "看不清", corrode: "腐蚀"}[e.kind]}：${esc(e.label)}（还剩 ${e.left} ${e.kind === "bleed" ? "个动作" : "回合"}）</div>`).join("")}
     ${Object.keys(p.flags).length ? `<div class="tag">标记：${Object.keys(p.flags).map(esc).join("、")}</div>` : ""}
     ${s.combat ? `<div class="combat"><b>⚔ 战斗中 · 第 ${s.combat.round} 轮</b>${s.combat.resolving ? " · 结算中…" : ""}
       <div>已出手：${s.combat.acted.map(esc).join("、") || "还没人"}</div>
@@ -210,7 +211,7 @@ function render(s) {
     ${s.npcs.length ? `<h2>NPC</h2><ul>${s.npcs.map(n => li(n.ref, n.name,
       (n.max_hp ? `<span class="tag">${n.hp}/${n.max_hp}</span>` : "") +
       (n.beast ? `<span class="tag">野兽·可安抚</span>` : "") +
-      (n.status ? `<span class="tag">${esc(n.status)}</span>` : ""), n.fill || `对${n.name} `)).join("")}</ul>` : ""}
+      (n.status ? `<span class="tag">${esc(n.status)}</span>` : ""), n.fill || `对${n.name} `, n.detail)).join("")}</ul>` : ""}
     ${s.others.length ? `<h2>其他玩家</h2><ul>${s.others.map(o => o.hp <= 0
       ? `<li data-name="对${esc(o.name)} ">${esc(o.name)}<span class="tag">倒下了</span></li>`
       : `<li data-name="对${esc(o.name)} ">${esc(o.name)}<span class="tag">${o.status ? esc(o.status) : o.awake ? "HP " + o.hp : "睡着了"}</span></li>`).join("")}</ul>` : ""}
