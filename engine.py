@@ -24,7 +24,7 @@ from psycopg.types.json import Jsonb
 import dungeon
 from commands import REST_TALK_RE
 from schema import (
-    ActionResult, Attack, Drop, Equip, Feature, Follow, Freeform, Give, ItemInstance, LeaveParty, Look,
+    ActionResult, Attack, Drop, Equip, Feature, Follow, Freeform, Give, ItemInstance, LeaveParty, Kick, Look,
     Move, Npc, OtherPlayer, Player, PlayerAction, Reject, Revive, Room, RoomExit, RoomView, Say, Status, Struggle,
     Stunt, Take, Talk, Unfollow, Unequip, Use, dir_name, Dispenser, SLOT_CHOICES, SLOT_NAMES, Dodge, Hide, Maneuver, Search, Stealth, Tame,
     Uncurse, Reload, Refill, Transfer, Reroll, Rename, Write,
@@ -1131,6 +1131,24 @@ def do_leave_party(cur: Cursor, player: Player, view: RoomView, a: LeaveParty) -
     if not player.party_id:
         raise ActionError(f"{player.name}没有在队伍里")
     return _quit_party(cur, player)
+
+
+def do_kick(cur: Cursor, player: Player, view: RoomView, a: Kick) -> list[str]:
+    """把跟着自己的人请出队伍（组队没有队长，谁跟着你你就能请他走）：他不再跟着你、离开队伍。
+    他不在身边、下线了也行；地牢里、战斗中不行，跟自己退队一样"""
+    cur.execute("select * from players where name = %s for update", (a.target.strip(),))
+    row = cur.fetchone()
+    if not row or row["id"] == player.id:
+        raise ActionError(f"没有叫{a.target}的人" if not row else "不能把自己请出队伍，要走就说「离队」")
+    target = load_player(cur, row["id"], lock=True)
+    if target.following != player.id:
+        raise ActionError(f"{target.name}没有在跟着{player.name}，只能请走跟着自己的人")
+    if why := _party_locked(cur, player) or _party_locked(cur, target):
+        raise ActionError(f"{why}，不能把{target.name}请出队伍（回到地面、打完这一仗再说）")
+    cur.execute("update players set following = null where id = %s", (target.id,))
+    if target.party_id:
+        _leave_party(cur, target)
+    return [f"{player.name}请{target.name}离开了队伍，{target.name}不再跟着{player.name}了"]
 
 
 def _quit_party(cur: Cursor, player: Player) -> list[str]:
@@ -3925,7 +3943,7 @@ HANDLERS: dict[str, Callable[..., list[str]]] = {
     "move": do_move, "look": do_look, "take": do_take, "drop": do_drop, "use": do_use,
     "equip": do_equip, "unequip": do_unequip, "attack": do_attack, "talk": do_talk, "give": do_give, "freeform": do_freeform,
     "say": do_say, "revive": do_revive, "stunt": do_stunt, "struggle": do_struggle,
-    "follow": do_follow, "unfollow": do_unfollow, "leave_party": do_leave_party,
+    "follow": do_follow, "unfollow": do_unfollow, "leave_party": do_leave_party, "kick": do_kick,
     "maneuver": do_maneuver, "dodge": do_dodge, "tame": do_tame, "uncurse": do_uncurse, "reload": do_reload, "refill": do_refill,
     "transfer": do_transfer, "reroll": do_reroll, "rename": do_rename, "write": do_write, "hide": do_hide, "search": do_search, "reject": do_reject,
     "upgrade": do_upgrade, "pay": do_pay, "sell": do_sell, "respawn": do_respawn, "stand": do_stand, "rest": do_rest, "camp": do_camp, "teleport": do_teleport, "challenge": do_challenge, "accept_duel": do_accept_duel, "decline_duel": do_decline_duel, "flee": do_flee,

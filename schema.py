@@ -179,6 +179,12 @@ class LeaveParty(BaseModel):
     action: Literal["leave_party"]
 
 
+class Kick(BaseModel):
+    """把跟着自己的人请出队伍：他不再跟着你、离开队伍；地牢里、战斗中不行"""
+    action: Literal["kick"]
+    target: str                         # 玩家名字
+
+
 class Follow(BaseModel):
     """跟着同房间的某个玩家，对方移动时自动一起走。跟着谁就是加入谁的队伍"""
     action: Literal["follow"]
@@ -323,7 +329,7 @@ class Reject(BaseModel):
 
 
 PlayerAction = Annotated[
-    Union[Move, Look, Take, Drop, Use, Equip, Unequip, Attack, Talk, Give, Sell, Pay, Upgrade, Say, Revive, Respawn, Stand, Rest, Camp, Teleport, LeaveParty,
+    Union[Move, Look, Take, Drop, Use, Equip, Unequip, Attack, Talk, Give, Sell, Pay, Upgrade, Say, Revive, Respawn, Stand, Rest, Camp, Teleport, LeaveParty, Kick,
           Follow, Unfollow, Challenge, AcceptDuel, DeclineDuel, Flee, Stunt, Struggle, Maneuver, Dodge, Tame, Uncurse, Reload, Refill, Transfer, Reroll, Rename, Write, Hide, Search,
           Freeform, Reject],
     Field(discriminator="action"),

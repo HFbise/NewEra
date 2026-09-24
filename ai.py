@@ -207,7 +207,7 @@ def _call(db, player_id: UUID, kind: str, system: str, user: str, fmt: type[Base
 class AIAction(BaseModel):
     """给 AI 的扁平格式，比嵌套 union 好填；回来再转成 PlayerAction 校验"""
     action: Literal["move", "look", "take", "drop", "use", "equip", "unequip", "attack", "talk", "give", "sell", "pay", "say",
-                    "upgrade", "respawn", "stand", "rest", "camp", "teleport", "revive", "uncurse", "leave_party", "follow", "unfollow", "challenge", "accept_duel",
+                    "upgrade", "respawn", "stand", "rest", "camp", "teleport", "revive", "uncurse", "leave_party", "kick", "follow", "unfollow", "challenge", "accept_duel",
                     "decline_duel", "flee", "stunt", "struggle",
                     "maneuver", "dodge", "tame", "reload", "refill", "transfer", "reroll", "rename", "write", "hide", "search", "freeform", "reject"]
     direction: Optional[str] = None
@@ -273,6 +273,7 @@ INTENT_SYSTEM = """你是文字 MUD 游戏的指令解析器。读玩家的输�
 - say: message（说的话，保留原话），target 可空（对某个玩家说时填"其他玩家"里的名字，对大家说不填）
 - revive: target（"其他玩家"里的名字）。帮倒下的、被捆住的、被打晕的其他玩家都是 revive，不是 freeform 也不是 struggle：急救、包扎、止血、扶起、叫醒、松绑、解开绳子、割断绳子、把人拉出来。用背包里的吃的、药草、酒喂他是 use（target 填他的名字），不是 revive 也不是 stunt。struggle 只用于玩家自己摆脱自己身上的状态（倒地的是 stand）
 - leave_party: 不用填字段。离开、退出、解散队伍（同时不再跟着人）
+- kick: target（玩家名字）。把跟着自己的人踢出队伍、请他离队、叫他别再跟着
 - follow: target（"其他玩家"里的名字）。跟着、跟随、跟上某人，和某人组队、加入某人的队伍：跟着谁就是加入谁的队伍，之后对方走到哪就自动跟到哪，这一回合本身不移动
 - unfollow: 不用填字段。不再跟着别人（也就离开了队伍）
 - challenge: target（"其他玩家"里的名字）。申请决斗、约架、pvp、挑战某人、要跟他单挑

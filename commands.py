@@ -354,6 +354,13 @@ def _parse_one(view: RoomView, t: str) -> dict:
     if m := (re.fullmatch(r"(?:revive|急救|救起|扶起|救醒|叫醒|喊醒|松绑|救)\s*(.+)", t, re.I)
              or re.fullmatch(r"(?:给|帮)\s*(.+?)\s*(?:松绑|解开)", t)):
         return {"action": "revive", "target": _player_or_unsure(view, m[1])}
+    # 请走跟着自己的人："把寒风踢出队伍""踢出寒风""请寒风离队""让寒风别跟着我了"（他不在身边也行，名字引擎查）
+    if m := (re.fullmatch(r"把\s*(.+?)\s*(?:踢出|请出|移出|赶出)(?:队伍|队)?", t)
+             or re.fullmatch(r"(?:踢出|踢掉|请走|移出)\s*(.+?)", t)
+             or re.fullmatch(r"请\s*(.+?)\s*(?:离队|离开队伍|出队|退队)", t)
+             or re.fullmatch(r"(?:让|叫)\s*(.+?)\s*(?:别|不要|不用)(?:再)?跟(?:着)?(?:我)?了?", t)
+             or re.fullmatch(r"kick\s+(\S+)", t, re.I)):
+        return {"action": "kick", "target": m[1].strip()}
     if re.fullmatch(r"停止跟随|不跟了|别跟了|不再跟着.*|unfollow", t, re.I):
         return {"action": "unfollow"}
     if m := re.fullmatch(r"(?:跟着|跟随|跟上|尾随|follow)\s*(.+?)(?:走)?", t, re.I):
