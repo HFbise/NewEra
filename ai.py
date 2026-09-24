@@ -235,6 +235,7 @@ class AIAction(BaseModel):
     ammo: Optional[str] = None           # reload：装上的特殊弹药
     name: Optional[str] = None           # rename：新名字
     ore: Optional[bool] = None           # upgrade：用不用奥利哈刚
+    oil: Optional[bool] = None           # upgrade：用莉娜的淬火油
     quote: Optional[bool] = None         # upgrade：只问价
 
 
@@ -261,7 +262,7 @@ INTENT_SYSTEM = """你是文字 MUD 游戏的指令解析器。读玩家的输�
 - talk: target（NPC 的 ref），message（玩家说的话，保留原话）。找 NPC 买东西、问价、砍价、点菜、要东西都是 talk
 - give: item（背包物品的 ref），target（NPC 的 ref；给其他玩家时填"其他玩家"里的名字）。给、递、交、送、塞到他手里是 give：东西到了对方手上，吃不吃是他的事。喂他吃、塞进他嘴里（强行的也算）、给他灌下去是 use 不是 give
 - uncurse: target（会解咒的 NPC 的 ref），item（被诅咒的装备 ref，没说就不填）。找人解除装备上的诅咒
-- upgrade: item（背包里武器、防具的 ref，没说哪件就不填），target（会升级武器的铁匠 NPC 的 ref），ore（说用奥利哈刚、矿石填 true，说不用填 false，没提不填），quote（只问升级要多少钱填 true）。找铁匠升级、强化、重新锻打自己的武器，说了就直接动手；铁匠问用不用矿石时回的"用""不用"也是 upgrade
+- upgrade: item（背包里武器、防具的 ref，没说哪件就不填），target（会升级武器的铁匠 NPC 的 ref），ore（说用奥利哈刚、矿石填 true，说不用填 false，没提不填），oil（说用淬火油填 true），quote（只问升级要多少钱填 true）。找铁匠升级、强化、重新锻打自己的武器，说了就直接动手；铁匠问用不用矿石时回的"用""不用"也是 upgrade
 - sell: item（背包物品的 ref），target（NPC 的 ref）。把自己的东西卖给 NPC 换钱（"把药草卖给麦琪""这个你收不收，卖你了"）。只是问收不收、值多少钱是 talk
 - pay: target（NPC 的 ref；给其他玩家时填名字），amount（金币数，整数）。给钱、付钱、塞钱、打赏都是 pay，金币不是背包物品，不要用 give
 - teleport: floor（第几层，整数）。在地窖里说传送到第几层就填层数；在地牢的传送石边上回城、摸传送石回地面就不填 floor
@@ -708,11 +709,13 @@ def npc_services(npc: Npc, sells: Optional[list[dict]] = None) -> list[str]:
         out.append("按客人要求现做" + "、".join(kinds))
     if inn := p.get("inn"):
         out.append(f"住店，一晚 {inn.get('price', 0)} 金币，价钱固定不讲价，睡一觉回满体力、醒酒（他说一句“住店”就能住）")
+    if p.get("lore"):
+        out.append("讲地牢里怪物的习性和打法（客人问起怪物怎么打，就按你知道的讲）：" + engine.MONSTER_LORE)
     if p.get("uncurse"):
         out.append("解除装备上的诅咒（戴上就卸不下来的那种，按那件东西的参考价收钱）")
     if p.get("upgrades"):
-        out.append("帮人升级武器和防具（武器更锋利、防具更结实），级数越高越容易失败，失败会退一级（不会碎）；"
-                   "带一块奥利哈刚矿石来锻进去，那一次一定成功")
+        out.append("帮人升级武器和防具（武器更锋利、防具更结实），最多 +10，级数越高越容易失败，失败会退一级（不会碎）；"
+                   "带奥利哈刚矿石来锻进去，失败了也不掉级，矿石成功了才用掉")
     return out
 
 

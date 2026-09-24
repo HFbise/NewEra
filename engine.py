@@ -1427,6 +1427,11 @@ def do_refill(cur: Cursor, player: Player, view: RoomView, a: Refill) -> list[st
         mine = [i for i in view.inventory if _prop(i, "empty") and any(
             t.get("item") == i.template.id for t in (npc.template.props.get("return_gifts") or {}).values())]
         raise ActionError(f"{player.name}身上{'的' + '、'.join(i.name for i in mine) + '都还满着' if mine else f'没有{npc.name}能续的东西'}")
+    # 续杯是她的心意：交情掉到送这件东西那一档以下，她就不给续了
+    tiers = {g.get("item"): int(t) for t, g in (npc.template.props.get("return_gifts") or {}).items()}
+    aff = _affinity(cur, player, npc)
+    if cold := [i for i in empties if aff < tiers.get(_prop(i, "refill_to"), 0)]:
+        raise ActionError(f"{npc.name}瞥了一眼{'、'.join(i.name for i in cold)}，没接：想续？先把交情补回来再说")
     names = [_swap_template(cur, i, _prop(i, "refill_to")) for i in empties]
     return [f"{npc.name}接过{'、'.join(i.name for i in empties)}，哼了一声，背过身去一样一样灌满了又塞回{player.name}手里",
             f"{'、'.join(names)}又满了"]
@@ -2058,7 +2063,7 @@ def _npc_strike(cur: Cursor, player: Player, npc: Npc, verb: str, chance: float 
     guard = sum(int(e.get("value", 0)) for e in _fire(cur, player, "hurt", "guard", npc))       # 恶犬项圈
     dmg = hurt_player_by(atk, _defense(cur, player), depth, guard=guard)
     saved = []
-    if dmg >= player.hp and (mark := _carries(cur, player, "guard_once")) and _once_per_floor(cur, player, "guard_once"):
+    if dmg >= player.hp and (mark := _carries(cur, player, "guard_once")) and _once_per_floor(cur, player, "cheat_death"):
         return [f"{npc.name}{verb}，这一下本该要了{player.name}的命",
                 f"{player.name}身上的{mark.name}亮了一下，硬生生挡下了这一击（这一层用过了）"]
     if dmg >= player.hp and (cd := _fire(cur, player, "hurt", "cheat_death", npc)) and _cheat_death_ready(cur, player):
@@ -2801,12 +2806,16 @@ def _enemy_act(cur: Cursor, player: Player, st: Stealth, npc: Npc, dodge: float,
 
 
 def _enemies_stand(cur: Cursor, alive: list[Npc]) -> list[str]:
-    """被绊倒的敌人轮到行动时只能爬起来，这一轮不扑上来"""
+    """被绊倒的敌人轮到行动时只能爬起来，这一轮不扑上来。头目被定住、迷倒、捆住也最多耽误这一轮（不用判定的迷药、
+    古书对头目只管一轮），下一轮就挣开了"""
     facts = []
     for n in alive:
         if n.status and n.status.kind == "prone":
             _set_status(cur, "npcs", n.id, None)
             facts.append(f"{n.name}从地上爬了起来")
+        elif n.status and n.template.props.get("dungeon", {}).get("rank") == "boss":
+            _set_status(cur, "npcs", n.id, None)
+            facts.append(f"{n.name}低吼一声，硬生生挣开了“{n.status.label}”（头目只能被困住一轮）")
     return facts
 
 
@@ -3522,11 +3531,14 @@ def do_give(cur: Cursor, player: Player, view: RoomView, a: Give) -> list[str]:
 # 铁匠升级武器：每级伤害 +1，名字后面标 +N。升到第 N 级有 N × UPGRADE_BREAK_STEP 的几率失败（最多 UPGRADE_BREAK_MAX），
 # 失败不会碎，而是退一级（+3 升 +4 失败变 +2，+0 失败还是 +0），钱照收。
 # 等级不封顶。费用是升级后和升级前建议价的差（至少 UPGRADE_MIN_COST），跟着伤害指数涨。
-# 用一块奥利哈刚（UPGRADE_ORE）这次必定成功，钱照付
+# 用奥利哈刚（UPGRADE_ORE）：钱照付、照样掷骰，但失败不掉级、矿石也不用掉，成功那次才用掉，一块矿保证一级。
+# 莉娜的淬火油（UPGRADE_OIL，好感 40 的回礼）：这一次必定成功，不收钱。等级上限 UPGRADE_MAX
 UPGRADE_BREAK_STEP = 0.10
 UPGRADE_BREAK_MAX = 0.90
 UPGRADE_MIN_COST = 5
 UPGRADE_ORE = "ore"
+UPGRADE_OIL = "lina_oil"
+UPGRADE_MAX = 10
 
 
 STAT_WORDS = {"damage": "伤害", "defense": "防御"}
@@ -3578,7 +3590,10 @@ def do_upgrade(cur: Cursor, player: Player, view: RoomView, a: Upgrade) -> list[
         items = [_inv_item(cur, view, player, a.item)] if a.item else gear
         if not items or not all(upgrade_stat(i) for i in items):
             raise ActionError(f"{player.name}身上没有能升级的武器、防具")
-        return [f"{npc.name}看了看{player.name}的{i.name}：{_upgrade_text(i)}" for i in items]
+        disc = UPGRADE_DISCOUNT if "discount" in perks(cur, player.id, npc.template.id) else 1.0
+        return [f"{npc.name}看了看{player.name}的{i.name}：" + (f"已经 +{UPGRADE_MAX}，锻到头了" if i.props.get("plus", 0) >= UPGRADE_MAX
+                                                             else _upgrade_text(i, max(1, round(upgrade_terms(i)[1] * disc)))
+                                                             + ("（熟客价九折）" if disc < 1 else "")) for i in items]
     if a.item:
         item = _inv_item(cur, view, player, a.item)
         if not upgrade_stat(item):
@@ -3591,35 +3606,54 @@ def do_upgrade(cur: Cursor, player: Player, view: RoomView, a: Upgrade) -> list[
         if asked is None and len(gear) != 1:
             if not gear:
                 raise ActionError(f"{player.name}身上没有能升级的武器、防具")
-            return ([f"{npc.name}问{player.name}要升级哪一件："] + [f"{i.name}：{_upgrade_text(i)}" for i in gear]
+            disc = UPGRADE_DISCOUNT if "discount" in perks(cur, player.id, npc.template.id) else 1.0
+            return ([f"{npc.name}问{player.name}要升级哪一件："]
+                    + [f"{i.name}：{_upgrade_text(i, max(1, round(upgrade_terms(i)[1] * disc)))}" for i in gear]
                     + [f"{player.name}说「升级」加名字，{npc.name}就动手"])
         item = asked or gear[0]
     stat = upgrade_stat(item)
     now = getattr(item, stat)
     level, cost, risk = upgrade_terms(item)
+    if level > UPGRADE_MAX:
+        raise ActionError(f"{item.name}已经 +{UPGRADE_MAX} 了，{npc.name}说再锻就要废了")
     if "discount" in perks(cur, player.id, npc.template.id):
         cost = max(1, round(cost * UPGRADE_DISCOUNT))
     key = f"upgrade:{item.id}"
     terms = _upgrade_text(item, cost)
     ore = next((i for i in view.inventory if i.template.id == UPGRADE_ORE), None)
+    oil = next((i for i in view.inventory if i.template.id == UPGRADE_OIL), None)
     if a.ore and ore is None:
         raise ActionError(f"{player.name}身上没有奥利哈刚矿石")
+    if a.oil:
+        # 莉娜的淬火油：必定成功，不收钱
+        if oil is None:
+            raise ActionError(f"{player.name}身上没有莉娜的淬火油")
+        _consume(cur, oil)
+        name = re.sub(r" \+\d+$", "", item.name) + f" +{level}"
+        cur.execute("update item_instances set props = props || %s where id = %s",
+                    (Jsonb({"plus": level, stat: now + 1, "name": name}), item.id))
+        return [f"{player.name}递上莉娜的淬火油，{npc.name}把{item.name}烧红了往油里一浸，滋的一声冒起白烟",
+                f"升级成功：{item.name}变成了{name}，{STAT_WORDS[stat]} {now + 1}（淬火油用掉了，没收钱）"]
     if cost > player.gold:
         raise ActionError(f"{npc.name}看了看{player.name}的{item.name}：{terms}。{player.name}身上只有 {player.gold} 金币，不够")
     if a.ore is None and ore is not None and level > 1 and key not in offers:
         # 这次失败会退级，兜里又有矿石：先问一句用不用，回"用""不用"才动手
         _put_offer(cur, player.id, npc, key, cost)
         return [f"{npc.name}看了看{player.name}的{item.name}：{terms}",
-                f"{npc.name}瞥见{player.name}带着奥利哈刚矿石：把它锻进去，这次一定成功（钱照付，矿石用掉）",
+                f"{npc.name}瞥见{player.name}带着奥利哈刚矿石：锻进去的话失败也不会掉级，矿石成功了才用掉（钱照付）"
+                + (f"；还有莉娜的淬火油，用了必定成功、不收钱（说「用淬火油」）" if oil else ""),
                 f"{player.name}说「用」或者「不用」，{npc.name}就动手"]
     patron = _pay(cur, player, cost, npc)
     cur.execute("update player_npc_relations set offers = offers - %s where player_id = %s and npc_template = %s",
                 (key, player.id, npc.template.id))
     facts = [f"{player.name}付了 {cost} 金币，{npc.name}把{item.name}放进炉火里重新锻打（{terms}）"] + patron
     base = re.sub(r" \+\d+$", "", item.name)
+    if a.ore and _roll(risk):
+        # 有矿石护着：失败不掉级，矿石也没化开，下次还能用
+        return facts + [f"{npc.name}骂了一句：火候不对，再来。奥利哈刚没化开，{item.name}也没掉级（矿石还在，钱没退）"]
     if a.ore:
         _consume(cur, ore)
-        facts.append(f"{player.name}递上一块奥利哈刚矿石，{npc.name}把它熔了进去，这次不会失败")
+        facts.append(f"{player.name}递上的奥利哈刚矿石化进了铁水里")
     elif _roll(risk):
         down = max(0, level - 2)            # 现在是 level-1，失败退一级
         if down == level - 1:
@@ -3669,8 +3703,9 @@ def do_transfer(cur: Cursor, player: Player, view: RoomView, a: Transfer) -> lis
     npc = _lina(cur, view, player, a.target, "transfer", "传承锻造")
     src, dst = _inv_item(cur, view, player, a.item), _inv_item(cur, view, player, a.to)
     stat = upgrade_stat(src)
-    if not stat or upgrade_stat(dst) != stat:
-        raise ActionError("传承只能在同一类装备之间：武器给武器，带防御的防具给防具")
+    ranged = lambda i: bool(_prop(i, "ranged") or _prop(i, "loads"))
+    if not stat or upgrade_stat(dst) != stat or ranged(src) != ranged(dst):
+        raise ActionError("传承只能在同一类装备之间：近战武器给近战武器、远程给远程、带防御的防具给防具")
     have, now = src.props.get("plus", 0), dst.props.get("plus", 0)
     if have <= now:
         raise ActionError(f"{src.name}的强化（+{have}）不比{dst.name}（+{now}）高，没什么可传的")
@@ -3697,6 +3732,10 @@ def do_reroll(cur: Cursor, player: Player, view: RoomView, a: Reroll) -> list[st
     item = _inv_item(cur, view, player, a.item)
     old = _prop(item, "effects") or []
     kind = item.template.type
+    if item.template.props.get("cursed"):
+        raise ActionError(f"{npc.name}摇摇头：{item.name}上的诅咒长在铁里，重淬也淬不掉，只会把诅咒一起锻进去")
+    if item.template.id in dungeon.boss_items():
+        raise ActionError(f"{npc.name}摸着{item.name}看了半天：这是头目身上的东西，那股劲是它自己的，重淬会毁了它")
     if not old or kind not in ("weapon", "armor"):
         raise ActionError(f"{item.name}身上没有特效，没什么可刷的（只有带特效的武器、防具能刷）")
     times = item.props.get("rerolls", 0)
@@ -3708,7 +3747,7 @@ def do_reroll(cur: Cursor, player: Player, view: RoomView, a: Reroll) -> list[st
     new = random.sample(pool, len(old))
     cur.execute("update item_instances set props = props || %s where id = %s",
                 (Jsonb({"effects": new, "rerolls": times + 1}), item.id))
-    return ([f"{player.name}付了 {price} 金币（这件第 {times + 1} 次刷），{npc.name}把{item.name}烧红了重新锻打，"
+    return ([f"{player.name}付了 {price} 金币（这件第 {times + 1} 次刷），{npc.name}说了声「重淬」，把{item.name}烧红了重新锻打，"
              f"原来的特效随着火星散掉了"] + patron
             + [f"{item.name}新的特效：{'；'.join(_effect_line(e) for e in new)}"])
 
@@ -3722,7 +3761,8 @@ def _exclusive_blade(cur: Cursor, player: Player, npc: Npc) -> list[str]:
     props = {"damage": dmg, "effects": [affix] if affix else []}
     cur.execute("insert into item_instances (template_id, player_id, props) values ('lina_blade', %s, %s)",
                 (player.id, Jsonb(props)))
-    return [f"莉娜打的剑：伤害 {dmg}" + (f"，{_effect_line(affix)}" if affix else "")]
+    return [f"无铭：伤害 {dmg}（跟着走过的最深层数一起长，最多 12）" + (f"，{_effect_line(affix)}" if affix else ""),
+            f"{npc.name}只说了一句：名字，你起"]
 
 
 def do_rename(cur: Cursor, player: Player, view: RoomView, a: Rename) -> list[str]:
@@ -4428,6 +4468,14 @@ def _effect_line(e: dict) -> str:
     return "，".join(p for p in pre if p) + ("：" if any(pre) else "") + what + tail
 
 
+# 诺艾尔（props.lore）平时就能口头讲地牢怪物的打法：客人问起怪物怎么打，她照这个说；60 好感的图鉴解锁的是侧栏里的数字
+MONSTER_LORE = ("远程的怪（投石手、弓手、弩手、猎手、喷毒蛙、墨咒书记）不会靠近，被贴身会往后跳，最多跳两次就撞墙了；"
+                "冲上去一句话里靠近加砍，砍中了它就跳不开；有掩体的地方它射不准，烟雾弹也能挡。"
+                "会治疗的招魂修女要先杀，或者耗光她的念珠（最多治三次）。狗头人盾卫护着身后的同伴，同伴死光它就跑。"
+                "狼、恶犬、石像鬼、头目鼻子灵，偷袭不了；野兽可以试着安抚。亡灵怕圣水和银器，怕光的怪在亮处软弱，"
+                "带火把能压它们，但远程的怪会先射拿火把的人")
+
+
 def monster_notes(npc: Npc) -> str:
     """诺艾尔的怪物图鉴：怪的习性，玩家点怪看"""
     p = npc.template.props
@@ -4872,14 +4920,20 @@ def return_gift(conn: Connection, player_id: UUID, npc: Npc) -> list[ActionResul
         return [ActionResult(action="gift_back", success=True, facts=facts)]
 
 
+# 服务类的本事（熟客价、传承锻造、刷新词条、卖地图残片）要当前好感还在那一档以上：把人惹毛了就没了；
+# 知识类的（辨咒笔记、怪物图鉴）学会了就是会了
+SERVICE_PERKS = {"discount", "transfer", "reroll", "map_scrap"}
+
+
 def perks(cur: Cursor, player_id: UUID, npc_template: Optional[str] = None) -> set[str]:
     """这个玩家从回礼里解锁了哪些本事（npc_template 给了就只看这个 NPC 的）"""
-    cur.execute("""select r.gifts, t.props->'return_gifts' as table from player_npc_relations r
+    cur.execute("""select r.gifts, r.affinity, t.props->'return_gifts' as table from player_npc_relations r
                    join npc_templates t on t.id = r.npc_template
                    where r.player_id = %s and cardinality(r.gifts) > 0 and t.props ? 'return_gifts'"""
                 + (" and r.npc_template = %s" if npc_template else ""),
                 (player_id, npc_template) if npc_template else (player_id,))
-    return {g["perk"] for r in cur.fetchall() for t, g in (r["table"] or {}).items() if int(t) in r["gifts"] and g.get("perk")}
+    return {g["perk"] for r in cur.fetchall() for t, g in (r["table"] or {}).items()
+            if int(t) in r["gifts"] and g.get("perk") and (g["perk"] not in SERVICE_PERKS or r["affinity"] >= int(t))}
 
 
 def _once_per_floor(cur: Cursor, player: Player, key: str) -> bool:

@@ -114,7 +114,8 @@ class Upgrade(BaseModel):
     action: Literal["upgrade"]
     item: Optional[str] = None          # 背包里武器的 ref；不填就是没说哪把
     target: str                         # 铁匠 NPC 的 ref
-    ore: Optional[bool] = None          # 用不用奥利哈刚：True 用，False 不用，None 没说
+    ore: Optional[bool] = None          # 用不用奥利哈刚（失败不掉级，成功那次才用掉）：True 用，False 不用，None 没说
+    oil: bool = False                   # 用莉娜的淬火油（必定成功、不收钱）
     quote: bool = False                 # 只问升级要多少钱，不动手
 
 

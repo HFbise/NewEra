@@ -73,6 +73,11 @@ def _pick(entries: list[dict], depth: int) -> Optional[str]:
     return random.choices([e["item"] for e in ok], [e.get("weight", 1) for e in ok])[0] if ok else None
 
 
+def boss_items() -> set[str]:
+    """头目的招牌装备（二选一必掉的、额外掉的）：刷新词条刷不了"""
+    return {i for b in loot_data()["bosses"].values() for i in b.get("pick_one", []) + [e["item"] for e in b.get("extra", [])]}
+
+
 def _drops(kind: str, rank: str, theme: str, depth: int, stair: bool = False) -> list[str]:
     """一只怪身上带的东西（打死掉在地上）。精英专属掉率 × elite_mult，另外有几率从通用池抽；头目二选一必掉；
     楼梯间守卫（stair）一件都没掷中就从 stair_guard 补给池保底抽一件"""
@@ -577,6 +582,10 @@ def _arrive(cur: Cursor, player, run: UUID, depth: int, above: Optional[str], on
 def arrived(cur: Cursor, names: list[str], depth: int) -> list[str]:
     """这些人到了第 depth 层：更新最深层数；这层有传送石就记进他们能传送的层（players.waypoints）"""
     cur.execute("update players set deepest_floor = greatest(deepest_floor, %s) where name = any(%s)", (depth, names))
+    # 莉娜打的专属剑（lina_blade）跟着人一起变强：伤害 5 + 最深层数/3（最多 12），再加升级的等级
+    cur.execute("""update item_instances i set props = i.props || jsonb_build_object('damage',
+                     least(12, 5 + p.deepest_floor / 3) + coalesce((i.props->>'plus')::int, 0))
+                   from players p where i.player_id = p.id and p.name = any(%s) and i.template_id = 'lina_blade'""", (names,))
     if not is_stone(depth):
         return []
     cur.execute("""update players set waypoints = array_append(waypoints, %s)

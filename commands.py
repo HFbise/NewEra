@@ -87,6 +87,15 @@ def upgrade_request(view: RoomView, t: str, smith: str) -> Optional[dict]:
         return {"action": "upgrade", "ore": True}
     if re.fullmatch(rf"不用(?:{ORE_RE}(?:了|吧)?)?", t):
         return {"action": "upgrade", "ore": False}
+    if o := re.fullmatch(r"(?:我要|我想|帮我|给我|请|麻烦|想)*\s*(?:用|拿)\s*(?:莉娜的)?淬火油\s*(?:来)?(?:升级|强化|锻造|改良|打磨)?\s*(.*?)\s*(?:吧)?", t):
+        out = {"action": "upgrade", "oil": True}
+        if o[1].strip():
+            weapons = [i for i in view.inventory if i.template.type == "weapon" or i.template.type == "armor" and i.defense > 0]
+            pick = named_weapon(weapons, o[1])
+            if pick is None:
+                raise _Unsure(o[1])
+            out["item"] = {uid: ref for ref, uid in view.refs.items()}[pick.id]
+        return out
     m = re.fullmatch(rf"(?:我要|我想|帮我|给我|请|麻烦|想)*\s*(?:(用|拿|不用)\s*{ORE_RE}\s*)?(?:来)?(?:升级|强化|锻造|改良|打磨)\s*(.*?)"
                      rf"\s*(?:(?:，|,)?\s*((?:不)?用{ORE_RE}))?\s*(?:吧|一下)?", t)
     if not m:
@@ -242,7 +251,7 @@ def _parse_one(view: RoomView, t: str) -> dict:
             and re.search(r"摔|扔|丢|砸|用|点", t):
         return {"action": "use", "item": {uid: ref for ref, uid in view.refs.items()}[smoke.id]}
     # 泼迷药："把特制迷药泼向哥布林""对哥布林用特制迷药"
-    if (drug := next((i for i in view.inventory if "drug" in i.template.props and (i.name in t or "迷药" in t)), None)) \
+    if (drug := next((i for i in view.inventory if "drug" in i.template.props and (i.name in t or "迷药" in t or "一口倒" in t)), None)) \
             and re.search(r"泼|洒|用|喂|倒", t):
         foe = next((n for n in view.npcs if n.template.hostile and (n.name in t or n.name[-2:] in t)), None)
         return {"action": "use", "item": {uid: ref for ref, uid in view.refs.items()}[drug.id],
