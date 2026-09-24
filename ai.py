@@ -561,7 +561,7 @@ DEAL_RE = re.compile(r"成交|就它了|就要|给我来|来一|来杯|来瓶|�
 
 # 物品效果的说明（"（回 1 点血）""（伤害 4）"），叙事不该念给玩家听；台词里念了游戏数值的那一句去掉
 EFFECT_RE = re.compile(r"（[^（）]*(?:点血|伤害|防御|有毒|药倒|没什么效果)[^（）]*）")
-STAT_RE = re.compile(r"[^，。！？,.!?“”'‘’]*(?:回|恢复|加|掉)\s*[0-9一二三四五六七八九十两]+\s*点(?:血|HP|生命)[^，。！？,.!?“”'‘’]*[，,]?")
+STAT_RE = re.compile(r"[^，。！？,.!?“”'‘’]*(?:回|恢复|加|掉)\s*[0-9一二三四五六七八九十两]+\s*(?:点|%|％)\s*(?:血|HP|生命|体力)[^，。！？,.!?“”'‘’]*[，,]?")
 TRADE_ACTIONS = {"quote", "npc_sell", "npc_create", "npc_give", "pay"}
 
 
@@ -734,6 +734,15 @@ FEELINGS = {
 }
 
 
+def _goods_label(s: dict) -> str:
+    """货单上一样东西给台词看的说法：稀罕货、手边碰巧有的（可能有）、普通货"""
+    if s.get("rare"):
+        return f"{s['name']}（难得进到的稀罕货，只有这一件，价钱固定 {s['base_price']} 金币）"
+    if s.get("maybe"):
+        return f"{s['name']}（不是店里的货，手边碰巧有的，只剩 {s['maybe']} 件，按你的性子开价，大概 {s['base_price']} 金币）"
+    return f"{s['name']}（建议价 {s['base_price']} 金币）"
+
+
 def npc_line(db, view: RoomView, text: str, results: list[ActionResult], npc: Npc, affinity: int, memory: str,
              recent: Optional[list[str]] = None, quests: Optional[list[tuple[str, dict]]] = None,
              sells: Optional[list[dict]] = None, made_before: Optional[list[dict]] = None,
@@ -745,13 +754,17 @@ def npc_line(db, view: RoomView, text: str, results: list[ActionResult], npc: Np
         shops = engine.shop_directory(conn, npc)
     own = {s["name"] for s in sells or []} | {g["name"] for g in made_before or []}
     other = _other_shop_ask(text, shops, own)
+    with db.connection() as conn:
+        before = engine.last_bought(conn, view.player.id, npc)
+        gone = [g for g in engine.maybe_gone(conn, npc) if g in text or (len(g) > 1 and g[1:] in text) or g == before]
+    # 这回合刚卖掉的最后一件不算"没了"：不然嘴上说卖完了，手上又卖给了他
+    gone = [g for g in gone if not any(g in f for r in results if r.success and r.action == "npc_sell" for f in r.facts)]
     # 第一次见面、或者问起能干什么：把能办的事介绍一遍。这回合在交委托、做买卖就先办正事，不插介绍
     busy = any(r.success and (r.action in TRADE_ACTIONS or r.action in ("quest", "give", "sell", "upgrade", "rest", "gift_back"))
                for r in results)
     intro = bool(services) and not busy and (not memory or bool(ASK_SERVICE_RE.search(text)))
     this_turn = "\n".join("；".join(EFFECT_RE.sub("", f) for f in r.facts) for r in results if r.success) or "没什么特别的"
-    goods = "、".join([f"{s['name']}（{'难得进到的稀罕货，只有这一件，价钱固定 ' if s.get('rare') else '建议价 '}{s['base_price']} 金币）"
-                      for s in sells or []]
+    goods = "、".join([_goods_label(s) for s in sells or []]
                      + [g["name"] for g in made_before or []]) or "无"
     tasks = "；".join(f"{q['hook']}（{QUEST_STAGES[st]}）" if st != "closed" else f"{q['after']}"
                      for st, q in quests or []) or "没有"
@@ -787,8 +800,10 @@ def npc_line(db, view: RoomView, text: str, results: list[ActionResult], npc: Np
                "但你是有礼貌的人，最后一定要真心道谢（比如“……但、但还是谢谢你”），不能怪他</important>"
                if any(engine.RELUCTANT_FACT in f for r in results if r.success for f in r.facts) else "")
             + (f"\n\n<important>{FEELINGS[feeling]}</important>" if (feeling := engine.affinity_word(affinity)) in FEELINGS else "")
+            + (f"\n\n<important>他要的{'、'.join(gone)}你手边的已经卖完了，这回没有：直接告诉他没了"
+               + (f"，想要可以去找{other[1]['npc']}" if other else "") + "</important>" if gone else "")
             + (f"\n\n<important>他要的{other[0]}你这儿不卖，是{other[1]['npc']}（{other[1]['room']}）卖的："
-               f"这一句按你的说话方式告诉他去找{other[1]['npc']}买，不要报价，也不要说你卖过</important>" if other else "")
+               f"这一句按你的说话方式告诉他去找{other[1]['npc']}买，不要报价，也不要说你卖过</important>" if other and not gone else "")
             + "".join(f"\n\n<important>你们的交情到了这一步，你这回合要送他一份回礼：{f.split('：', 1)[1].split('（回礼', 1)[0]}。"
                       "按你的性格和对他的感情把它交给他（嘴硬的也可以别扭地塞过去），说说这是什么、有什么用，别说成是交易"
                       + (f"。送的时候的样子：{r.facts[1]}" if len(r.facts) > 1 and r.facts[1].startswith(npc.name) else "")
@@ -802,7 +817,7 @@ def npc_line(db, view: RoomView, text: str, results: list[ActionResult], npc: Np
     owned = {i.name for i in view.inventory}
 
     def check(out: NpcLine, last: bool) -> NpcLine:
-        if not last and other and (PRICE_RE.search(out.line) and other[0][-1] in out.line
+        if not last and other and not gone and (PRICE_RE.search(out.line) and other[0][-1] in out.line
                                    or other[1]["npc"] not in out.line and other[1]["room"] not in out.line):
             raise ValueError(f"{other[0]}你不卖，是{other[1]['npc']}（{other[1]['room']}）卖的：这一句要告诉他去那儿找{other[1]['npc']}买，"
                              "不要报价，也不要说你卖过")
@@ -998,6 +1013,18 @@ def made_text(made_before: Optional[list[dict]]) -> str:
 
 
 COMMON_TAIL = set("把子的块条个只件瓶杯")
+WANT_FILLER = r"[一二两三几个杯碗瓶份捆条把块些点的来要买再样同子儿东西，。！？ 吧啊呢嗯有卖我你吗还给那这就它好行]"
+GENERIC_WANT = set("喝吃饮食酒药")
+
+
+def _asked_for(text: str, name: str, offered: bool, before: Optional[str]) -> bool:
+    """客人这句话要的是不是这件货。点了名的（去掉量词、语气词后剩下的字对得上；"血药"的"药"是泛称不算，
+    不然解酒药也对得上）只看名字；只说了"喝的""来点药"这种泛称的都算；什么都没说（"再来一捆""好"）
+    只能是之前报过价的、或者上次在这儿买的那样。不然她绳子卖完了会随手拿干粮顶上"""
+    named = set(re.sub(WANT_FILLER, "", text))
+    if specific := named - GENERIC_WANT:
+        return bool(specific & set(name))
+    return bool(named) or offered or name == before
 
 
 def _other_shop_ask(text: str, shops: list[dict], own: set[str]) -> Optional[tuple[str, dict]]:
@@ -1049,6 +1076,7 @@ def decide_give(db, view: RoomView, text: str, npc: Npc, giveable: list[ItemInst
 
     with db.connection() as conn:
         other = _other_shop_ask(text, engine.shop_directory(conn, npc), {x["name"] for x in sells or []})
+        before = engine.last_bought(conn, view.player.id, npc)
 
     def check(out: GiveDecision, last: bool) -> GiveDecision:
         if out.give is not None:
@@ -1083,6 +1111,10 @@ def decide_give(db, view: RoomView, text: str, npc: Npc, giveable: list[ItemInst
         # 客人要的是别家店的货（找麦琪要绳子）：她不卖，也不能拿自己的货顶替
         if other and chosen and not (set(other[0]) - COMMON_TAIL) & set(chosen):
             out.give = out.create = out.sell = None
+        # 没说要什么（"再来一捆""再来一杯"）：只能是上次在这儿买的那样，不能随手拿别的顶替（绳子卖完了卖了个面包）
+        # 只看玩家原话（模型自己填的 wants 会顺着它想卖的写）；只说了"喝的""吃的"这种泛称的不拦
+        if out.sell and not _asked_for(text, sell_refs[out.sell]["name"], sell_refs[out.sell]["id"] in offers, before):
+            out.sell = None
         return out
 
     out, usage = _call(db, view.player.id, "give", GIVE_SYSTEM, user, GiveDecision, 448, check)
@@ -1345,6 +1377,10 @@ def narrate(db, view: RoomView, text: str, results: list[ActionResult],
                      + "\n".join(checklist) + "\n</must_mention>")
 
     player_said = text                    # check 里的 text 另有用处，先存一份玩家原话
+    before = None
+    if npc:
+        with db.connection() as conn:
+            before = engine.last_bought(conn, view.player.id, npc)
     # 能报价的东西：墙上的货、开过价的现做东西
     goods = [s["name"] for s in sells or []] + [v["spec"]["name"] for k, v in (offers or {}).items()
                                                  if k.startswith("made:") and v.get("spec")]
@@ -1418,7 +1454,12 @@ def narrate(db, view: RoomView, text: str, results: list[ActionResult],
             score = {key: (want == n) * 100 + (n in want or want in n) * 10 + len(set(want) & set(n) - set("的"))
                      for key, n in pool_}
             best = max(score, key=score.get) if score else None
-            if best and score[best] >= 2:
+            if best and score[best] >= 2 and not _asked_for(player_said, dict(pool_)[best], best in (offers or {}), before):
+                # 他没要这个（找她要血药，她顺手递了瓶解酒药）：只能报价、问他要不要，不能直接塞给他收钱
+                if not last:
+                    raise ValueError(f"他没要{dict(pool_)[best]}，不能直接递给他收钱：想推荐就报个价问他要不要，npc_handed 留空")
+                out.npc_handed = None
+            elif best and score[best] >= 2:
                 handed.key = best
                 handed.price = max(0, handed.price)
             elif not last:

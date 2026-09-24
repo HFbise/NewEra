@@ -326,6 +326,19 @@ items:
     type: consumable
     heal: 10
     props: {price: 24, kind: potion}
+  trail_rations:
+    name: 干粮
+    description: 一包用油纸裹着的熏肉干和硬饼，麦琪说是给"出门送死的杂鱼"备的，放一个月也坏不了。
+    type: consumable
+    heal: 5
+    props: {price: 3, kind: food}
+  antidote:
+    name: 解毒剂
+    description: 一只贴着手写标签的小玻璃瓶，标签上用很小的字写着配方出自哪本书的第几页。喝了解毒。
+    type: consumable
+    heal: 1
+    props: {price: 5, cure: poison, kind: potion}
+
   # 回礼：好感到了某一档，来聊天时 NPC 送的东西（见各 NPC 的 return_gifts）
   maggie_trap_map:
     name: 麦琪的地牢手记
@@ -484,7 +497,9 @@ npcs:
         80: {item: maggie_crossbow, text: 她吧台下那把上了弦的轻弩（单手就能端平，远近一样准，射完要重新上弦）}
         100: {item: maggie_flask, text: 一只装着她私酿的旧锡酒壶，壶底偷偷刻着"回头见"和一颗小小的心（喝一口回满血，偶尔浑身是劲）}
       # 吧台上的货，价钱由 AI 按建议价浮动
-      sells: [dwarf_stout, elf_mead, dragon_breath, sober_potion]
+      sells: [dwarf_stout, elf_mead, dragon_breath, sober_potion, trail_rations]
+      # 可能有：固定货单之外手边说得过去的零碎，说有就能卖，限量（每样每 30 分钟补 1 到 2 件），价钱是参考价的 1.3 到 2 倍（engine.maybe_stock）
+      maybe_sells: [rope, torch, bread, herb]      # 后厨的零碎，药草是她平时收来的
       eject_to: south
       # 店里有人倒下时扶起来回满血，按倒下的原因说一句（{name} 倒下的人，{by} 打倒他的怪、人或者吃下的东西）
       revive_lines:
@@ -498,7 +513,9 @@ npcs:
     persona: 性格直率寡言，日常极度省字，说话简短冷淡甚至只用单字回复。但对锻造拥有狂热的痴迷，一旦话题涉及武器、护甲、矿石素材或锻造工艺，瞬间两眼放光、语速极快且滔滔不绝，立刻切换成狂热的技术宅模式。眼光极毒，能一眼看穿玩家身上装备的材质缺陷与锻造瑕疵。崇尚优质金属与精湛工艺，对好兵器比对人更有耐心，最讨厌糟蹋武器和不懂装懂的菜鸟。
     props:
       # 能卖的东西（物品 id），价钱、卖不卖、打不打折都由 AI 看人设和心情定
-      sells: [iron_axe, forge_knife, sickle, wooden_shield, leather_cap, leather_armor]
+      sells: [iron_axe, forge_knife, sickle, wooden_shield, leather_cap, leather_armor,
+              whetstone, hand_crossbow, lead_shot, grapple_bolt]     # 铁打的：磨刀石、手弩、铅弹、钩索箭（弓不是铁匠的活，只从地牢出）
+      maybe_sells: [torch, bandage]                # 炉子边的火把，给自己烫伤备的布条
       # 现打武器，伤害最多 4（墙上的铁斧是 5）
       creates:
         weapon: {damage: 4}
@@ -524,7 +541,9 @@ npcs:
     persona: 性格极度内向害羞且胆小怕人，说话声音细小如蚊蝇，面对陌生人时容易紧张到结巴，稍微受到惊吓就会下意识用怀里的书挡住脸或缩进柜台下。极度嗜书如命，把杂货铺当成自己的私人藏书室。虽然生人勿近，但凭借浩瀚的阅读量，对店里各种稀奇古怪的杂货、古董与魔法素材的来历与用途了如指掌。只要客人保持距离、语气温和，或是聊起书里的奇闻异事，她会慢慢放下戒心，小声且条理分明地介绍商品。最讨厌嘈杂粗鲁的举动，对懂得爱惜书籍的人天然有好感。
     props:
       # 货架上的东西，价钱由 AI 按建议价浮动
-      sells: [rope, torch, tent, recall_crystal, blood_potion, fire_arrow, lead_shot, smoke_bomb]
+      sells: [rope, torch, tent, recall_crystal, blood_potion,
+              bandage, lamp_oil, antidote, light_scroll, smoke_bomb, sling, fire_arrow]   # 探险杂货、解状态、书上学来的小玩意
+      maybe_sells: [holy_water, bread, herb]      # 圣水说是照古书的方子做的，只偶尔有
       # 偶尔进的稀罕货（地牢里的礼物道具）：客人问有什么卖的时判一次 chance，中了这一小时里有一件，
       # 价钱固定是参考价 × markup，只有一件、卖掉就没了；没问就不提（engine.rare_stock）。
       # reluctant 里的她舍不得卖，卖的时候台词不一样；卖出去的书送回给她，她认得出来

@@ -4117,18 +4117,22 @@ def shop_directory(conn: Connection, npc: Npc) -> list[dict]:
 def sellable(conn: Connection, npc: Npc, rare: Optional[str] = None, player_id: Optional[UUID] = None) -> list[dict]:
     """NPC 能卖的货（world.yaml 的 sells），给交易 AI 看：物品 id、名字、说明、伤害防御、按效果算的原价。
     rare 是这会儿有的稀罕货（rare_stock），标 rare，价钱固定；给了 player_id 就加上回礼解锁给他的货"""
-    extra = []
-    if player_id:
-        with conn.transaction():
-            extra = perk_sells(_cursor(conn), player_id, npc)
-    ids = npc.template.props.get("sells", []) + extra + ([rare] if rare else [])
+    extra, maybe = [], {}
+    with conn.transaction():
+        cur = _cursor(conn)
+        if player_id:
+            extra = perk_sells(cur, player_id, npc)
+        maybe = {i: n for i, n in maybe_stock(cur, npc).items() if n > 0 and _is_maybe(npc, i)}
+    ids = npc.template.props.get("sells", []) + extra + ([rare] if rare else []) + list(maybe)
     if not ids:
         return []
     with conn.transaction():
         cur = _cursor(conn)
         cur.execute("select id, name, description, type, damage, defense, heal, props->'price' as price"
                     " from item_templates where id = any(%s)", (ids,))
-        return [r | ({"base_price": _rare_price(npc, r), "rare": True} if r["id"] == rare else {"base_price": base_price(r)})
+        return [r | ({"base_price": _rare_price(npc, r), "rare": True} if r["id"] == rare
+                     else {"base_price": _maybe_price(r, None), "maybe": maybe[r["id"]]} if r["id"] in maybe
+                     else {"base_price": base_price(r)})
                 for r in cur.fetchall()]
 
 
@@ -4185,10 +4189,55 @@ def perk_sells(cur: Cursor, player_id: UUID, npc: Npc) -> list[str]:
     return [item for perk, item in PERK_SELLS.items() if perk in perks(cur, player_id, npc.template.id)]
 
 
+# "可能有"的货（props.maybe_sells）：固定货单之外，NPC 手边说得过去的零碎（麦琪后厨的绳子、莉娜炉边的火把）。
+# 说有就能卖，但限量：每样每次补货 MAYBE_STOCK 件，MAYBE_RESTOCK 秒补一次（存在 npcs.tally.maybe）；
+# 价钱在参考价的 MAYBE_BAND 倍之间，默认 MAYBE_PRICE 倍，按人设浮动（麦琪贪财往高了开，诺艾尔好砍价）。
+# 固定货单才是玩家能指望的，别家店的清单不会出现在"村里别的店卖什么"里
+MAYBE_STOCK = (1, 2)
+MAYBE_RESTOCK = 1800                    # 没沿用 NPC 的 restock：麦琪的 60 秒等于无限供应
+MAYBE_BAND = (1.3, 2.0)
+MAYBE_PRICE = 1.5
+
+
+def maybe_stock(cur: Cursor, npc: Npc) -> dict[str, int]:
+    """这个 NPC"可能有"的货现在各剩几件；到点了就补（每样 1 到 2 件）"""
+    items = npc.template.props.get("maybe_sells") or []
+    if not items:
+        return {}
+    cur.execute("select tally->'maybe' as m, extract(epoch from now())::float as now from npcs where id = %s", (npc.id,))
+    row = cur.fetchone()
+    stock, now = dict(row["m"] or {}), row["now"]
+    changed = False
+    for i in items:
+        if i not in stock or now - stock[i]["at"] > MAYBE_RESTOCK:
+            stock[i] = {"left": random.randint(*MAYBE_STOCK), "at": now}
+            changed = True
+    if changed:
+        cur.execute("update npcs set tally = tally || jsonb_build_object('maybe', %s::jsonb) where id = %s", (Jsonb(stock), npc.id))
+    return {i: stock[i]["left"] for i in items}
+
+
+def _maybe_take(cur: Cursor, npc: Npc, item: str, n: int) -> None:
+    cur.execute("""update npcs set tally = jsonb_set(tally, array['maybe', %s, 'left'],
+                     to_jsonb(greatest(0, (tally->'maybe'->%s->>'left')::int - %s))) where id = %s""", (item, item, n, npc.id))
+
+
+def _is_maybe(npc: Npc, key: str) -> bool:
+    return key in (npc.template.props.get("maybe_sells") or []) and key not in npc.template.props.get("sells", [])
+
+
+def _maybe_price(stats: dict, price: Optional[int]) -> int:
+    base = base_price(stats)
+    if not price or price <= 0:
+        return max(1, round(base * MAYBE_PRICE))
+    return max(math.ceil(base * MAYBE_BAND[0]), min(math.floor(base * MAYBE_BAND[1]), price))
+
+
 def _sells(cur: Cursor, player_id: UUID, npc: Npc) -> list[str]:
-    """这个客人能在 NPC 这儿买的货：墙上的 + 回礼解锁的 + 这会儿有的稀罕货"""
+    """这个客人能在 NPC 这儿买的货：墙上的 + 回礼解锁的 + 这会儿有的稀罕货 + "可能有"里还剩的"""
     rare = _rare_now(cur, player_id, npc)
-    return npc.template.props.get("sells", []) + perk_sells(cur, player_id, npc) + ([rare] if rare else [])
+    maybe = [i for i, n in maybe_stock(cur, npc).items() if n > 0 and _is_maybe(npc, i)]
+    return npc.template.props.get("sells", []) + perk_sells(cur, player_id, npc) + ([rare] if rare else []) + maybe
 
 
 def _sell_rare(cur: Cursor, player: Player, npc: Npc, template_id: str, name: str, price: int) -> list[str]:
@@ -4238,7 +4287,8 @@ def set_offer(conn: Connection, player_id: UUID, npc: Npc, key: str, price: int)
     offers = get_offers(conn, player_id, npc)
     with conn.transaction():
         unlocked = perk_sells(_cursor(conn), player_id, npc)
-    if key not in npc.template.props.get("sells", []) + unlocked and key not in offers:
+    maybe = _is_maybe(npc, key)
+    if key not in npc.template.props.get("sells", []) + unlocked and key not in offers and not maybe:
         return                              # 稀罕货不在这里：价钱固定，不砍价
     with conn.transaction():
         cur = _cursor(conn)
@@ -4247,7 +4297,7 @@ def set_offer(conn: Connection, player_id: UUID, npc: Npc, key: str, price: int)
         else:
             cur.execute("select damage, defense, heal, props->'price' as price from item_templates where id = %s", (key,))
             stats = cur.fetchone()
-        _put_offer(cur, player_id, npc, key, clamp_price(stats, price))
+        _put_offer(cur, player_id, npc, key, _maybe_price(stats, price) if maybe else clamp_price(stats, price))
 
 
 def npc_hand(conn: Connection, player_id: UUID, npc: Npc, key: str, price: int, affinity: int) -> ActionResult:
@@ -4275,6 +4325,12 @@ def npc_hand(conn: Connection, player_id: UUID, npc: Npc, key: str, price: int, 
                     patron = _pay(cur, player, price, npc)
                     return ActionResult(action="npc_sell", success=True,
                                         facts=_sell_rare(cur, player, npc, key, name, price) + patron)
+                if _is_maybe(npc, key):
+                    price = _maybe_price(stats, price if price > 0 else None)
+                    patron = _pay(cur, player, price, npc)
+                    _maybe_take(cur, npc, key, 1)
+                    cur.execute("insert into item_instances (template_id, player_id) values (%s, %s)", (key, player_id))
+                    return ActionResult(action="npc_sell", success=True, facts=[_deal(npc, player, name, price)] + patron)
             price = 0 if price <= 0 and can_gift(affinity) else clamp_price(stats, price if price > 0 else base_price(stats))
             patron = _pay(cur, player, price, npc)
             if key.startswith("made:"):
@@ -4311,13 +4367,20 @@ def npc_sell(conn: Connection, player_id: UUID, npc: Npc, template_id: str, pric
         offer = get_offers(conn, player_id, npc).get(template_id)
         with conn.transaction():
             cur = _cursor(conn)
+            maybe = _is_maybe(npc, template_id)
             if offer is None:
                 cur.execute("select damage, defense, heal, props->'price' as price from item_templates where id = %s",
                             (template_id,))
                 stats = cur.fetchone()
-                offer = {"price": clamp_price(stats, price or base_price(stats))}
+                offer = {"price": _maybe_price(stats, price) if maybe else clamp_price(stats, price or base_price(stats))}
             player = load_player(cur, player_id, lock=True)
             count = max(1, min(SELL_MAX_COUNT, count))
+            if maybe:
+                left = maybe_stock(cur, npc).get(template_id, 0)
+                if left <= 0:
+                    raise ActionError(f"{npc.name}手边的这个已经没了，要等她再弄到")
+                count = min(count, left)
+                _maybe_take(cur, npc, template_id, count)
             patron = _pay(cur, player, offer["price"] * count, npc)
             # 成交了这个报价就作废，再买要重新谈
             cur.execute("update player_npc_relations set offers = offers - %s where player_id = %s and npc_template = %s",
@@ -4826,6 +4889,28 @@ def memory_material(conn: Connection, player_id: UUID, npc_template: str) -> tup
                               order by id desc limit %s) t order by id""",
             (player_id, npc_template, NPC_SUMMARY_WINDOW))
         return (row["memory"] if row else ""), [f"[{ago(r['created_at'])}] {r['entry']}" for r in cur.fetchall()]
+
+
+def last_bought(conn: Connection, player_id: UUID, npc: Npc) -> Optional[str]:
+    """这个客人上次在这个 NPC 这儿买的东西（"再来一捆"说的就是它）"""
+    with conn.transaction():
+        cur = _cursor(conn)
+        cur.execute("""select entry from npc_memory_log where player_id = %s and npc_template = %s and entry like '%%卖给了%%'
+                       order by id desc limit 1""", (player_id, npc.template.id))
+        row = cur.fetchone()
+    m = re.search(rf"{re.escape(npc.name)}把(.+?)(?: ×\d+)?卖给了", row["entry"]) if row else None
+    return m[1] if m else None
+
+
+def maybe_gone(conn: Connection, npc: Npc) -> list[str]:
+    """"可能有"的货里这会儿卖完了的（名字）"""
+    with conn.transaction():
+        cur = _cursor(conn)
+        gone = [i for i, n in maybe_stock(cur, npc).items() if n <= 0]
+        if not gone:
+            return []
+        cur.execute("select name from item_templates where id = any(%s)", (gone,))
+        return [r["name"] for r in cur.fetchall()]
 
 
 def add_npc_log(conn: Connection, player_id: UUID, npc: Npc, entry: str) -> None:
