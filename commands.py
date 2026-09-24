@@ -203,6 +203,10 @@ def _parse_one(view: RoomView, t: str) -> dict:
         if (up := upgrade_request(view, t, smith.name)) is not None:
             return up | {"target": {uid: ref for ref, uid in view.refs.items()}[smith.id]}
 
+    # 驯兽："安抚狼""驯服巨鼠""安抚一下那只狼"（只对野兽有用，是不是野兽引擎查）
+    if m := re.fullmatch(r"(?:试着|试试|慢慢)?(?:安抚|驯服|驯养|平息|哄走|哄哄|安慰)\s*(?:一下)?\s*(?:那只|这只|那群|这群)?\s*(.+)", t):
+        return {"action": "tame", "target": _find(view, m[1], "npc")}
+
     # 地牢里听见怪声："循着声音去找""去看看是什么声音"
     if re.search(r"循.{0,2}声|顺着声音|找.{0,4}声音|声音.{0,6}(找|看看)", t):
         return {"action": "search", "description": "循着声音找过去"}

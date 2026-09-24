@@ -206,7 +206,7 @@ class AIAction(BaseModel):
     action: Literal["move", "look", "take", "drop", "use", "equip", "unequip", "attack", "talk", "give", "sell", "pay", "say",
                     "upgrade", "respawn", "stand", "rest", "camp", "teleport", "revive", "leave_party", "follow", "unfollow", "challenge", "accept_duel",
                     "decline_duel", "flee", "stunt", "struggle",
-                    "maneuver", "dodge", "hide", "search", "freeform", "reject"]
+                    "maneuver", "dodge", "tame", "hide", "search", "freeform", "reject"]
     direction: Optional[str] = None
     item: Optional[str] = None
     target: Optional[str] = None
@@ -283,6 +283,7 @@ INTENT_SYSTEM = """你是文字 MUD 游戏的指令解析器。读玩家的输�
   - status_label：状态的说法，简短，如"被石头砸晕了""被绳子捆住了"。泼酒、撒沙、撒石灰迷眼是短暂的 incapacitated，写"被迷了眼"这类，不要写成晕了，escape 填 1；escape：这个状态挣脱或醒来的难度 1 到 10（松松绕两圈是 1，捆得结结实实是 3，铁链锁住是 5）
 - struggle: description（第三人称简述怎么挣脱的），difficulty（这次挣脱或醒来的难度 1 到 10，看方法合不合理、状态有多严重）。玩家自己带着负面状态时想摆脱它就是 struggle；失去战斗能力时说什么做什么都算 struggle（挣扎着醒来）
 - maneuver: target（NPC 的 ref；决斗中靠近、退开对手就填对手的名字，距离看"决斗"那行），steps（整数格数，靠近填正数、退开填负数，每次最多 2 格：后退一步、挪开一点是 -1，拔腿往后跑、拉开距离是 -2，凑近一步是 1，冲上去是 2），description。同一个区域里走近、退开某个 NPC 都是 maneuver，不是 move；"冲上去砍它"是 maneuver 加 attack，"悄悄摸到它背后扭断脖子""绕过去把它打晕"是 maneuver（steps 填把距离缩到 0 的格数，最多 2）加 stunt。看"敌人"那行的距离，扭脖子、打晕、掐、割喉这类贴身动作，玩家说了摸过去、凑近、绕到背后，就先 maneuver
+- tame: target（野兽的 ref），description（怎么安抚的）。安抚、驯服、哄走野兽，让它不打了自己走开（只对野兽有用，引擎判驯兽）
 - dodge: description。闪避、闪躲、侧身躲开、护住要害准备挨打：这一下敌人更难打中
 - hide: description（第三人称简述怎么躲的），difficulty（隐匿的难度 1 到 10，看环境里有没有好藏身的地方、敌人离得多近）。躲起来、藏到树后、趴进草丛、屏住呼吸不让敌人发现
 - search: description（第三人称简述怎么找的）。四处搜寻、找找有没有哥布林、在草丛里翻找、采药、找药草、找找有没有能用的东西、循着声音去找声音的来源都是 search：能不能找到由引擎判定。地上已经列出来的东西直接 take，只是看看环境细节是 look

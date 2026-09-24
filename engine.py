@@ -26,7 +26,7 @@ from commands import REST_TALK_RE
 from schema import (
     ActionResult, Attack, Drop, Equip, Feature, Follow, Freeform, Give, ItemInstance, LeaveParty, Look,
     Move, Npc, OtherPlayer, Player, PlayerAction, Reject, Revive, Room, RoomExit, RoomView, Say, Status, Struggle,
-    Stunt, Take, Talk, Unfollow, Unequip, Use, dir_name, Dispenser, SLOT_CHOICES, SLOT_NAMES, Dodge, Hide, Maneuver, Search, Stealth,
+    Stunt, Take, Talk, Unfollow, Unequip, Use, dir_name, Dispenser, SLOT_CHOICES, SLOT_NAMES, Dodge, Hide, Maneuver, Search, Stealth, Tame,
     AcceptDuel, Challenge, DeclineDuel, Duel, Flee, SKILL_NAMES, Upgrade, Respawn, Stand, Rest, Pay, Camp, Teleport, Sell,
     Effect,
 )
@@ -965,7 +965,7 @@ def do_move(cur: Cursor, player: Player, view: RoomView, a: Move) -> list[str]:
             facts += dungeon.arrived(cur, names, dungeon.parse_room(to)[1]) + _torch_floor(cur, names, to)
     if spotted:
         facts.append(f"{'、'.join(spotted)}一下子就察觉到了来人")
-    return facts
+    return facts + _beast_hint(cur, to)
 
 
 def _keen_spotted(cur: Cursor, room_id: str) -> list[str]:
@@ -1812,10 +1812,15 @@ def _hurt_npc(cur: Cursor, player: Player, npc: Npc, dmg: int) -> tuple[list[str
     if hp > 0:
         cur.execute("update npcs set hp = %s where id = %s", (hp, npc.id))
         return facts, False
+    return facts + _npc_gone(cur, player, npc), True
+
+
+def _npc_gone(cur: Cursor, player: Player, npc: Npc, tamed: bool = False) -> list[str]:
+    """NPC 没了：被打倒，或者（野兽）被安抚走了。身上的东西掉在地上，击杀标记、金币照给"""
     cur.execute("update npcs set hp = 0, alive = false, died_at = now(), status = null where id = %s", (npc.id,))
     cur.execute("update item_instances set npc_id = null, room_id = %s where npc_id = %s",
                 (player.room_id, npc.id))
-    facts.append(f"{npc.name}被击败了")
+    facts = [f"{npc.name}平静下来，慢慢走开了" if tamed else f"{npc.name}被击败了"]
     flag = npc.template.props.get("on_death", {}).get("set_flag")
     if flag:
         # 同一房间的队友一起记上标记
@@ -1838,9 +1843,9 @@ def _hurt_npc(cur: Cursor, player: Player, npc: Npc, dmg: int) -> tuple[list[str
                        where id = %s or (party_id = %s and room_id = %s and hp > 0) returning name""",
                     (n, player.id, player.party_id, player.room_id))
         mates = [r["name"] for r in cur.fetchall() if r["name"] != player.name]
-        facts.append(f"{player.name}从{npc.name}身上摸到了 {n} 枚金币"
+        facts.append(f"{player.name}{'在' + npc.name + '趴过的角落里翻到了' if tamed else '从' + npc.name + '身上摸到了'} {n} 枚金币"
                      + (f"，{'、'.join(mates)}也各分到 {n} 枚" if mates else ""))
-    return facts, True
+    return facts
 
 
 def _hurt_player(cur: Cursor, target: Player, dmg: int, kind: str, by: str) -> tuple[list[str], bool]:
@@ -2189,6 +2194,45 @@ def do_maneuver(cur: Cursor, player: Player, view: RoomView, a: Maneuver) -> lis
     _save_stealth(cur, player, st)
     how = f"朝{npc.name}靠近了 {steps} 格" if steps > 0 else f"从{npc.name}身边退开了 {-steps} 格" if steps else f"在{npc.name}附近挪了挪"
     return [f"{player.name}{how}，现在离{npc.name} {distance_word(d)}"]
+
+
+# 驯兽：野兽（怪标了 animal）可以安抚，避开这一仗。难度 1 + 层数/6，精英 +1，头目安抚不了。
+# 成了这一群同种的野兽平静下来走开，金币、身上的东西照给；不成它们被激怒，马上扑上来先打一下
+def do_tame(cur: Cursor, player: Player, view: RoomView, a: Tame) -> list[str]:
+    npc = _room_npc(cur, view, player, a.target)
+    rank = npc.template.props.get("dungeon", {}).get("rank", "normal")
+    if not (npc.template.hostile and npc.template.props.get("animal")):
+        raise ActionError(f"{npc.name}不是野兽，安抚不了")
+    if rank == "boss":
+        raise ActionError(f"{npc.name}是这一层的头目，安抚不了")
+    pack = [n for n in _enemies(cur, player.room_id) if n.template.id == npc.template.id]
+    depth = npc.template.props.get("dungeon", {}).get("depth", 1)
+    ok, facts = _check(cur, player, view, "animal", 1 + depth // 6 + (1 if rank == "elite" else 0))
+    facts = [f"{player.name}{a.description or '放低身子、慢慢靠近，压着嗓子安抚'}{npc.name}"] + facts
+    if ok:
+        for n in pack:
+            facts += _npc_gone(cur, player, n, tamed=True)
+        return facts
+    # 没安抚住：被发现、贴到跟前，先挨一下
+    st = _stealth(player)
+    st.detected, st.hidden = True, False
+    facts.append(f"{npc.name}被激怒了，龇着牙扑了上来")
+    for n in pack:
+        _set_distance(st, n, 0)
+        if player.hp > 0:
+            facts += _npc_strike(cur, player, n, "抢先扑上来", MELEE_HIT[0])
+    _save_stealth(cur, player, st)
+    return facts
+
+
+def _beast_hint(cur: Cursor, room_id: str) -> list[str]:
+    """进门看到野兽：告诉玩家可以安抚避战（不然没人知道驯兽能这么用）"""
+    beasts = list(dict.fromkeys(n.name for n in _enemies(cur, room_id)
+                                if n.template.props.get("animal") and n.template.props.get("dungeon", {}).get("rank") != "boss"))
+    if not beasts:
+        return []
+    return [f"{'、'.join(beasts)}是野兽：可以试着安抚它，避开这一仗（说「安抚{beasts[0]}」，看驯兽）；"
+            "安抚成了照样有收获，失败会被它抢先扑上来"]
 
 
 def do_dodge(cur: Cursor, player: Player, view: RoomView, a: Dodge) -> list[str]:
@@ -3221,7 +3265,7 @@ HANDLERS: dict[str, Callable[..., list[str]]] = {
     "equip": do_equip, "unequip": do_unequip, "attack": do_attack, "talk": do_talk, "give": do_give, "freeform": do_freeform,
     "say": do_say, "revive": do_revive, "stunt": do_stunt, "struggle": do_struggle,
     "follow": do_follow, "unfollow": do_unfollow, "leave_party": do_leave_party,
-    "maneuver": do_maneuver, "dodge": do_dodge, "hide": do_hide, "search": do_search, "reject": do_reject,
+    "maneuver": do_maneuver, "dodge": do_dodge, "tame": do_tame, "hide": do_hide, "search": do_search, "reject": do_reject,
     "upgrade": do_upgrade, "pay": do_pay, "sell": do_sell, "respawn": do_respawn, "stand": do_stand, "rest": do_rest, "camp": do_camp, "teleport": do_teleport, "challenge": do_challenge, "accept_duel": do_accept_duel, "decline_duel": do_decline_duel, "flee": do_flee,
 }
 

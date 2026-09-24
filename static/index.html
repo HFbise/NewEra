@@ -195,6 +195,7 @@ function render(s) {
     <ul>${s.exits.map(e => `<li data-name="${e.label}">${e.label}<span class="tag">${esc(e.to)}${e.locked ? "（锁着）" : ""}</span></li>`).join("")}</ul>
     ${s.npcs.length ? `<h2>NPC</h2><ul>${s.npcs.map(n => li(n.ref, n.name,
       (n.max_hp ? `<span class="tag">${n.hp}/${n.max_hp}</span>` : "") +
+      (n.beast ? `<span class="tag">野兽·可安抚</span>` : "") +
       (n.status ? `<span class="tag">${esc(n.status)}</span>` : ""), n.fill || `对${n.name} `)).join("")}</ul>` : ""}
     ${s.others.length ? `<h2>其他玩家</h2><ul>${s.others.map(o => o.hp <= 0
       ? `<li data-name="对${esc(o.name)} ">${esc(o.name)}<span class="tag">倒下了</span></li>`
@@ -221,7 +222,7 @@ function render(s) {
     <div id="help">
       看 · 北 南 东 西 上 下<br>
       拿 · 扔 · 装备 · 卸下 · 吃 · 喂 · 给 · 给钱（给麦琪5金币）· 买 · 卖（把药草卖给麦琪）· 升级（找莉娜）· 住店（酒馆）<br>
-      打 · 躲起来 · 搜索 · 说 · 对某人说<br>
+      打 · 躲起来 · 搜索 · 说 · 对某人说 · 安抚野兽（驯兽，避战）<br>
       地牢：扎营 · 回城（传送石边）· 传送到第 N 层（地窖）<br>
       跟着某人（就是加入他的队伍）· 不跟了 / 离队（地牢里、战斗中不行）<br>
       战斗中：全队都出完手，大家的命令一起按回合结算<br>

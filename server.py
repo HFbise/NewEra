@@ -119,6 +119,8 @@ def state(conn, view: RoomView, after: Optional[int] = None) -> dict:
                  # 搜索能找到的：点一下填"搜索"
                  + [{"ref": "", "name": n, "quantity": 1, "fill": "搜索"} for n in view.forage],
         "npcs": [{"ref": by_id[n.id], "name": n.name, "hp": n.hp, "max_hp": n.template.max_hp,
+                  "beast": bool(n.template.hostile and n.template.props.get("animal")
+                                and n.template.props.get("dungeon", {}).get("rank") != "boss"),
                   "status": n.status and n.status.label} for n in view.npcs]
                 # 武器桶这类物件跟 NPC 列在一起，点一下填"拿…"
                 + [{"ref": by_id[d.id], "name": d.container, "status": f"{d.where}面有{d.item_name}",

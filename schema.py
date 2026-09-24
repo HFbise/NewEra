@@ -222,6 +222,13 @@ class Maneuver(BaseModel):
     description: str = ""
 
 
+class Tame(BaseModel):
+    """安抚、驯服野兽（怪标了 animal）：驯兽判定，成了这一群同种的野兽平静下来走开（收获照给），不成它们扑上来先打一下"""
+    action: Literal["tame"]
+    target: str                         # 野兽 NPC 的 ref
+    description: str = ""
+
+
 class Dodge(BaseModel):
     """摆好架势准备闪避：这个动作之后敌人的这一下命中率降低"""
     action: Literal["dodge"]
@@ -265,7 +272,7 @@ class Reject(BaseModel):
 
 PlayerAction = Annotated[
     Union[Move, Look, Take, Drop, Use, Equip, Unequip, Attack, Talk, Give, Sell, Pay, Upgrade, Say, Revive, Respawn, Stand, Rest, Camp, Teleport, LeaveParty,
-          Follow, Unfollow, Challenge, AcceptDuel, DeclineDuel, Flee, Stunt, Struggle, Maneuver, Dodge, Hide, Search,
+          Follow, Unfollow, Challenge, AcceptDuel, DeclineDuel, Flee, Stunt, Struggle, Maneuver, Dodge, Tame, Hide, Search,
           Freeform, Reject],
     Field(discriminator="action"),
 ]
