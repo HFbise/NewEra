@@ -572,7 +572,7 @@ PRICE_RE = re.compile(r"([0-9]+|[零一二两三四五六七八九十百]+)\s*(?
 # 叙事里写成交了（收钱、付钱），facts 里却没有成交
 PAID_RE = re.compile(r"(收|付|掏出|接过|数出)[^。！？“”]{0,10}金币")
 # 叙事里写了 NPC 把东西交到玩家手上
-GAVE_RE = re.compile(r"(递|抛|扔|塞|交|推|丢|甩)给你|(递|抛|扔|塞|推|放|丢|甩)(到|进)你的?(怀里|手里|手上|手中|面前|跟前)")
+GAVE_RE = re.compile(r"(递|抛|扔|塞|交|推|丢|甩)给你|(递|抛|扔|塞|推|放|丢|甩)(到|进)你的?(怀里|手里|手上|手中|面前|跟前)|你接过")
 CN_DIGITS = {"零": 0, "一": 1, "二": 2, "两": 2, "三": 3, "四": 4, "五": 5, "六": 6, "七": 7, "八": 8, "九": 9}
 
 
@@ -1275,7 +1275,9 @@ def narrate(db, view: RoomView, text: str, results: list[ActionResult],
         if out.npc_offer and not any(_cn_int(x) == out.npc_offer.price for x in PRICE_RE.findall(out.npc_reply or "")):
             out.npc_offer = None
         # 这回合没交付，叙事却写了 NPC 把东西递给、抛给他（npc_handed 认出来的除外）：重写一次，还写就把那句删掉
-        delivered = any(r.success and r.action in ("npc_give", "npc_create", "npc_sell", "quest") for r in results)
+        # 委托只有结算、真的给了奖励才算交付；只是提起委托不算（麦琪提委托那回合，叙事凭空递了一把短剑没拦住）
+        delivered = any(r.success and (r.action in ("npc_give", "npc_create", "npc_sell")
+                                       or r.action == "quest" and any("交给了" in f for f in r.facts)) for r in results)
         if npc and not delivered and not out.npc_handed and GAVE_RE.search(out.narrative):
             if not last:
                 raise ValueError("没有交付却写了 NPC 把东西给他")
