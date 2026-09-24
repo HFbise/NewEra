@@ -85,6 +85,13 @@ class Respawn(BaseModel):
     target: Optional[str] = None        # 想去哪（地方名字的一部分），不填就是酒馆
 
 
+class Sell(BaseModel):
+    """把身上的东西卖给做生意的 NPC（world.yaml props.buys）：什么都收，她用得上的给价高"""
+    action: Literal["sell"]
+    item: str                           # 背包物品的 ref
+    target: str                         # NPC 的 ref
+
+
 class Pay(BaseModel):
     """给钱。给 NPC：刚报过价（货、住店、升级）就按报价成交，多给的算小费；没在做买卖就是白给，
     NPC 先问一句"真要给我？"，玩家确认了才收。给同房间的玩家直接到他手上"""
@@ -265,7 +272,7 @@ class Reject(BaseModel):
 
 
 PlayerAction = Annotated[
-    Union[Move, Look, Take, Drop, Use, Equip, Unequip, Attack, Talk, Give, Pay, Upgrade, Say, Revive, Respawn, Stand, Rest, Camp, Teleport, Invite, Join, LeaveParty,
+    Union[Move, Look, Take, Drop, Use, Equip, Unequip, Attack, Talk, Give, Sell, Pay, Upgrade, Say, Revive, Respawn, Stand, Rest, Camp, Teleport, Invite, Join, LeaveParty,
           Follow, Unfollow, Challenge, AcceptDuel, DeclineDuel, Flee, Stunt, Struggle, Maneuver, Dodge, Hide, Search,
           Freeform, Reject],
     Field(discriminator="action"),

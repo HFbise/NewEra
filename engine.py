@@ -27,7 +27,7 @@ from schema import (
     ActionResult, Attack, Drop, Equip, Feature, Follow, Freeform, Give, Invite, ItemInstance, Join, LeaveParty, Look,
     Move, Npc, OtherPlayer, Player, PlayerAction, Reject, Revive, Room, RoomExit, RoomView, Say, Status, Struggle,
     Stunt, Take, Talk, Unfollow, Unequip, Use, dir_name, Dispenser, SLOT_CHOICES, SLOT_NAMES, Dodge, Hide, Maneuver, Search, Stealth,
-    AcceptDuel, Challenge, DeclineDuel, Duel, Flee, SKILL_NAMES, Upgrade, Respawn, Stand, Rest, Pay, Camp, Teleport,
+    AcceptDuel, Challenge, DeclineDuel, Duel, Flee, SKILL_NAMES, Upgrade, Respawn, Stand, Rest, Pay, Camp, Teleport, Sell,
 )
 
 
@@ -1156,7 +1156,8 @@ def _precious(cur: Cursor, item: ItemInstance) -> bool:
         return True
     cur.execute("""select exists (select 1 from quests where needs_item = %(t)s)
                        or exists (select 1 from rooms, jsonb_each(coalesce(props->'dispensers', '{}')) d
-                                  where d.value->>'item' = %(t)s and coalesce((d.value->>'once')::boolean, false)) as p""",
+                                  where d.value->>'item' = %(t)s and coalesce((d.value->>'once')::boolean, false)
+                                    and rooms.id not like 'dg-%%') as p""",
                 {"t": item.template.id})
     return cur.fetchone()["p"]
 
@@ -2089,6 +2090,59 @@ def _stele(cur: Cursor, npc: Npc, player: Player) -> list[str]:
     return [dungeon.leaderboard(cur), f"碑面上还浮现出给{player.name}的字：{dungeon.waypoints_text(points)}"]
 
 
+# 收购：做生意的 NPC（props.buys.likes 是她用得上的种类）什么都收，按参考价（base_price）的一定比例给钱：
+# 用得上的 BUY_LIKED，别的 BUY_OTHER，好感每 10 点再多 BUY_AFFINITY（最多 ±BUY_AFFINITY_MAX）。钥匙、任务要交的东西不收
+BUY_LIKED, BUY_OTHER = 0.6, 0.3
+BUY_AFFINITY, BUY_AFFINITY_MAX = 0.02, 0.1
+
+
+def item_kinds(item: ItemInstance) -> set[str]:
+    """东西属于哪几类（收购时看她用不用得上）：weapon / armor / food / drink / herb / 礼物种类（ore wine book） / misc"""
+    kinds = {item.template.type if item.template.type in ("weapon", "armor", "misc") else ""}
+    if item.template.type == "consumable":
+        kinds.add("drink" if _is_alcohol(item) or any(c in item.name for c in "水汤茶奶") else "food")
+    if _prop(item, "herbal"):
+        kinds.add("herb")
+    if gift := _prop(item, "gift"):
+        kinds.add(gift)
+    return kinds - {""}
+
+
+def item_stats(item: ItemInstance) -> dict:
+    return {"damage": item.damage, "defense": item.defense, "heal": item.heal, "harm": item.harm,
+            "knockout": item.knockout, "price": _prop(item, "price")}
+
+
+def buy_price(npc: Npc, item: ItemInstance, affinity: int) -> int:
+    """这个 NPC 收这件东西给多少钱"""
+    liked = item_kinds(item) & set(npc.template.props.get("buys", {}).get("likes", []))
+    rate = (BUY_LIKED if liked else BUY_OTHER) + max(-BUY_AFFINITY_MAX, min(BUY_AFFINITY_MAX, affinity // 10 * BUY_AFFINITY))
+    return max(1, round(base_price(item_stats(item)) * rate)) * item.quantity
+
+
+def buy_quotes(conn: Connection, player_id: UUID, npc: Npc, items: list[ItemInstance]) -> list[tuple[str, int]]:
+    """给 AI 看的：她收玩家身上这些东西各给多少（玩家问收不收、值多少时照这个说）"""
+    if not npc.template.props.get("buys"):
+        return []
+    with conn.transaction():
+        cur = _cursor(conn)
+        affinity = _affinity(cur, load_player(cur, player_id), npc)
+        return [(i.name, buy_price(npc, i, affinity)) for i in items if not _precious(cur, i)]
+
+
+def do_sell(cur: Cursor, player: Player, view: RoomView, a: Sell) -> list[str]:
+    npc = _room_npc(cur, view, player, a.target)
+    if not npc.template.props.get("buys"):
+        raise ActionError(f"{npc.name}不收东西")
+    item = _inv_item(cur, view, player, a.item)
+    if _precious(cur, item):
+        raise ActionError(f"{item.name}太要紧了，{npc.name}不收")
+    price = buy_price(npc, item, _affinity(cur, player, npc))
+    cur.execute("delete from item_instances where id = %s", (item.id,))
+    cur.execute("update players set gold = gold + %s where id = %s", (price, player.id))
+    return [f"{player.name}把{_label(item)}卖给了{npc.name}，得到 {price} 金币"]
+
+
 def do_give(cur: Cursor, player: Player, view: RoomView, a: Give) -> list[str]:
     item = _inv_item(cur, view, player, a.item)
     if a.target not in view.refs:
@@ -2205,7 +2259,7 @@ HANDLERS: dict[str, Callable[..., list[str]]] = {
     "say": do_say, "revive": do_revive, "stunt": do_stunt, "struggle": do_struggle,
     "follow": do_follow, "unfollow": do_unfollow, "invite": do_invite, "join": do_join, "leave_party": do_leave_party,
     "maneuver": do_maneuver, "dodge": do_dodge, "hide": do_hide, "search": do_search, "reject": do_reject,
-    "upgrade": do_upgrade, "pay": do_pay, "respawn": do_respawn, "stand": do_stand, "rest": do_rest, "camp": do_camp, "teleport": do_teleport, "challenge": do_challenge, "accept_duel": do_accept_duel, "decline_duel": do_decline_duel, "flee": do_flee,
+    "upgrade": do_upgrade, "pay": do_pay, "sell": do_sell, "respawn": do_respawn, "stand": do_stand, "rest": do_rest, "camp": do_camp, "teleport": do_teleport, "challenge": do_challenge, "accept_duel": do_accept_duel, "decline_duel": do_decline_duel, "flee": do_flee,
 }
 
 

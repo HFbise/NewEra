@@ -270,6 +270,11 @@ def _parse_one(view: RoomView, t: str) -> dict:
     if m := re.fullmatch(r"喂\s*(.+?)\s*(?:吃|喝)\s*(?:了|下|点)?\s*(.+)", t):
         return {"action": "use", "item": _find(view, m[2], "inv"), "target": _player_or_unsure(view, m[1])}
 
+    # 卖东西给 NPC："把药草卖给麦琪""卖矿石给莉娜"
+    if m := (re.fullmatch(r"把\s*(.+?)\s*(?:卖给|卖了给|出给)\s*(.+)", t)
+             or re.fullmatch(r"卖\s*(.+?)\s*给\s*(.+)", t)):
+        return {"action": "sell", "item": _find(view, m[1], "inv"), "target": _find(view, m[2], "npc")}
+
     # 给钱："给麦琪两金币""把 5 金币给寒风""付麦琪5个金币"
     if m := (re.fullmatch(rf"(?:给|付给?|塞给)\s*(.+?)\s*({NUM})\s*(?:个|枚)?\s*(?:金币|金|块钱|块)", t)
              or re.fullmatch(rf"把\s*({NUM})\s*(?:个|枚)?\s*(?:金币|金)\s*(?:给|付给|塞给|交给)\s*(.+)", t)):

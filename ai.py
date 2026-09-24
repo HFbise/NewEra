@@ -202,7 +202,7 @@ def _call(db, player_id: UUID, kind: str, system: str, user: str, fmt: type[Base
 
 class AIAction(BaseModel):
     """给 AI 的扁平格式，比嵌套 union 好填；回来再转成 PlayerAction 校验"""
-    action: Literal["move", "look", "take", "drop", "use", "equip", "unequip", "attack", "talk", "give", "pay", "say",
+    action: Literal["move", "look", "take", "drop", "use", "equip", "unequip", "attack", "talk", "give", "sell", "pay", "say",
                     "upgrade", "respawn", "stand", "rest", "camp", "teleport", "revive", "invite", "join", "leave_party", "follow", "unfollow", "challenge", "accept_duel",
                     "decline_duel", "flee", "stunt", "struggle",
                     "maneuver", "dodge", "hide", "search", "freeform", "reject"]
@@ -251,6 +251,7 @@ INTENT_SYSTEM = """你是文字 MUD 游戏的指令解析器。读玩家的输�
 - talk: target（NPC 的 ref），message（玩家说的话，保留原话）。找 NPC 买东西、问价、砍价、点菜、要东西都是 talk
 - give: item（背包物品的 ref），target（NPC 的 ref；给其他玩家时填"其他玩家"里的名字）。给、递、交、送、塞到他手里是 give：东西到了对方手上，吃不吃是他的事。喂他吃、塞进他嘴里（强行的也算）、给他灌下去是 use 不是 give
 - upgrade: item（背包里武器的 ref），target（会升级武器的铁匠 NPC 的 ref）。找铁匠升级、强化、重新锻打自己的武器；问升级要多少钱也是 upgrade（第一次引擎只开价，再说一次才动手）
+- sell: item（背包物品的 ref），target（NPC 的 ref）。把自己的东西卖给 NPC 换钱（"把药草卖给麦琪""这个你收不收，卖你了"）。只是问收不收、值多少钱是 talk
 - pay: target（NPC 的 ref；给其他玩家时填名字），amount（金币数，整数）。给钱、付钱、塞钱、打赏都是 pay，金币不是背包物品，不要用 give
 - teleport: floor（第几层，整数）。在地窖里说传送到第几层就填层数；在地牢的传送石边上回城、摸传送石回地面就不填 floor
 - camp: 不用填字段。在远古地牢里扎营、歇一会儿、搭帐篷睡一觉（回血）。村里的酒馆住店是 rest
@@ -689,11 +690,12 @@ def npc_services(npc: Npc, sells: Optional[list[dict]] = None) -> list[str]:
 
 def npc_line(db, view: RoomView, text: str, results: list[ActionResult], npc: Npc, affinity: int, memory: str,
              recent: Optional[list[str]] = None, quests: Optional[list[tuple[str, dict]]] = None,
-             sells: Optional[list[dict]] = None, made_before: Optional[list[dict]] = None) -> Optional[str]:
+             sells: Optional[list[dict]] = None, made_before: Optional[list[dict]] = None,
+             buys: Optional[list[tuple[str, int]]] = None) -> Optional[str]:
     """NPC 这回合说的话，单独演。失败返回 None（叙事自己写台词）"""
     services = npc_services(npc, sells)
     # 第一次见面、或者问起能干什么：把能办的事介绍一遍。这回合在交委托、做买卖就先办正事，不插介绍
-    busy = any(r.success and (r.action in TRADE_ACTIONS or r.action in ("quest", "give", "upgrade", "rest"))
+    busy = any(r.success and (r.action in TRADE_ACTIONS or r.action in ("quest", "give", "sell", "upgrade", "rest"))
                for r in results)
     intro = bool(services) and not busy and (not memory or bool(ASK_SERVICE_RE.search(text)))
     this_turn = "\n".join("；".join(EFFECT_RE.sub("", f) for f in r.facts) for r in results if r.success) or "没什么特别的"
@@ -701,6 +703,9 @@ def npc_line(db, view: RoomView, text: str, results: list[ActionResult], npc: Np
                      + [g["name"] for g in made_before or []]) or "无"
     tasks = "；".join(f"{q['hook']}（{QUEST_STAGES[st]}）" if st != "closed" else f"{q['after']}"
                      for st, q in quests or []) or "没有"
+    if buys:
+        services = services + ["收购客人身上的东西，出价：" + "、".join(f"{n} {p} 金币" for n, p in buys)
+                               + "（价钱是定的，他问收不收、值多少就照这个说；自己用得上的给价高）"]
     user = (f"<npc>\n名字：{npc.name}\n所在的地方：{view.room.name}\n外表：{npc.template.description}\n"
             f"人设：{npc.template.persona}\n"
             f"对{view.player.name}的好感：{affinity}（-100 到 100）\n对他的记忆：\n{memory or '第一次见面'}\n"
