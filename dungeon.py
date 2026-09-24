@@ -40,6 +40,9 @@ STONE_LIGHT = 90
 ROAD_EVENT_CHANCE = 0.15                # 地牢里两个房间之间走动时碰上随机事件的几率（engine._road_event）
 
 _data: Optional[dict] = None
+_loot: Optional[dict] = None
+# 掉落表里暂时不出的东西：它们的机制还没做（地图残片要小地图，大钥匙要上锁的牢房，诅咒要诺艾尔解咒）
+LOOT_NOT_YET = {"map_scrap", "warden_key", "cursed_twinblade", "greed_ring"}
 
 
 def data() -> dict:
@@ -48,6 +51,64 @@ def data() -> dict:
         with open(os.path.join(os.path.dirname(__file__), "dungeon.yaml"), encoding="utf-8") as f:
             _data = yaml.safe_load(f)
     return _data
+
+
+def loot_data() -> dict:
+    """掉落表 loot.yaml：普通怪专属掉落、头目二选一、通用池、宝箱房主题池、路边小木匣、空房搜索"""
+    global _loot
+    if _loot is None:
+        with open(os.path.join(os.path.dirname(__file__), "loot.yaml"), encoding="utf-8") as f:
+            _loot = yaml.safe_load(f)
+    return _loot
+
+
+def _pick(entries: list[dict], depth: int) -> Optional[str]:
+    """按权重从池子里抽一件（到了 min_floor 的、机制做好了的）"""
+    ok = [e for e in entries or [] if depth >= e.get("min_floor", 1) and e["item"] not in LOOT_NOT_YET]
+    return random.choices([e["item"] for e in ok], [e.get("weight", 1) for e in ok])[0] if ok else None
+
+
+def _drops(kind: str, rank: str, theme: str, depth: int) -> list[str]:
+    """一只怪身上带的东西（打死掉在地上）。精英专属掉率 × elite_mult，另外有几率从通用池抽；头目二选一必掉"""
+    loot, out = loot_data(), []
+    rules = loot["rules"]
+    if rank == "boss":
+        b = loot["bosses"].get(theme, {})
+        if pick := [i for i in b.get("pick_one", []) if i not in LOOT_NOT_YET]:
+            out.append(random.choice(pick))
+        out += [e["item"] for e in b.get("extra", []) if random.random() < e.get("chance", 1)]
+        return out
+    mult = rules.get("elite_mult", 1) if rank == "elite" else 1
+    out += [d["item"] for d in loot["monsters"].get(kind) or []
+            if depth >= d.get("min_floor", 1) and d["item"] not in LOOT_NOT_YET and random.random() < d["chance"] * mult]
+    if rank == "elite" and random.random() < rules.get("elite_pool_chance", 0) and (p := _pick(loot["pool"], depth)):
+        out.append(p)
+    return out
+
+
+def _put_item(cur: Cursor, template: str, depth: int, *, room: Optional[str] = None, npc: Optional[UUID] = None,
+              boss: bool = False) -> None:
+    """放一件东西。头目的招牌装备每深 boss_upgrade_every 层自带 +1（10 层 +1，15 层 +2）"""
+    props = {}
+    every = loot_data()["rules"].get("boss_upgrade_every", 0)
+    if boss and every and (plus := depth // every - 1) > 0:
+        cur.execute("select name, type, damage, defense from item_templates where id = %s", (template,))
+        t = cur.fetchone()
+        if t["type"] == "weapon":
+            props = {"plus": plus, "damage": t["damage"] + plus, "name": f"{t['name']} +{plus}"}
+        elif t["type"] == "armor" and t["defense"]:
+            props = {"plus": plus, "defense": t["defense"] + plus, "name": f"{t['name']} +{plus}"}
+    cur.execute("insert into item_instances (template_id, room_id, npc_id, props) values (%s, %s, %s, %s)",
+                (template, room, npc, Jsonb(props)))
+
+
+def road_box_item(theme: str, depth: int) -> Optional[str]:
+    """路边小木匣里除了面包药草火把麻绳，还可能是这些（各自掷几率，先中先得）"""
+    box = loot_data().get("road_box", {})
+    for e in (box.get("all") or []) + (box.get(theme) or []):
+        if depth >= e.get("min_floor", 1) and e["item"] not in LOOT_NOT_YET and random.random() < e.get("chance", 0):
+            return e["item"]
+    return None
 
 
 def is_dungeon(room_id: str) -> bool:
@@ -87,14 +148,16 @@ def _gold(depth: int, rank: str) -> list[int]:
 
 def _template(cur: Cursor, depth: int, kind: str, rank: str, theme: str, size: int) -> str:
     """这一层这种怪（几个人的队伍）的 NPC 模板，没有就建"""
-    tid = f"dg_{kind}_{depth}" + ("" if rank == "normal" else f"_{rank}") + (f"_p{size}" if size > 1 else "")
+    # 头目按主题分（每个主题的头目不一样），别的按怪的种类
+    tid = (f"dg_{theme + '_' if rank == 'boss' else ''}{kind}_{depth}" + ("" if rank == "normal" else f"_{rank}")
+           + (f"_p{size}" if size > 1 else ""))
     m = data()["themes"][theme]["boss"] if rank == "boss" else data()["monsters"][kind]
     hp, atk, df = monster_stats(depth, m, rank)
     hp = round(hp * (1 + PARTY_HP * (size - 1)))
     name = m["name"] if rank != "elite" else f"凶悍的{m['name']}"
     description = m["description"] + ("它比同类更壮、更凶，身上带着好几道旧伤。" if rank == "elite" else "")
     props = {"on_death": {"gold": _gold(depth, rank)}, "dungeon": {"depth": depth, "rank": rank}}
-    for flag in ("animal", "light_averse"):
+    for flag in ("animal", "light_averse", "undead"):
         if m.get(flag):
             props[flag] = True
     if m.get("on_hit"):
@@ -123,8 +186,11 @@ def spawn_wanderer(cur: Cursor, room: str) -> str:
 
 def _spawn(cur: Cursor, room: str, depth: int, kind: str, rank: str, theme: str, size: int) -> None:
     tid = _template(cur, depth, kind, rank, theme, size)
-    cur.execute("insert into npcs (template_id, room_id, hp) select id, %s, max_hp from npc_templates where id = %s",
-                (room, tid))
+    cur.execute("insert into npcs (template_id, room_id, hp) select id, %s, max_hp from npc_templates where id = %s"
+                " returning id", (room, tid))
+    npc_id = cur.fetchone()["id"]
+    for item in _drops(kind, rank, theme, depth):       # 身上带的东西，打死了掉在地上
+        _put_item(cur, item, depth, npc=npc_id, boss=rank == "boss")
 
 
 # ============ 地图 ============
@@ -199,8 +265,9 @@ def _make_floor(cur: Cursor, run: UUID, depth: int, above: Optional[str], size: 
         if kind == "entry" and is_stone(depth):
             props["stone"] = True
         if kind == "empty":
-            # 空房：搜索可能找到药草；调查（搜索时过调查判定）可能翻出藏着的古币，每人一次
-            props["forage"] = EMPTY_FORAGE
+            # 空房：搜索可能找到药草（和主题特产：森林的野莓、沼泽的解毒苔和沼泽菇）；调查可能翻出藏着的古币，每人一次
+            props["forage"] = EMPTY_FORAGE + [{"item": e["item"], "chance": e.get("chance", 0.5), "cooldown": 86400}
+                                              for e in loot_data().get("forage", {}).get(theme_key) or []]
             props["stash"] = {"gold": max(2, round(random.randint(4, 8) * 1.2 ** depth)) * size,
                               "difficulty": 2 + depth // 3}
         if event:
@@ -249,6 +316,14 @@ def _make_floor(cur: Cursor, run: UUID, depth: int, above: Optional[str], size: 
             cur.execute("insert into item_instances (template_id, room_id, props) values ('gold_pouch', %s, %s)",
                         (rid, Jsonb({"gold": coins})))
             cur.execute("insert into item_instances (template_id, room_id) values ('herb', %s)", (rid,))
+            rules = loot_data()["rules"]
+            if random.random() < rules.get("treasure_item_chance", 0):
+                # 一半从这个主题的宝箱池抽，一半从通用池抽
+                themed = random.random() < rules.get("treasure_theme_share", 0.5)
+                item = (_pick(loot_data()["treasure"].get(theme_key), depth) if themed else None) \
+                    or _pick(loot_data()["pool"], depth)
+                if item:
+                    _put_item(cur, item, depth, room=rid)
             if guarded:
                 # 有一半的宝箱房有怪守着（越深越可能是精英）
                 rank = "elite" if random.random() < min(0.35, 0.02 * depth) else "normal"

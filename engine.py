@@ -517,7 +517,8 @@ def do_flee(cur: Cursor, player: Player, view: RoomView, a: Flee) -> list[str]:
             raise ActionError(f"{player.name}没有在决斗，也没被敌人缠住，用不着逃跑")
         near = min(_distance(st, n) for n in foes)
         if diff := FLEE_DIFFICULTY.get(near):
-            diff += _room_env(cur, player.room_id).get("ground") == "water"     # 积水里跑不快
+            diff += _room_env(cur, player.room_id).get("ground") == "water" and not gear_has(cur, player, "wade")
+            diff = max(1, diff + int(gear_add(cur, player, "flee")))           # 狼皮靴 -1、铁皮甲 +1
             ok, rolled = _check(cur, player, view, "athletics", diff)
             facts += rolled
             if not ok:
@@ -614,6 +615,45 @@ def _weapons(cur: Cursor, player: Player) -> list[ItemInstance]:
     return [i for i in _worn(cur, player) if i.template.type == "weapon" and i.equipped_slot in SLOT_CHOICES["hand"]]
 
 
+# ============ 装备的特殊效果（物品 props.effects，写法见 items_dungeon.yaml 开头）============
+# 叠加规则：固定数值加起来（血量上限、技能、逃跑难度、伤害加成、减伤、破甲）；
+# 百分比和几率只取最好的一件（金币加成、闪避、吸血、抗性、光亮）
+def _fx(items: list[ItemInstance], do: str, when: str = "passive", kind: Optional[str] = None) -> list[dict]:
+    return [e for i in items for e in (_prop(i, "effects") or [])
+            if e.get("when") == when and e.get("do") == do and (kind is None or e.get("kind") == kind)]
+
+
+def gear_add(cur: Cursor, player: Player, do: str, kind: Optional[str] = None) -> float:
+    return sum(e.get("value", 0) for e in _fx(_worn(cur, player), do, kind=kind))
+
+
+def gear_has(cur: Cursor, player: Player, do: str) -> bool:
+    return bool(_fx(_worn(cur, player), do))
+
+
+def gear_resist(cur: Cursor, player: Player, kind: str) -> float:
+    """状态几率乘多少：0 是免疫，0.5 减半；几件取最好的"""
+    return min([1.0] + [e.get("value", 1) for e in _fx(_worn(cur, player), "resist", kind=kind)])
+
+
+def gear_gold(cur: Cursor, player: Player) -> float:
+    return max([0.0] + [e.get("value", 0) for e in _fx(_worn(cur, player), "gold")])
+
+
+def _sync_gear_hp(cur: Cursor, player_id: UUID) -> list[str]:
+    """装备带的血量上限（活力之戒 +3、贪婪之戒 -3）：跟 players.gear_hp 比，差多少就改多少，当前血量不超过上限"""
+    player = load_player(cur, player_id, lock=True)
+    bonus = round(gear_add(cur, player, "max_hp"))
+    cur.execute("select gear_hp from players where id = %s", (player_id,))
+    had = cur.fetchone()["gear_hp"]
+    if bonus == had:
+        return []
+    cur.execute("""update players set max_hp = greatest(1, max_hp + %s), gear_hp = %s,
+                   hp = least(hp, greatest(1, max_hp + %s)) where id = %s returning max_hp""",
+                (bonus - had, bonus, bonus - had, player_id))
+    return [f"{player.name}的血量上限{'+' if bonus > had else ''}{bonus - had}（身上的装备），现在上限 {cur.fetchone()['max_hp']}"]
+
+
 # ============ 伤害怎么被防御挡掉 ============
 # 按挨打的一方分：挨打的是玩家（怪打人、NPC 打人、决斗）按比例减伤，每一点防御都有用、越往上越少；
 # 挨打的是怪和 NPC 还是减法（怪的防御是我们定的，不会像玩家那样被装备叠上去，重甲怪就该硬，破甲才有价值）。
@@ -694,6 +734,8 @@ def do_move(cur: Cursor, player: Player, view: RoomView, a: Move) -> list[str]:
     if to == dungeon.GATE:
         to, arrived = dungeon.through_gate(cur, player, player.room_id, ONLINE_WINDOW)
     dungeon.touch(cur, player.room_id)
+    cur.execute("""update rooms set props = props #- '{env,scroll}'
+                   where id = %s and props->'env'->'scroll'->>'by' = %s""", (player.room_id, str(player.id)))
     # 进门前没人在的区域先把该回来的敌人刷出来（走进去才碰上），进门时还没被发现
     _respawn_npcs(cur, to)
     # 自己走就不再跟着别人
@@ -745,7 +787,7 @@ def _road_event(cur: Cursor, player: Player, view: RoomView, to: str) -> list[st
         cur.execute("update players set gold = gold + %s where id = %s", (coins, player.id))
         return [f"{player.name}在路边的碎石里踢到了 {coins} 枚古币，顺手捡了起来"]
     if r < ROAD_CHEST:
-        item = random.choice(ROAD_CHEST_ITEMS)
+        item = dungeon.road_box_item(f["theme"], depth) or random.choice(ROAD_CHEST_ITEMS)
         _give_player_new(cur, player, item)
         cur.execute("select name from item_templates where id = %s", (item,))
         return [f"{player.name}在路边的碎石下翻出一只烂木匣，里面有一件{cur.fetchone()['name']}，顺手收下了"]
@@ -1006,6 +1048,9 @@ def do_use(cur: Cursor, player: Player, view: RoomView, a: Use) -> list[str]:
     item = _inv_item(cur, view, player, a.item)
     if _prop(item, "stun"):
         return _stun(cur, player, view, item, a.target)
+    for key, fn in (("refuel", _refuel), ("whet", _whet), ("room_light", _room_light), ("holy", _holy)):
+        if _prop(item, key):
+            return fn(cur, player, view, item, a.target)
 
     ex = _find_exit(cur, player.room_id, a.target, lock=True) if a.target is not None else None
     if a.target is not None and ex is None and item.template.type == "consumable":
@@ -1032,12 +1077,69 @@ def do_use(cur: Cursor, player: Player, view: RoomView, a: Use) -> list[str]:
 STUN_ESCAPE = 3                         # 古书残卷念出来的定身：敌人挣脱的难度（每回合 30%、60%、90% 醒过来）
 
 
+def _use_up(cur: Cursor, item: ItemInstance) -> None:
+    """用掉一次：能用好几次的（props.uses，借阅簿 3 次）记在实例上，用完才没"""
+    total = _prop(item, "uses")
+    left = item.props.get("uses_left", total or 1) - 1
+    if left > 0:
+        cur.execute("update item_instances set props = props || jsonb_build_object('uses_left', %s::int) where id = %s",
+                    (left, item.id))
+    else:
+        _consume(cur, item)
+
+
+def _refuel(cur: Cursor, player: Player, view: RoomView, item: ItemInstance, target: Optional[str]) -> list[str]:
+    """灯油：倒在弱光的火把上，让它重新烧旺"""
+    torch = next((i for i in _worn(cur, player) if i.template.id == "torch_dim"), None)
+    if torch is None:
+        raise ActionError(f"手上没有快灭的火把，{item.name}用不上")
+    _consume(cur, item)
+    cur.execute("update item_instances set template_id = %s, props = '{}' where id = %s", (_prop(item, "refuel"), torch.id))
+    return [f"{player.name}把{item.name}倒在火把上，火苗呼地一下又旺了起来"]
+
+
+def _whet(cur: Cursor, player: Player, view: RoomView, item: ItemInstance, target: Optional[str]) -> list[str]:
+    """磨刀石：这一层普通攻击伤害 +value（换了层就没了）"""
+    if not dungeon.is_dungeon(player.room_id):
+        raise ActionError(f"{item.name}的锋利劲撑不过一层地牢，下了地牢再磨吧")
+    run, depth = dungeon.parse_room(player.room_id)
+    _consume(cur, item)
+    player.effects = [e for e in player.effects if e.kind != "whet"] + [
+        Effect(kind="whet", value=int(_prop(item, "whet")), left=1, label="刃口磨得雪亮", source=f"{run.hex}:{depth}")]
+    _save_effects(cur, player)
+    return [f"{player.name}用{item.name}把武器磨得雪亮（这一层普通攻击伤害 +{_prop(item, 'whet')}）"]
+
+
+def _room_light(cur: Cursor, player: Player, view: RoomView, item: ItemInstance, target: Optional[str]) -> list[str]:
+    """光明卷轴：这个房间光亮 +N，走出房间就散了"""
+    if not view.room.props.get("env"):
+        raise ActionError("这里够亮了，用不着")
+    _consume(cur, item)
+    cur.execute("""update rooms set props = jsonb_set(props, '{env,scroll}', %s) where id = %s""",
+                (Jsonb({"value": int(_prop(item, "room_light")), "by": str(player.id)}), player.room_id))
+    return [f"{player.name}展开{item.name}，上面的字一个接一个亮起来，把整个房间照得雪亮"]
+
+
+def _holy(cur: Cursor, player: Player, view: RoomView, item: ItemInstance, target: Optional[str]) -> list[str]:
+    """圣水：泼向亡灵或怕光的怪，按档位重创它；泼别的没用（水也没了）"""
+    if not target or target not in view.refs:
+        raise ActionError(f"{item.name}要泼向一个敌人")
+    npc = _room_npc(cur, view, player, target)
+    _consume(cur, item)
+    facts = [f"{player.name}把{item.name}泼向{npc.name}"]
+    if not (npc.template.props.get("undead") or npc.template.props.get("light_averse")):
+        return facts + [f"{npc.name}只是被泼湿了，什么事也没有"]
+    dmg = random.randint(*TIER_RANGE[_prop(item, "holy")])
+    hurt, dead = _hurt_npc(cur, player, npc, dmg)
+    return facts + [f"圣水在{npc.name}身上嘶嘶地冒起白烟，受到 {dmg} 点伤害"] + hurt
+
+
 def _stun(cur: Cursor, player: Player, view: RoomView, item: ItemInstance, target: Optional[str]) -> list[str]:
     """念能定身的东西（古书残卷：props.stun 是状态说明）：不用判定，房间里所有敌人一起失去战斗能力，东西用掉"""
     foes = _enemies(cur, player.room_id)
     if not foes:
         raise ActionError(f"这里没有敌人，{item.name}念了也没用")
-    _consume(cur, item)
+    _use_up(cur, item)
     label = str(_prop(item, "stun"))[:20]
     for npc in foes:
         _set_status(cur, "npcs", npc.id, Status(kind="incapacitated", label=label, escape=STUN_ESCAPE,
@@ -1090,10 +1192,27 @@ def _eat_effect(cur: Cursor, eater: Player, item: ItemInstance, user: Player) ->
     facts = []
     points = item.heal + (skill_level(user.skills.get("nature", 0)) if item.heal and item.template.props.get("herbal") else 0)
     heal = heal_amount(points, eater.max_hp, _is_alcohol(item))
-    hp = max(0, min(eater.max_hp, eater.hp + heal - item.harm))
+    harm = item.harm
+    if harm and (check := _prop(item, "harm_check")):
+        # 沼泽菇这类：认得出来（自然判定）就是好吃的，认不出来吃到有毒的
+        if _roll(skill_chance(skill_level(user.skills.get(check, 0)), 2)):
+            harm = 0
+            facts.append(f"{user.name}认出这是能吃的那种")
+        else:
+            facts.append(f"{user.name}没认出来，吃到了有毒的那种")
+            if not _effect(eater, "poison"):
+                eater.effects.append(Effect(kind="poison", value=1, left=EFFECT_TURNS["poison"], label="吃坏了肚子",
+                                            source=item.name))
+                _save_effects(cur, eater)
+    hp = max(0, min(eater.max_hp, eater.hp + heal - harm))
     cur.execute("update players set hp = %s, updated_at = now() where id = %s", (hp, eater.id))
-    if item.harm:
-        facts.append(f"{item.name}有毒，{eater.name}掉了 {item.harm} 点 HP，当前 HP {hp}/{eater.max_hp}")
+    if (cure := _prop(item, "cure")) and (e := _effect(eater, cure)):
+        # 绷带止血、解毒苔解毒
+        eater.effects.remove(e)
+        _save_effects(cur, eater)
+        facts.append(f"{eater.name}身上的{EFFECT_NAMES[cure]}好了")
+    if harm:
+        facts.append(f"{item.name}有毒，{eater.name}掉了 {harm} 点 HP，当前 HP {hp}/{eater.max_hp}")
     elif item.heal:
         facts.append(f"{eater.name}恢复 {hp - eater.hp} 点 HP，当前 HP {hp}/{eater.max_hp}")
         if eater.hp <= 0 < hp:
@@ -1101,7 +1220,7 @@ def _eat_effect(cur: Cursor, eater: Player, item: ItemInstance, user: Player) ->
     if hp == 0:
         facts.append(f"{eater.name}倒下了")
         _downed_by(cur, eater, "poison", item.name)
-    elif item.harm:
+    elif harm:
         eater.hp = hp
         facts += _toughen(cur, eater)                   # 毒扛过去了，耐性一定涨
     if hp > 0 and item.knockout:
@@ -1216,10 +1335,27 @@ def do_equip(cur: Cursor, player: Player, view: RoomView, a: Equip) -> list[str]
         raise ActionError(f"{item.name}已经装备在{SLOT_NAMES[item.equipped_slot]}了")
     else:
         # 两只手都占着时，火把默认换掉左手（副手），别把主手的武器换下来
-        slot = next((c for c in choices if c not in worn), "left_hand" if _prop(item, "lights") else choices[0])
+        # 盾默认拿左手（副手），武器默认右手
+        prefer = ["left_hand", "right_hand"] if kind == "hand" and item.template.type == "armor" else choices
+        slot = next((c for c in prefer if c not in worn), "left_hand" if _prop(item, "lights") else prefer[0])
     if item.equipped_slot == slot:
         raise ActionError(f"{item.name}已经装备在{SLOT_NAMES[slot]}了")
     facts = []
+    if kind == "hand":
+        # 双手武器（props.two_handed）拿在右手，左手得空出来；拿着双手武器时再往手上拿别的，先把它放下
+        if _prop(item, "two_handed"):
+            slot = "right_hand"
+            other = worn.get("left_hand")
+            if other and other.id != item.id:
+                if _burning(other):
+                    raise ActionError(f"{item.name}要两只手拿，左手的{other.name}点着，收起来就灭了；先把火把熄掉再换")
+                cur.execute("update item_instances set equipped_slot = null where id = %s", (other.id,))
+                facts.append(f"{player.name}放下了{other.name}，腾出两只手")
+                worn.pop("left_hand")
+        elif (big := next((i for i in worn.values() if _prop(i, "two_handed") and i.id != item.id), None)):
+            cur.execute("update item_instances set equipped_slot = null where id = %s", (big.id,))
+            facts.append(f"{player.name}放下了要两只手拿的{big.name}")
+            worn = {s: i for s, i in worn.items() if i.id != big.id}
     old = worn.get(slot)
     if old and _burning(old) and not item.equipped_slot:
         raise ActionError(f"{SLOT_NAMES[slot]}拿着点着的{old.name}，收起来就灭了；要换就先把火把熄掉（卸下火把），或者说换到另一只手")
@@ -1293,7 +1429,8 @@ def _check(cur: Cursor, player: Player, view: RoomView, skill: Optional[str], di
     成功而且难度高于当前等级才算一次熟练，一条消息里同一个技能最多涨一次"""
     count = player.skills.get(skill, 0) if skill else 0
     level = skill_level(count)
-    chance = max(0.0, skill_chance(level, difficulty) - _drunk(player) - _poisoned(player))
+    bonus = int(gear_add(cur, player, "skill", skill)) if skill else 0      # 矿工短镐运动 +1、钥匙串巧手 +2
+    chance = max(0.0, skill_chance(level + bonus, difficulty) - _drunk(player) - _poisoned(player))
     ok = _roll(chance)
     name = SKILL_NAMES[skill] if skill else "判定"
     facts = [f"（{name} {level} 级对难度 {difficulty}，成功率 {round(chance * 100)}%"
@@ -1403,6 +1540,7 @@ def _hurt_npc(cur: Cursor, player: Player, npc: Npc, dmg: int) -> tuple[list[str
         n = random.randint(*gold)
         if dungeon.is_dungeon(player.room_id):
             n = max(1, round(n * (1 + 0.5 * _dark_factor(_light(cur, player.room_id)))))   # 越暗掉得越多
+        n = max(1, round(n * (1 + gear_gold(cur, player))))      # 幸运古币、贪婪之戒（只算最好的一件）
         cur.execute("""update players set gold = gold + %s
                        where id = %s or (party_id = %s and room_id = %s and hp > 0) returning name""",
                     (n, player.id, player.party_id, player.room_id))
@@ -1491,7 +1629,7 @@ def _set_distance(st: Stealth, npc: Npc, d: int) -> int:
 # 中毒：每回合（每条消息）掉血、命中和判定 -POISON_HIT；流血：每个动作掉血、打出的伤害 ×BLEED_DAMAGE；
 # 看不清：光亮算 0（命中只剩 5%）；腐蚀：防御 -value、血量上限临时扣 hp（消退还回来）。
 # 同一种再中一次只刷新时间。住店、扎营、被扶起来、急救都会清掉
-EFFECT_NAMES = {"poison": "中毒", "bleed": "流血", "blind": "看不清", "corrode": "腐蚀"}
+EFFECT_NAMES = {"poison": "中毒", "bleed": "流血", "blind": "看不清", "corrode": "腐蚀", "whet": "磨利"}
 EFFECT_TURNS = {"poison": 3, "bleed": 4, "blind": 1, "corrode": 3}
 POISON_HIT, BLEED_DAMAGE, CORRODE_HP = 0.15, 0.75, 0.15
 # 清掉所有效果时把腐蚀扣的血量上限还回去（SQL 片段，用在 update players set ... 里，得在改 hp 之前算）
@@ -1517,14 +1655,18 @@ def _save_effects(cur: Cursor, player: Player) -> None:
 
 def effects_text(player: Player) -> str:
     """给 AI 和界面看：中毒（还剩 2 回合）、流血（还剩 3 个动作）"""
-    return "、".join(f"{EFFECT_NAMES[e.kind]}：{e.label}（还剩 {e.left} {'个动作' if e.kind == 'bleed' else '回合'}）"
+    return "、".join(f"磨利：普通攻击伤害 +{e.value}（这一层）" if e.kind == "whet"
+                    else f"{EFFECT_NAMES[e.kind]}：{e.label}（还剩 {e.left} {'个动作' if e.kind == 'bleed' else '回合'}）"
                     for e in player.effects)
 
 
 def _on_hit(cur: Cursor, player: Player, npc: Npc) -> list[str]:
     """怪打中人以后按 props.on_hit 的几率附带效果：中毒、流血、看不清、腐蚀，或者缠住、撞倒（状态）"""
     hit = npc.template.props.get("on_hit")
-    if not hit or player.hp <= 0 or not _roll(hit.get("chance", 0.25)):
+    if not hit or player.hp <= 0:
+        return []
+    resist = gear_resist(cur, player, hit["kind"])       # 装备抗性：0 免疫，0.5 减半
+    if resist <= 0 or not _roll(hit.get("chance", 0.25) * resist):
         return []
     depth = npc.template.props.get("dungeon", {}).get("depth", 1)
     kind, label = hit["kind"], hit.get("label", "")
@@ -1564,6 +1706,15 @@ def _tick_effects(cur: Cursor, player: Player, unit: str) -> list[str]:
         return []
     facts, keep = [], []
     for e in player.effects:
+        if e.kind == "whet":
+            if unit == "turn" and dungeon.is_dungeon(player.room_id) and e.source != "{}:{}".format(
+                    dungeon.parse_room(player.room_id)[0].hex, dungeon.parse_room(player.room_id)[1]):
+                facts.append(f"{player.name}武器上磨出来的锋利劲过去了")
+            elif unit == "turn" and not dungeon.is_dungeon(player.room_id):
+                facts.append(f"{player.name}武器上磨出来的锋利劲过去了")
+            else:
+                keep.append(e)
+            continue
         if (e.kind == "bleed") != (unit == "action"):
             keep.append(e)
             continue
@@ -1619,6 +1770,10 @@ def _light(cur: Cursor, room_id: str, env: Optional[dict] = None, player: Option
                        where p.room_id = %s and t.props ? 'light' and i.equipped_slot is not null""", (room_id,))
         row = cur.fetchone()
         level += (row["torch"] or 0) + (row["lamp"] or 0)
+    if env and (scroll := env.get("scroll")):
+        cur.execute("select 1 from players where id = %s and room_id = %s", (scroll["by"], room_id))
+        if cur.fetchone():
+            level += scroll["value"]
     return max(0, min(100, level))
 
 
@@ -1786,8 +1941,8 @@ def enemy_turn(conn: Connection, player_id: UUID, actions: list[PlayerAction],
                 st.chance = round(min(1.0, st.chance + step), 2)
         # 闪避：察觉越高躲得越好
         dodge_bonus = _dodge_bonus(player) if dodge else 0.0
-        if _room_env(cur, player.room_id).get("ground") == "water":
-            dodge_bonus /= 2                    # 积水泥泞，躲不利索
+        if _room_env(cur, player.room_id).get("ground") == "water" and not gear_has(cur, player, "wade"):
+            dodge_bonus /= 2                    # 积水泥泞，躲不利索（沼泽高筒靴不怕）
         if st.detected:
             for npc in enemies:
                 # 挨打那一下刚摆脱状态的，这回合来不及还手
@@ -1847,11 +2002,15 @@ def do_attack(cur: Cursor, player: Player, view: RoomView, a: Attack) -> list[st
     if npc.template.hostile:
         # 近战按距离算命中；敌人以外的 NPC 就在跟前说话，不算距离
         d = _distance(_stealth(player), npc)
-        chance = _light_hit(_light(cur, player.room_id, player=player), MELEE_HIT.get(d, 0))
+        light = _light(cur, player.room_id, player=player)
+        if gear_has(cur, player, "darkvision") and not _effect(player, "blind"):
+            light = max(light, LIGHT_FULL)      # 石像鬼之眼：暗处命中不打折
+        chance = _light_hit(light, MELEE_HIT.get(d, 0))
         if not _roll(max(0.0, chance - _drunk(player) - _poisoned(player) + _prone_bonus(npc, d))):
             return [f"{player.name}用{how}攻击{npc.name}，" + (f"隔着 {distance_word(d)}够不着" if d not in MELEE_HIT
                                                              else f"隔着 {distance_word(d)}，没打中")]
-    dmg = _bled(player, max(1, power - npc.template.defense))
+    whet = _effect(player, "whet")
+    dmg = _bled(player, max(1, power + (whet.value if whet else 0) - npc.template.defense))
     facts, dead = _hurt_npc(cur, player, npc, dmg)
     facts = [f"{player.name}用{how}攻击{npc.name}，造成 {dmg} 点伤害"] + facts
     return facts if dead else facts + _npc_counter(cur, player, npc)
@@ -2497,6 +2656,9 @@ def execute_all(conn: Connection, view: RoomView, actions: list[PlayerAction]) -
             action.message = slur(action.message)
         result = execute(conn, view, action)
         result.facts[:0], pending = pending, []
+        if action.action in ("equip", "unequip", "drop", "give", "sell"):
+            with conn.transaction():
+                result.facts += _sync_gear_hp(_cursor(conn), view.player.id)
         results.append(result)
         if not result.success:
             break

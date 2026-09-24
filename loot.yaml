@@ -1,0 +1,133 @@
+# 地牢掉落表：怪身上带什么、宝箱房抽什么、头目掉什么、宝石规则（dungeon.loot_data 读，deep_loot.yaml 补充深层的）
+#   chance    0~1，每次单独掷
+#   min_floor 低于这层不掉
+#   weight    池子里按权重抽一件
+# 怪物、主题的 key 和 dungeon.yaml 一致；物品 key 在 items_dungeon.yaml 和 world.yaml 里
+
+rules:
+  elite_mult: 3              # 精英怪的专属掉率 × 3
+  elite_pool_chance: 0.05    # 精英另外有这个几率从通用池抽一件
+  boss_upgrade_every: 5      # 头目每深 5 层，招牌装备自带 +1（10 层 +1，15 层 +2），套莉娜的升级等级
+  treasure_item_chance: 0.4  # 宝箱房除了钱袋，再有这个几率出一件物品
+  treasure_theme_share: 0.5  # 宝箱房的物品一半从本主题池抽，一半从通用池抽
+
+# 普通怪的专属掉落
+monsters:
+  cave_rat: []
+  kobold:
+    - {item: miner_pick, chance: 0.06}
+    - {item: kobold_cap, chance: 0.08}
+  rock_beetle:
+    - {item: beetle_shell_shield, chance: 0.05, min_floor: 4}
+  skeleton:
+    - {item: silver_dagger, chance: 0.04, min_floor: 2}
+  ghoul:
+    - {item: silver_dagger, chance: 0.04, min_floor: 2}
+    - {item: mourner_ring, chance: 0.04, min_floor: 4}
+    - {item: grave_lantern, chance: 0.03, min_floor: 3}
+  wisp: []
+  jailer:
+    - {item: iron_baton, chance: 0.06}
+    - {item: jailer_keyring, chance: 0.05, min_floor: 2}
+  armored_guard:
+    - {item: chain_mail, chance: 0.05}
+    - {item: iron_shield, chance: 0.05}
+  dungeon_hound:
+    - {item: hound_collar, chance: 0.05, min_floor: 3}
+  cave_wolf:
+    - {item: wolf_hide_boots, chance: 0.05, min_floor: 2}
+  thorn_vine:
+    - {item: thorn_whip, chance: 0.05, min_floor: 3}
+  forest_goblin:
+    - {item: bone_spear, chance: 0.06}
+  bog_toad:
+    - {item: marsh_boots, chance: 0.05}
+  myconid:
+    - {item: venom_bone_knife, chance: 0.05, min_floor: 2}
+    - {item: glowcap_staff, chance: 0.04, min_floor: 3}
+  bog_leech:
+    - {item: venom_bone_knife, chance: 0.05, min_floor: 2}
+  animated_tome:
+    - {item: paper_ward, chance: 0.05, min_floor: 2}
+  ink_shade:
+    - {item: ink_blade, chance: 0.04, min_floor: 4}
+  stone_gargoyle:
+    - {item: gargoyle_eye, chance: 0.04, min_floor: 4}
+
+# 头目：二选一必掉
+bosses:
+  mine:      {pick_one: [foreman_mattock, foreman_plate]}
+  graveyard: {pick_one: [keeper_scythe, keeper_heartstone]}
+  castle:    {pick_one: [warden_helm, warden_key], extra: [{item: iron_shield, chance: 0.3}]}
+  forest:    {pick_one: [elder_bark_armor, heartwood_amulet]}
+  swamp:     {pick_one: [witch_bone_ring, witch_staff]}
+  library:   {pick_one: [curator_monocle, curator_ledger]}
+
+# 通用池：精英的额外掉落、宝箱房的一半从这里抽
+pool:
+  - {item: steel_shortsword, weight: 10, min_floor: 5}
+  - {item: war_hammer,       weight: 4,  min_floor: 8}
+  - {item: vigor_ring,       weight: 5,  min_floor: 6}
+  - {item: lucky_coin,       weight: 3,  min_floor: 4}
+  - {item: map_scrap,        weight: 8,  min_floor: 2}
+  - {item: flail_chain,      weight: 6,  min_floor: 3}
+  - {item: quake_axe,        weight: 3,  min_floor: 9}
+  - {item: storm_rod,        weight: 5,  min_floor: 5}
+  - {item: bat_fang_dagger,  weight: 5,  min_floor: 4}
+  - {item: executioner_blade, weight: 3, min_floor: 10}
+  - {item: ambush_knife,     weight: 6,  min_floor: 3}
+  - {item: frost_blade,      weight: 5,  min_floor: 5}
+  - {item: soul_reaper,      weight: 5,  min_floor: 5}
+  - {item: avenger_blade,    weight: 4,  min_floor: 6}
+  - {item: ember_sword,      weight: 4,  min_floor: 6}
+  - {item: cursed_twinblade, weight: 3,  min_floor: 7}
+  - {item: greed_ring,       weight: 3,  min_floor: 5}
+  - {item: berserker_ring,   weight: 4,  min_floor: 6}
+  - {item: bramble_mail,     weight: 5,  min_floor: 3}
+  - {item: shadow_boots,     weight: 4,  min_floor: 6}
+  - {item: phoenix_feather,  weight: 2,  min_floor: 10}
+  - {item: moss_heart,       weight: 4,  min_floor: 4}
+  - {item: legion_sigil,     weight: 3,  min_floor: 7}
+
+# 宝箱房的主题池
+treasure:
+  mine:
+    - {item: miner_lamp, weight: 12, min_floor: 3}
+    - {item: miner_pick, weight: 8}
+  graveyard:
+    - {item: silver_dagger, weight: 10, min_floor: 2}
+    - {item: grave_lantern, weight: 10, min_floor: 3}
+    - {item: holy_water, weight: 15}
+  castle:
+    - {item: chain_mail, weight: 8}
+    - {item: iron_shield, weight: 8}
+    - {item: jailer_keyring, weight: 8, min_floor: 2}
+  forest:
+    - {item: wolf_hide_boots, weight: 8, min_floor: 2}
+    - {item: thorn_whip, weight: 6, min_floor: 3}
+  swamp:
+    - {item: glowcap_staff, weight: 8, min_floor: 3}
+    - {item: venom_bone_knife, weight: 8, min_floor: 2}
+  library:
+    - {item: light_scroll, weight: 12}
+    - {item: paper_ward, weight: 8, min_floor: 2}
+
+# 路边小木匣：在现有的面包、药草、火把、麻绳之外再加
+road_box:
+  all:
+    - {item: bandage, chance: 0.2}
+    - {item: lamp_oil, chance: 0.15}
+    - {item: whetstone, chance: 0.1}
+    - {item: map_scrap, chance: 0.1, min_floor: 2}
+  graveyard:
+    - {item: holy_water, chance: 0.15}
+  library:
+    - {item: light_scroll, chance: 0.1}
+
+# 空房搜索：沿用 forage 的写法，加在对应主题上
+forage:
+  forest:
+    - {item: wild_berries, chance: 0.4}
+  swamp:
+    - {item: antidote_moss, chance: 0.3}
+    - {item: marsh_mushroom, chance: 0.5}

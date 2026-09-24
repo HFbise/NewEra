@@ -406,12 +406,12 @@ class ItemInstance(BaseModel):
     @property
     def harm(self) -> int:
         """有毒的东西：吃喝下去掉的血，砸到别人身上造成的伤害"""
-        return self.props.get("harm", 0)
+        return self.props.get("harm", self.template.props.get("harm", 0))
 
     @property
     def knockout(self) -> Optional[str]:
         """能把人放倒的东西（蒙汗药酒）：放倒时的说法，比如"喝了蒙汗药昏睡过去"；没有就是 None"""
-        return self.props.get("knockout")
+        return self.props.get("knockout", self.template.props.get("knockout"))
 
 
 class Npc(BaseModel):
@@ -445,7 +445,7 @@ class Status(BaseModel):
                                      "prone": "倒在地上，还没爬起来"}[self.kind]
 
 
-EffectKind = Literal["poison", "bleed", "blind", "corrode"]
+EffectKind = Literal["poison", "bleed", "blind", "corrode", "whet"]     # whet 是好的：磨刀石，这一层伤害 +value
 
 
 class Effect(BaseModel):

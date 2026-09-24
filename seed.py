@@ -20,6 +20,18 @@ from psycopg.types.json import Jsonb
 DEFAULT_RESPAWN = 300                   # 物品被拿走后默认多少秒重新出现
 
 
+EXTRA_ITEMS = "items_dungeon.yaml"      # 地牢物品单独放一个文件，跟 world.yaml 的 items 合在一起入库
+
+
+def _all_items(world) -> dict:
+    items = dict(world["items"])
+    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), EXTRA_ITEMS)
+    if os.path.exists(path):
+        with open(path, encoding="utf-8") as f:
+            items.update((yaml.safe_load(f) or {}).get("items", {}))
+    return items
+
+
 def _content(cur, world, reset: bool) -> None:
     """房间、物品模板、出口、地形、NPC 模板。reset=False 时不动门锁状态和地形剩余次数"""
     for rid, r in world["rooms"].items():
@@ -31,7 +43,7 @@ def _content(cur, world, reset: bool) -> None:
             (rid, r["name"], r["description"], r.get("details", ""), Jsonb(props)),
         )
 
-    for iid, it in world["items"].items():
+    for iid, it in _all_items(world).items():
         cur.execute(
             """insert into item_templates (id, name, description, type, takeable, stackable, damage, defense, heal, slot, props)
                values (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)

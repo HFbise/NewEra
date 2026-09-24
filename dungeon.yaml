@@ -20,7 +20,7 @@
 #
 # 怪物数值按层数算（dungeon.monster_stats），这里只写跟普通怪比的倍率和加减：
 #   hp 血量倍率、atk 攻击加减、def 防御加减；animal: true 是野兽（以后驯兽能让它避战）；
-#   light_averse: true 是怕光的怪，光亮 70 以上攻击 -1；
+#   undead: true 是亡灵（圣水、银匕首对它们特别有效）；light_averse: true 是怕光的怪，光亮 70 以上攻击 -1；
 #   on_hit 打中时几率附带：poison 中毒（每回合掉血、命中降低）/ bleed 流血（每个动作掉血、伤害降低）/
 #     blind 看不清（光亮算 0）/ corrode 腐蚀（防御、血量上限临时降低）/ restrained 缠住 / prone 撞倒
 #
@@ -170,6 +170,7 @@ themes:
       - 地上的骨粉上多了一串小小的脚印，比人的脚小，朝着你来的方向。
     boss:
       name: 守陵人
+      undead: true
       description: 一具身披破烂法袍的高大骸骨，胸口嵌着一块发着幽光的石头，手里的长柄镰刀比人还高。
       persona: 沉默，动作缓慢而精准，把一切活人都当作要被安葬的东西，从不追出墓室。
       on_hit: {kind: corrode, chance: 0.3, label: 被镰刃带走了一股生气}
@@ -602,12 +603,14 @@ monsters:
     def: 1
     animal: true
   skeleton:
+    undead: true
     name: 骷髅兵
     description: 一具套着锈甲片的骸骨，眼眶里燃着两点幽蓝的火，手里握着一把缺口的长剑。
     persona: 没有意识，只会重复生前站岗的动作，看见活人就挥剑。
     hp: 0.8
     def: 1
   ghoul:
+    undead: true
     name: 食尸鬼
     description: 皮包骨头的灰白人形，指甲又长又黑，嘴角挂着腐肉。
     persona: 贪婪，饥饿，会绕着人打转找机会扑上来。
@@ -615,6 +618,7 @@ monsters:
     light_averse: true
     hp: 1.2
   wisp:
+    undead: true
     name: 游魂
     description: 一团飘忽的苍白雾气，隐约能看出一张哭泣的人脸。
     persona: 哀怨，时隐时现，碰到人会带走一股寒意。

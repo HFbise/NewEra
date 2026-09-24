@@ -78,6 +78,7 @@ create table players (
   deepest_floor int not null default 0,          -- 到过远古地牢最深第几层（地窖石碑排行榜）
   waypoints   int[] not null default '{}',       -- 到过的传送石在第几层，能从地窖直接传送过去
   effects     jsonb not null default '[]',       -- 中毒、流血、看不清、腐蚀（schema.Effect 列表，engine 负面效果部分）
+  gear_hp     int not null default 0,            -- 装备加减的血量上限，已经算进 max_hp（engine._sync_gear_hp）
   created_at  timestamptz not null default now(),
   updated_at  timestamptz not null default now()
 );
