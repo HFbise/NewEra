@@ -136,6 +136,11 @@ def _parse_one(view: RoomView, t: str) -> dict:
         return {"action": "struggle", "description": t}
 
     # 倒下了选择被抬回酒馆（或者说了去哪）："复活""回酒馆复活""在铁匠铺复活"
+    # 传送石："传送到第 6 层"（地窖里）、"回城""使用传送石""摸传送石"（地牢的传送石边上，没倒下的时候）
+    if m := re.fullmatch(rf"(?:传送|传)\s*(?:到|去)?\s*第?\s*({NUM})\s*层", t):
+        return {"action": "teleport", "floor": cn_number(m[1])}
+    if view.player.hp > 0 and re.fullmatch(r"回城|传送|传送回去|回地面|(?:使用|摸|摸摸|触碰|碰|按)(?:一下)?传送石", t):
+        return {"action": "teleport"}
     if m := re.fullmatch(r"(?:(?:在|回|去|到)\s*(.+?)\s*)?(?:复活|重生|回城)|respawn", t, re.I):
         return {"action": "respawn", "target": m[1]}
 

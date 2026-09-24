@@ -93,6 +93,12 @@ class Pay(BaseModel):
     amount: int = Field(gt=0)
 
 
+class Teleport(BaseModel):
+    """传送石：在地牢的传送石边上回到地窖（floor 为空），在地窖里传送到到过的传送石那一层"""
+    action: Literal["teleport"]
+    floor: Optional[int] = None
+
+
 class Camp(BaseModel):
     """地牢里在清完怪的房间扎营：回一部分血（空房更多、带帐篷更多、生存判定成功再多），每层每人一次"""
     action: Literal["camp"]
@@ -259,7 +265,7 @@ class Reject(BaseModel):
 
 
 PlayerAction = Annotated[
-    Union[Move, Look, Take, Drop, Use, Equip, Unequip, Attack, Talk, Give, Pay, Upgrade, Say, Revive, Respawn, Stand, Rest, Camp, Invite, Join, LeaveParty,
+    Union[Move, Look, Take, Drop, Use, Equip, Unequip, Attack, Talk, Give, Pay, Upgrade, Say, Revive, Respawn, Stand, Rest, Camp, Teleport, Invite, Join, LeaveParty,
           Follow, Unfollow, Challenge, AcceptDuel, DeclineDuel, Flee, Stunt, Struggle, Maneuver, Dodge, Hide, Search,
           Freeform, Reject],
     Field(discriminator="action"),

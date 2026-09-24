@@ -152,9 +152,14 @@ def layout() -> tuple[tuple[int, int], tuple[int, int], set[frozenset]]:
     return start, stairs, edges
 
 
-def _make_floor(cur: Cursor, run: UUID, depth: int, above: str, size: int) -> str:
-    """生成第 depth 层，返回入口房间 id。above 是往上回去的房间（第 1 层是地窖，往后是上一层的楼梯间）；
-    size 是队伍人数：怪的血量、钱袋里的钱跟着涨"""
+def is_stone(depth: int) -> bool:
+    """打完头目之后的那一层（6、11、16……），入口是传送石"""
+    return depth > 1 and (depth - 1) % BOSS_EVERY == 0
+
+
+def _make_floor(cur: Cursor, run: UUID, depth: int, above: Optional[str], size: int) -> str:
+    """生成第 depth 层，返回入口房间 id。above 是往上回去的房间（第 1 层是地窖，往后是上一层的楼梯间；
+    从地窖直接传送来的没有上一层，就不开往上的路）；size 是队伍人数：怪的血量、钱袋里的钱跟着涨"""
     themes = data()["themes"]
     cur.execute("select theme from dungeon_floors where run_id = %s and depth = %s", (run, depth - 1))
     prev = cur.fetchone()
@@ -171,12 +176,15 @@ def _make_floor(cur: Cursor, run: UUID, depth: int, above: str, size: int) -> st
     for cell in cells:
         kind = kinds[cell]
         event = data()["events"][random.choice(theme["events"])] if kind == "event" else None
-        text = (event if event else theme[kind] if kind in ("entry", "stairs", "treasure")
+        text = (event if event else data()["stone"] if kind == "entry" and is_stone(depth)
+                else theme[kind] if kind in ("entry", "stairs", "treasure")
                 else pool.pop() if pool else random.choice(theme["rooms"]))
         rid = _room_id(run, depth, cell)
         props = {"dungeon": {"depth": depth, "theme": theme_key, "kind": kind},
                  "env": {"light": text.get("light", "dim"), "ground": text.get("ground", "normal"),
                          "cover": bool(text.get("cover"))}}
+        if kind == "entry" and is_stone(depth):
+            props["stone"] = True
         if kind == "empty":
             # 空房：搜索可能找到药草；调查（搜索时过调查判定）可能翻出藏着的古币，每人一次
             props["forage"] = EMPTY_FORAGE
@@ -226,7 +234,8 @@ def _make_floor(cur: Cursor, run: UUID, depth: int, above: str, size: int) -> st
                         (rid, Jsonb({"gold": coins})))
             cur.execute("insert into item_instances (template_id, room_id) values ('herb', %s)", (rid,))
     entry = _room_id(run, depth, start)
-    cur.execute("insert into room_exits (room_id, direction, to_room) values (%s, 'up', %s)", (entry, above))
+    if above:
+        cur.execute("insert into room_exits (room_id, direction, to_room) values (%s, 'up', %s)", (entry, above))
     cur.execute("""insert into dungeon_floors (run_id, depth, theme, entry_room, stairs_room, party_size)
                    values (%s, %s, %s, %s, %s, %s)""", (run, depth, theme_key, entry, _room_id(run, depth, stairs), size))
     return entry
@@ -234,7 +243,7 @@ def _make_floor(cur: Cursor, run: UUID, depth: int, above: str, size: int) -> st
 
 # ============ 进出 ============
 
-def _floor(cur: Cursor, run: UUID, depth: int, above: str, size: int) -> tuple[str, str]:
+def _floor(cur: Cursor, run: UUID, depth: int, above: Optional[str], size: int) -> tuple[str, str]:
     """(这一层的入口房间, 主题名)，还没有就按现在的队伍人数生成"""
     cur.execute("select 1 from dungeon_floors where run_id = %s and depth = %s", (run, depth))
     if not cur.fetchone():
@@ -258,28 +267,57 @@ def _run_for(cur: Cursor, player) -> UUID:
     return run
 
 
+def _party_size(cur: Cursor, player, online: str) -> int:
+    """队伍里在线的人数（自己总算一个）"""
+    if not player.party_id:
+        return 1
+    cur.execute(f"""select count(*) as n from players where party_id = %s
+                    and (id = %s or last_active_at > now() - interval '{online}')""", (player.party_id, player.id))
+    return max(1, cur.fetchone()["n"])
+
+
+def _arrive(cur: Cursor, player, run: UUID, depth: int, above: Optional[str], online: str) -> tuple[str, list[str]]:
+    """到第 depth 层（没有就按现在的队伍人数生成）：记最深层数、到了传送石就记下来。返回 (入口房间, facts)"""
+    entry, theme = _floor(cur, run, depth, above, _party_size(cur, player, online))
+    cur.execute("update dungeon_runs set last_active_at = now() where id = %s", (run,))
+    t = data()["themes"][theme]
+    facts = [f"{player.name}来到了远古地牢第 {depth} 层：{t['name']}。{t['intro']}"] + arrived(cur, [player.name], depth)
+    if depth % BOSS_EVERY == 0:
+        facts.append(f"这一层的楼梯间守着{t['boss']['name']}")
+    return entry, facts
+
+
+def arrived(cur: Cursor, names: list[str], depth: int) -> list[str]:
+    """这些人到了第 depth 层：更新最深层数；这层有传送石就记进他们能传送的层（players.waypoints）"""
+    cur.execute("update players set deepest_floor = greatest(deepest_floor, %s) where name = any(%s)", (depth, names))
+    if not is_stone(depth):
+        return []
+    cur.execute("""update players set waypoints = array_append(waypoints, %s)
+                   where name = any(%s) and not (%s = any(waypoints)) returning name""", (depth, names, depth))
+    new = [r["name"] for r in cur.fetchall()]
+    return [f"传送石的纹路亮了一下，记住了{'、'.join(new)}：以后在地窖的漆黑入口前就能直接传送到第 {depth} 层"] if new else []
+
+
 def through_gate(cur: Cursor, player, from_room: str, online: str) -> tuple[str, list[str]]:
     """走进地窖的漆黑入口、或者从楼梯间往下：返回 (要去的房间, facts)。第一次去的那层当场生成，
     难度按队伍里在线的人数（online 是算在线的时间窗）"""
     if is_dungeon(from_room):
         run, depth = parse_room(from_room)
-        depth += 1
-    else:
-        cleanup(cur)
-        run, depth = _run_for(cur, player), 1
-    size = 1
-    if player.party_id:
-        cur.execute(f"""select count(*) as n from players where party_id = %s
-                        and (id = %s or last_active_at > now() - interval '{online}')""", (player.party_id, player.id))
-        size = max(1, cur.fetchone()["n"])
-    entry, theme = _floor(cur, run, depth, from_room, size)
-    cur.execute("update dungeon_runs set last_active_at = now() where id = %s", (run,))
-    cur.execute("update players set deepest_floor = greatest(deepest_floor, %s) where id = %s", (depth, player.id))
-    t = data()["themes"][theme]
-    facts = [f"{player.name}来到了远古地牢第 {depth} 层：{t['name']}。{t['intro']}"]
-    if depth % BOSS_EVERY == 0:
-        facts.append(f"这一层的楼梯间守着{t['boss']['name']}")
-    return entry, facts
+        return _arrive(cur, player, run, depth + 1, from_room, online)
+    cleanup(cur)
+    return _arrive(cur, player, _run_for(cur, player), 1, from_room, online)
+
+
+def teleport_to(cur: Cursor, player, depth: int, online: str) -> tuple[str, list[str]]:
+    """从地窖直接传送到有传送石的那一层（自己或队伍那份地牢，没有就生成；上面几层不生成）"""
+    cleanup(cur)
+    return _arrive(cur, player, _run_for(cur, player), depth, None, online)
+
+
+def waypoints_text(waypoints: list[int]) -> str:
+    if not waypoints:
+        return "还没有到过任何一块传送石（打倒第 5 层的头目，下到第 6 层就能找到第一块）"
+    return "能直接传送到：" + "、".join(f"第 {d} 层" for d in sorted(waypoints)) + "（在地窖里说\"传送到第 N 层\"）"
 
 
 def touch(cur: Cursor, room_id: str) -> None:

@@ -27,7 +27,7 @@ from schema import (
     ActionResult, Attack, Drop, Equip, Feature, Follow, Freeform, Give, Invite, ItemInstance, Join, LeaveParty, Look,
     Move, Npc, OtherPlayer, Player, PlayerAction, Reject, Revive, Room, RoomExit, RoomView, Say, Status, Struggle,
     Stunt, Take, Talk, Unfollow, Unequip, Use, dir_name, Dispenser, SLOT_CHOICES, SLOT_NAMES, Dodge, Hide, Maneuver, Search, Stealth,
-    AcceptDuel, Challenge, DeclineDuel, Duel, Flee, SKILL_NAMES, Upgrade, Respawn, Stand, Rest, Pay, Camp,
+    AcceptDuel, Challenge, DeclineDuel, Duel, Flee, SKILL_NAMES, Upgrade, Respawn, Stand, Rest, Pay, Camp, Teleport,
 )
 
 
@@ -692,8 +692,7 @@ def do_move(cur: Cursor, player: Player, view: RoomView, a: Move) -> list[str]:
     if names:
         facts.append(f"{'、'.join(names)}跟着{player.name}一起来到了{room.name}")
         if arrived:
-            cur.execute("update players set deepest_floor = greatest(deepest_floor, %s) where name = any(%s)",
-                        (dungeon.parse_room(to)[1], names))
+            facts += dungeon.arrived(cur, names, dungeon.parse_room(to)[1])
     return facts
 
 
@@ -727,6 +726,39 @@ def _road_event(cur: Cursor, player: Player, view: RoomView, to: str) -> list[st
     cur.execute("""update rooms set props = props || '{"noise": true}' where id = %s""", (to,))
     return [random.choice(dungeon.data()["themes"][f["theme"]]["eerie"]),
             "声音像是就在这附近，要是循声去找（搜索），也许能找到它的来源"]
+
+
+def do_teleport(cur: Cursor, player: Player, view: RoomView, a: Teleport) -> list[str]:
+    """传送石边上：回到地窖。地窖里：传送到到过的传送石那一层。同房间跟着他的人一起走"""
+    here = player.room_id
+    if _active_duel(cur, player.id):
+        raise ActionError(f"{player.name}正在决斗，走不了")
+    if dungeon.is_dungeon(here) and view.room.props.get("stone"):
+        to, facts = dungeon.ENTRANCE, [f"{player.name}把手按在传送石上，纹路里的银光一下子亮起来裹住全身，"
+                                       f"再睁眼已经站在了{load_room(cur, dungeon.ENTRANCE).name}的漆黑入口前"]
+        dungeon.touch(cur, here)
+    elif here == dungeon.ENTRANCE:
+        cur.execute("select waypoints from players where id = %s", (player.id,))
+        points = cur.fetchone()["waypoints"]
+        if a.floor is None or a.floor not in points:
+            raise ActionError((f"{player.name}还没到过第 {a.floor} 层的传送石。" if a.floor else "")
+                              + dungeon.waypoints_text(points))
+        to, facts = dungeon.teleport_to(cur, player, a.floor, ONLINE_WINDOW)
+        facts = [f"{player.name}站在漆黑的入口前默念第 {a.floor} 层，一阵银光闪过"] + facts
+    else:
+        raise ActionError("只有在地牢的传送石边上、或者地窖的漆黑入口前才能传送")
+    cur.execute("update players set room_id = %s, following = null, stealth = null, updated_at = now() where id = %s",
+                (to, player.id))
+    cur.execute(
+        f"""update players set room_id = %s, updated_at = now()
+            where following = %s and room_id = %s and hp > 0 and status is null
+              and last_active_at > now() - interval '{ONLINE_WINDOW}' returning name""", (to, player.id, here))
+    names = [r["name"] for r in cur.fetchall()]
+    if names:
+        facts.append(f"{'、'.join(names)}跟着{player.name}一起传了过去")
+        if dungeon.is_dungeon(to):
+            facts += dungeon.arrived(cur, names, dungeon.parse_room(to)[1])
+    return facts
 
 
 # 扎营：回 max_hp × CAMP_BASE，带帐篷再加 CAMP_TENT（用掉一顶），生存判定成功再加 CAMP_SURVIVAL，空房里整体 ×CAMP_EMPTY
@@ -845,7 +877,7 @@ def do_look(cur: Cursor, player: Player, view: RoomView, a: Look) -> list[str]:
     npcs = load_npcs(cur, "n.id = %s and n.room_id = %s and n.alive", (uid, player.room_id))
     if npcs:
         n = npcs[0]
-        facts = [f"{n.name}：{n.template.description}"] + _stele(cur, n)
+        facts = [f"{n.name}：{n.template.description}"] + _stele(cur, n, player)
         if n.combatable:
             facts.append(f"{n.name} HP {n.hp}/{n.template.max_hp}")
         if n.status:
@@ -1938,7 +1970,7 @@ def do_talk(cur: Cursor, player: Player, view: RoomView, a: Talk) -> list[str]:
     # 外面多包的一层引号（玩家自己打了引号）也去掉
     message = re.sub(rf"^(对|跟|和|向){re.escape(npc.name)}(说|讲|问)?[\s，,：:]*", "", a.message).strip() or a.message
     message = message.strip("\"“”'‘’「」").strip() or message
-    facts = [f"{player.name}对{npc.name}说：“{message}”"] + _stele(cur, npc)
+    facts = [f"{player.name}对{npc.name}说：“{message}”"] + _stele(cur, npc, player)
     offers = _offers(cur, player.id, npc)
     # 刚说要白给她钱、她问了"真要给我？"，这句回"是""给你"就给
     if (tip := offers.get("tip")) and TIP_CONFIRM_RE.search(message) and not re.search(r"不|算了|别", message[:4]):
@@ -2009,9 +2041,14 @@ def _tip(cur: Cursor, player: Player, npc: Npc, amount: int, pending: Optional[d
             + _pay(cur, player, amount, npc))
 
 
-def _stele(cur: Cursor, npc: Npc) -> list[str]:
-    """地窖石碑（world.yaml props.leaderboard）：看它、跟它说话，碑面上都会显出到过地牢最深处的人"""
-    return [dungeon.leaderboard(cur)] if npc.template.props.get("leaderboard") else []
+def _stele(cur: Cursor, npc: Npc, player: Player) -> list[str]:
+    """地窖石碑（world.yaml props.leaderboard）：看它、跟它说话，碑面上都会显出到过地牢最深处的人，
+    还有这个人能直接传送到哪几层"""
+    if not npc.template.props.get("leaderboard"):
+        return []
+    cur.execute("select waypoints from players where id = %s", (player.id,))
+    points = cur.fetchone()["waypoints"]
+    return [dungeon.leaderboard(cur), f"碑面上还浮现出给{player.name}的字：{dungeon.waypoints_text(points)}"]
 
 
 def do_give(cur: Cursor, player: Player, view: RoomView, a: Give) -> list[str]:
@@ -2130,7 +2167,7 @@ HANDLERS: dict[str, Callable[..., list[str]]] = {
     "say": do_say, "revive": do_revive, "stunt": do_stunt, "struggle": do_struggle,
     "follow": do_follow, "unfollow": do_unfollow, "invite": do_invite, "join": do_join, "leave_party": do_leave_party,
     "maneuver": do_maneuver, "dodge": do_dodge, "hide": do_hide, "search": do_search, "reject": do_reject,
-    "upgrade": do_upgrade, "pay": do_pay, "respawn": do_respawn, "stand": do_stand, "rest": do_rest, "camp": do_camp, "challenge": do_challenge, "accept_duel": do_accept_duel, "decline_duel": do_decline_duel, "flee": do_flee,
+    "upgrade": do_upgrade, "pay": do_pay, "respawn": do_respawn, "stand": do_stand, "rest": do_rest, "camp": do_camp, "teleport": do_teleport, "challenge": do_challenge, "accept_duel": do_accept_duel, "decline_duel": do_decline_duel, "flee": do_flee,
 }
 
 

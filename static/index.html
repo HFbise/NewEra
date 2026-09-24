@@ -47,6 +47,11 @@
   #help { color: var(--dim); font-size: 12px; line-height: 1.7; }
   /* 装备栏两列，格子名在前；空格子不能点 */
   #side ul.equip { display: grid; grid-template-columns: 1fr 1fr; gap: 0 8px; }
+  #side h2.fold { cursor: pointer; user-select: none; }
+  #side h2.fold:hover { color: var(--text); }
+  #side h2.fold::after { content: " ▾"; }
+  #side h2.fold.closed::after { content: " ▸"; }
+  #side .closed + .fold-body { display: none; }
   #side ul.equip li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #side ul.equip li.empty { color: var(--dim); cursor: default; }
   #side ul.equip li.empty:hover { background: none; }
@@ -131,6 +136,11 @@ function log(html) {
   $("#log").scrollTop = $("#log").scrollHeight;
 }
 
+// 装备、技能栏可以点标题收起，收没收记在本机（轮询重画时照着记的状态画）
+let folded = new Set();
+try { folded = new Set(JSON.parse(localStorage.getItem("newera.folded") || "[]")); } catch {}
+const foldHead = (key, title) => `<h2 class="fold${folded.has(key) ? " closed" : ""}" data-fold="${key}">${title}</h2>`;
+
 function render(s) {
   const p = s.player;
   // fill 是点一下填进输入框的文字，默认就是名字
@@ -165,12 +175,12 @@ function render(s) {
     ${s.invites.length ? `<h2>组队邀请</h2><ul>${s.invites.map(n => `<li data-name="${esc(n)}">${esc(n)}<span class="tag">邀请你组队</span></li>`).join("")}</ul>` : ""}
     ${s.items.length ? `<h2>地上</h2><ul>${s.items.map(i => li(i.ref, i.name,
       i.quantity > 1 ? `<span class="tag">x${i.quantity}</span>` : "", i.fill)).join("")}</ul>` : ""}
-    <h2>技能</h2>
-    <ul class="equip">${s.skills.map(k => `<li class="empty" title="这一级攒了 ${k.have}/${k.need} 次熟练">${k.name} ${k.level}<span class="tag">${k.have}/${k.need}</span></li>`).join("")}</ul>
-    <h2>装备</h2>
-    <ul class="equip">${s.equipment.map(e => e.item
+    ${foldHead("equip", "装备")}
+    <ul class="equip fold-body">${s.equipment.map(e => e.item
       ? `<li data-name="卸下${esc(e.item.name)}"><span class="tag slot">${e.label}</span>${esc(e.item.name)}</li>`
       : `<li class="empty"><span class="tag slot">${e.label}</span>—</li>`).join("")}</ul>
+    ${foldHead("skills", "技能")}
+    <ul class="equip fold-body">${s.skills.map(k => `<li class="empty" title="这一级攒了 ${k.have}/${k.need} 次熟练">${k.name} ${k.level}<span class="tag">${k.have}/${k.need}</span></li>`).join("")}</ul>
     <h2>背包</h2>
     <ul>${s.inventory.map(i => li(i.ref, i.name,
       i.quantity > 1 ? `<span class="tag">x${i.quantity}</span>` : "")).join("") || '<li class="sys">空</li>'}</ul>
@@ -179,6 +189,7 @@ function render(s) {
       看 · 北 南 东 西 上 下<br>
       拿 · 扔 · 装备 · 卸下 · 吃 · 喂 · 给 · 给钱（给麦琪5金币）· 买 · 升级（找莉娜）· 住店（酒馆）<br>
       打 · 躲起来 · 搜索 · 说 · 对某人说<br>
+      地牢：扎营 · 回城（传送石边）· 传送到第 N 层（地窖）<br>
       邀请组队 · 加入队伍 · 离开队伍<br>
       跟着 · 停止跟随 · 急救 · 挣脱<br>
       决斗某人 · 接受决斗 · 拒绝决斗 · 逃跑<br>
@@ -432,6 +443,14 @@ $("#cmd-form").addEventListener("pointerdown", e => {
 $("#side").onclick = e => {
   if (e.target.id === "logout") { e.preventDefault(); logout(); return; }
   if (e.target.id === "delete") { e.preventDefault(); deleteCharacter(); return; }
+  const head = e.target.closest("h2[data-fold]");
+  if (head) {
+    const key = head.dataset.fold;
+    folded.has(key) ? folded.delete(key) : folded.add(key);
+    head.classList.toggle("closed", folded.has(key));
+    try { localStorage.setItem("newera.folded", JSON.stringify([...folded])); } catch {}
+    return;
+  }
   const li = e.target.closest("li[data-name]");
   if (li) { $("#cmd").value += li.dataset.name; $("#cmd").focus(); }
 };
