@@ -66,7 +66,7 @@
   #side ul.equip li.empty { color: var(--dim); cursor: default; }
   #side ul.equip li.empty:hover { background: none; }
   .tag.slot { margin: 0 6px 0 0; }
-  /* 没有鼠标悬停的设备（手机）：点物品弹出详情小窗，按"输入"才填进输入框 */
+  /* 点物品、技能、光亮弹出详情小窗，按"输入"才填进输入框 */
   #tip { position: fixed; left: 12px; right: 12px; z-index: 10; max-width: 420px; margin: 0 auto; background: var(--panel);
          border: 1px solid var(--accent); border-radius: 8px; padding: 10px 12px; box-shadow: 0 6px 24px rgba(0, 0, 0, .5);
          font-size: 14px; }
@@ -164,7 +164,7 @@ function render(s) {
   const p = s.player;
   // fill 是点一下填进输入框的文字，默认就是名字
   const li = (ref, label, extra = "", fill = label, detail = "") =>
-    `<li data-name="${esc(fill)}"${detail ? ` title="${esc(detail)}"` : ""}><span class="ref">${ref}</span>${esc(label)}${extra}</li>`;
+    `<li data-name="${esc(fill)}"${detail ? ` data-detail="${esc(detail)}"` : ""}><span class="ref">${ref}</span>${esc(label)}${extra}</li>`;
   $("#side").innerHTML = `
     <h2>${esc(p.name)}</h2>
     <div>HP ${p.hp}/${p.max_hp} · 攻 ${s.attack_total} · 防 ${s.defense_total} · 金币 ${p.gold}</div>
@@ -177,7 +177,7 @@ function render(s) {
     <h2>位置</h2>
     <div class="room">${esc(s.room.name)}</div>
     <div class="sys">${esc(s.room.description)}</div>
-    ${s.light ? `<div class="light" title="${esc(s.light.source)}">光亮 ${s.light.value}/100 · ${esc(s.light.word)}
+    ${s.light ? `<div class="light" data-detail="${esc(s.light.source)}">光亮 ${s.light.value}/100 · ${esc(s.light.word)}
       <div class="lightbar"><div style="width:${s.light.value}%"></div><span class="mark"></span></div>
       <ul class="sys">${s.light.lines.map(l => `<li>${esc(l)}</li>`).join("")}</ul>
       <div class="tag">光从哪来：${esc(s.light.source)}</div></div>` : ""}
@@ -201,10 +201,10 @@ function render(s) {
       i.quantity > 1 ? `<span class="tag">x${i.quantity}</span>` : "", i.fill, i.detail)).join("")}</ul>` : ""}
     ${foldHead("equip", "装备")}
     <ul class="equip fold-body">${s.equipment.map(e => e.item
-      ? `<li data-name="卸下${esc(e.item.name)}" title="${esc(e.item.detail || "")}"><span class="tag slot">${e.label}</span>${esc(e.item.name)}</li>`
+      ? `<li data-name="卸下${esc(e.item.name)}" data-detail="${esc(e.item.detail || "")}"><span class="tag slot">${e.label}</span>${esc(e.item.name)}</li>`
       : `<li class="empty"><span class="tag slot">${e.label}</span>—</li>`).join("")}</ul>
     ${foldHead("skills", "技能")}
-    <ul class="equip fold-body">${s.skills.map(k => `<li class="empty" title="这一级攒了 ${k.have}/${k.need} 次熟练">${k.name} ${k.level}<span class="tag">${k.have}/${k.need}</span></li>`).join("")}</ul>
+    <ul class="equip fold-body">${s.skills.map(k => `<li class="empty" data-detail="这一级攒了 ${k.have}/${k.need} 次熟练">${k.name} ${k.level}<span class="tag">${k.have}/${k.need}</span></li>`).join("")}</ul>
     <h2>背包</h2>
     <ul>${s.inventory.map(i => li(i.ref, i.name,
       i.quantity > 1 ? `<span class="tag">x${i.quantity}</span>` : "", i.name, i.detail)).join("") || '<li class="sys">空</li>'}</ul>
@@ -475,14 +475,14 @@ $("#side").onclick = e => {
     try { localStorage.setItem("newera.folded", JSON.stringify([...folded])); } catch {}
     return;
   }
-  // 手机上没有悬停：有详情的东西点一下先弹小窗看详情，按"输入"才填名字；电脑上照旧悬停看、点一下填
-  const info = e.target.closest("[title]");
-  if (noHover.matches && info && info.title && info.closest("#side")) { showTip(info); return; }
+  // 有详情的东西（物品、技能、光亮）点一下先弹小窗看详情，按"输入"才填名字。电脑手机一样：
+  // 以前电脑靠悬停（title），有的手机也报自己能悬停，结果看不到详情
+  const info = e.target.closest("[data-detail]");
+  if (info && info.dataset.detail) { showTip(info); return; }
   const li = e.target.closest("li[data-name]");
   if (li) { $("#cmd").value += li.dataset.name; $("#cmd").focus(); }
 };
 
-const noHover = matchMedia("(hover: none)");
 function showTip(el) {
   let tip = $("#tip");
   if (!tip) {
@@ -494,24 +494,29 @@ function showTip(el) {
   const head = el.cloneNode(true);
   head.querySelectorAll(".ref, .tag").forEach(r => r.remove());
   const label = head.textContent.trim();
-  const name = el.matches("li") && !el.title.startsWith(label) ? label : "";
-  tip.innerHTML = `${name ? `<div class="name">${esc(name)}</div>` : ""}<div class="detail">${esc(el.title)}</div>
+  const name = el.matches("li") && !el.dataset.detail.startsWith(label) ? label : "";
+  tip.innerHTML = `${name ? `<div class="name">${esc(name)}</div>` : ""}<div class="detail">${esc(el.dataset.detail)}</div>
     <div class="btns">${el.dataset.name ? `<button class="fill">输入</button>` : ""}<button class="close">关闭</button></div>`;
   tip.querySelector(".close").onclick = hideTip;
   const fill = tip.querySelector(".fill");
   if (fill) fill.onclick = () => { $("#cmd").value += el.dataset.name; hideTip(); $("#cmd").focus(); };
-  // 放在点的东西下面，下面放不下就放上面
+  // 窄屏（手机）放在点的东西下面，下面放不下就放上面；宽屏放在侧栏左边、跟那一项对齐
   const r = el.getBoundingClientRect();
+  const wide = innerWidth > 720;
   tip.style.top = tip.style.bottom = "";
+  tip.style.left = wide ? "auto" : "";
+  tip.style.right = wide ? `${innerWidth - $("#side").getBoundingClientRect().left + 8}px` : "";
+  tip.style.width = wide ? "380px" : "";
   tip.style.visibility = "hidden";
   tip.hidden = false;
-  if (r.bottom + tip.offsetHeight + 8 < innerHeight) tip.style.top = `${r.bottom + 6}px`;
+  if (wide) tip.style.top = `${Math.max(8, Math.min(r.top, innerHeight - tip.offsetHeight - 8))}px`;
+  else if (r.bottom + tip.offsetHeight + 8 < innerHeight) tip.style.top = `${r.bottom + 6}px`;
   else tip.style.bottom = `${Math.max(8, innerHeight - r.top + 6)}px`;
   tip.style.visibility = "";
 }
 function hideTip() { const tip = $("#tip"); if (tip) tip.hidden = true; }
 // 点小窗外面、滚动信息栏就关掉
-document.addEventListener("pointerdown", e => { if (!e.target.closest("#tip, #side [title]")) hideTip(); });
+document.addEventListener("pointerdown", e => { if (!e.target.closest("#tip, #side [data-detail]")) hideTip(); });
 $("#side").addEventListener("scroll", hideTip);
 
 if (playerId) { $("#login").style.display = "none"; enter(); }
