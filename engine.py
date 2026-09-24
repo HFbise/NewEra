@@ -743,6 +743,14 @@ def _tick_npc_effects(cur: Cursor, player: Player, npcs: list[Npc]) -> list[str]
     return facts
 
 
+def _assassinated(cur: Cursor, player: Player, view: RoomView, npc: Npc, dead: bool, unseen: bool) -> list[str]:
+    """敌人还没发现你就被解决了（暗杀）：隐匿熟练 +1，一条消息最多一次"""
+    if not (dead and unseen and npc.template.hostile) or "stealth" in view.trained:
+        return []
+    view.trained.append("stealth")
+    return [f"{npc.name}到死都没发现{player.name}"] + _gain_skill(cur, player, "stealth")
+
+
 def _attack_extras(cur: Cursor, player: Player, npc: Npc, fired: list[dict]) -> list[str]:
     """普通攻击出手时（打没打中都算）触发的：甩开铁链扫到别的敌人、握柄的刃咬手"""
     facts = []
@@ -2210,6 +2218,7 @@ def do_attack(cur: Cursor, player: Player, view: RoomView, a: Attack) -> list[st
     whet = _effect(player, "whet")
     dmg = _bled(player, max(1, power + (whet.value if whet else 0) + bonus + _aura(cur, player, "attack") - armor))
     facts, dead = _hurt_npc(cur, player, npc, dmg)
+    facts += _assassinated(cur, player, view, npc, dead, not st.detected)
     facts = ([f"{player.name}用{how}攻击{npc.name}，造成 {dmg} 点伤害"]
              + _labels([e for e in fired if e["do"] in ("bonus", "pierce")]) + facts
              + _hit_extras(cur, player, npc, dmg, dead, fired)
@@ -2353,6 +2362,7 @@ def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]
                           + (int(weapon.damage * WEAPON_STUNT_SHARE) if weapon and tier != "none" else 0))):
         if is_npc:
             hurt, down = _hurt_npc(cur, player, target, dmg)
+            hurt += _assassinated(cur, player, view, target, down, not _stealth(player).detected)
         else:
             hurt, down = _hurt_player(cur, target, dmg, *(("poison", poison.name) if poison else ("player", player.name)))
         facts += [f"{target.name}受到 {dmg} 点伤害"] + hurt + ([] if is_npc else _duel_over(cur, down))
@@ -3269,6 +3279,86 @@ GIFT_AFFINITY = 50
 
 def can_gift(affinity: int) -> bool:
     return affinity >= GIFT_AFFINITY
+
+
+# ============ 物品详情（界面上悬停显示）============
+TYPE_NAMES = {"weapon": "武器", "armor": "防具", "consumable": "吃喝", "key": "钥匙", "misc": "杂物"}
+PART_NAMES = {"hand": "手", "head": "头", "chest": "胸", "neck": "项链", "feet": "脚", "ring": "戒指", "legs": "腿",
+              "belt": "腰"}
+STATE_NAMES = {"poison": "中毒", "bleed": "流血", "blind": "看不清", "corrode": "腐蚀", "restrained": "被缠住",
+               "prone": "倒地", "stun": "定住"}
+TAG_NAMES = {"undead": "亡灵", "animal": "野兽", "light_averse": "怕光的怪"}
+WHEN_NAMES = {"passive": "", "attack": "每次出手", "hit": "打中时", "kill": "杀死敌人时", "hurt": "被打中时",
+              "fight": "每场第一次攻击", "enter": "走进新房间时"}
+GIFT_FOR = {"ore": "莉娜", "wine": "麦琪", "book": "诺艾尔"}
+
+
+def _effect_line(e: dict) -> str:
+    v, k = e.get("value", 0), e.get("kind", "")
+    what = {
+        "splash": f"其他敌人各挨 {v} 点", "chain": f"电到另一个敌人 {v} 点", "bonus": f"伤害 +{v}",
+        "pierce": f"无视 {v} 点防御", "guard": f"受到的伤害 -{v}", "heal": f"回 {v} 点血",
+        "leech": f"吸回造成伤害的 {round(v * 100)}%", "status": f"让对方{STATE_NAMES.get(k, k)}",
+        "status_all": f"让所有敌人{STATE_NAMES.get(k, k)}", "reflect": f"打你的敌人挨 {v} 点", "dodge": "完全躲开这一下",
+        "resist": f"免疫{STATE_NAMES.get(k, k)}" if v == 0 else f"{STATE_NAMES.get(k, k)}的几率 ×{v}",
+        "max_hp": f"血量上限 {v:+d}", "skill": f"{SKILL_NAMES.get(k, k)} +{v}", "gold": f"打怪掉的金币 +{round(v * 100)}%",
+        "flee": "逃跑更容易" if v < 0 else "逃跑更难", "wade": "积水里行动不受影响", "darkvision": "暗处攻击不打折",
+        "self_damage": f"自己掉 {v} 点血", "cheat_death": "本该倒下时留 1 点血",
+        "aura": f"同房间的队友和自己{'攻击' if k == 'attack' else '防御'} +{v}",
+    }.get(e.get("do"), e.get("do", ""))
+    cond = e.get("if") or {}
+    pre = [WHEN_NAMES.get(e.get("when"), "")]
+    if vs := e.get("vs"):
+        pre.append("对" + "、".join(TAG_NAMES.get(t, t) for t in vs))
+    if "hp_below" in cond:
+        pre.append(f"自己血量低于 {round(cond['hp_below'] * 100)}% 时")
+    if "target_hp_below" in cond:
+        pre.append(f"对方血量低于 {round(cond['target_hp_below'] * 100)}% 时")
+    if cond.get("ally_down"):
+        pre.append("有队友倒下时")
+    tail = (f"（{round(e['chance'] * 100)}% 几率）" if e.get("chance", 1) < 1 else "") \
+        + ("（每层一次）" if e.get("once") == "per_floor" else "")
+    return "，".join(p for p in pre if p) + ("：" if any(pre) else "") + what + tail
+
+
+def item_detail(item: ItemInstance) -> str:
+    """给人看的物品详情：类型、数值、特殊效果、参考价、描述"""
+    t = item.template
+    head = item.name + f"（{TYPE_NAMES.get(t.type, t.type)}"
+    if t.slot:
+        head += f" · {'双手' if _prop(item, 'two_handed') else PART_NAMES.get(t.slot, t.slot)}"
+    lines = [head + "）"]
+    stats = []
+    if item.damage:
+        stats.append(f"伤害 {item.damage}")
+    if item.defense:
+        stats.append(f"防御 {item.defense}")
+    if item.heal:
+        stats.append(f"回血 {item.heal * (HEAL_PCT_ALCOHOL if _is_alcohol(item) else HEAL_PCT)}%（按血量上限）")
+    if item.harm:
+        stats.append(f"有毒，掉 {item.harm} 点血" + ("（认得出来就没事）" if _prop(item, "harm_check") else ""))
+    if light := _prop(item, "light"):
+        stats.append(f"光亮 +{light}")
+    if stats:
+        lines.append("，".join(stats))
+    extra = {
+        "lights": "拿到手上就点燃（光亮 +35），在地牢里撑两层", "cursed": "诅咒：戴上就卸不下来",
+        "cure": f"能治{STATE_NAMES.get(_prop(item, 'cure'), '')}", "refuel": "倒在快灭的火把上让它重新烧旺",
+        "whet": f"这一层普通攻击伤害 +{_prop(item, 'whet')}", "room_light": f"这个房间光亮 +{_prop(item, 'room_light')}，走开就散",
+        "holy": "泼向亡灵或怕光的怪能重创它", "throw": "能掷出去", "stun": "念出来房间里所有敌人定住",
+        "recall": "在地牢里用，传回村子", "camp": "扎营时多回 30% 血", "alcohol": "酒，喝多了会醉",
+        "sober": "喝了马上酒醒",
+    }
+    lines += [text for key, text in extra.items() if _prop(item, key)]
+    if uses := _prop(item, "uses"):
+        lines.append(f"能用 {item.props.get('uses_left', uses)} 次")
+    if gift := _prop(item, "gift"):
+        lines.append(f"{GIFT_FOR.get(gift, '')}最想要的礼物")
+    lines += [_effect_line(e) for e in _prop(item, "effects") or []]
+    if price := base_price(item_stats(item)):
+        lines.append(f"参考价 {price} 金币")
+    lines.append(item.description)
+    return "\n".join(lines)
 
 
 def effect_text(stats: dict) -> str:

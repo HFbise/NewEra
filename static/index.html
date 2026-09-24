@@ -47,10 +47,13 @@
   #help { color: var(--dim); font-size: 12px; line-height: 1.7; }
   /* 装备栏两列，格子名在前；空格子不能点 */
   #side ul.equip { display: grid; grid-template-columns: 1fr 1fr; gap: 0 8px; }
-  #side h2.fold { cursor: pointer; user-select: none; }
-  #side h2.fold:hover { color: var(--text); }
-  #side h2.fold::after { content: " ▾"; }
-  #side h2.fold.closed::after { content: " ▸"; }
+  /* 能收起的栏目：做成按钮的样子，一看就知道能点 */
+  #side h2.fold { cursor: pointer; user-select: none; display: inline-block; padding: 3px 12px;
+                  border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); }
+  #side h2.fold:hover { border-color: var(--accent); }
+  #side h2.fold::after { content: " ▾ 收起"; color: var(--dim); font-weight: 400; }
+  #side h2.fold.closed::after { content: " ▸ 展开"; }
+  #side .fold + .fold-body { margin-top: 6px; }
   #side .closed + .fold-body { display: none; }
   #side ul.equip li { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   #side ul.equip li.empty { color: var(--dim); cursor: default; }
@@ -144,8 +147,8 @@ const foldHead = (key, title) => `<h2 class="fold${folded.has(key) ? " closed" :
 function render(s) {
   const p = s.player;
   // fill 是点一下填进输入框的文字，默认就是名字
-  const li = (ref, label, extra = "", fill = label) =>
-    `<li data-name="${esc(fill)}"><span class="ref">${ref}</span>${esc(label)}${extra}</li>`;
+  const li = (ref, label, extra = "", fill = label, detail = "") =>
+    `<li data-name="${esc(fill)}"${detail ? ` title="${esc(detail)}"` : ""}><span class="ref">${ref}</span>${esc(label)}${extra}</li>`;
   $("#side").innerHTML = `
     <h2>${esc(p.name)}</h2>
     <div>HP ${p.hp}/${p.max_hp} · 攻 ${s.attack_total} · 防 ${s.defense_total} · 金币 ${p.gold}</div>
@@ -175,16 +178,16 @@ function render(s) {
     ${s.challenging ? `<div class="sys">你向${esc(s.challenging)}申请了决斗，等对方接受</div>` : ""}
     ${s.invites.length ? `<h2>组队邀请</h2><ul>${s.invites.map(n => `<li data-name="${esc(n)}">${esc(n)}<span class="tag">邀请你组队</span></li>`).join("")}</ul>` : ""}
     ${s.items.length ? `<h2>地上</h2><ul>${s.items.map(i => li(i.ref, i.name,
-      i.quantity > 1 ? `<span class="tag">x${i.quantity}</span>` : "", i.fill)).join("")}</ul>` : ""}
+      i.quantity > 1 ? `<span class="tag">x${i.quantity}</span>` : "", i.fill, i.detail)).join("")}</ul>` : ""}
     ${foldHead("equip", "装备")}
     <ul class="equip fold-body">${s.equipment.map(e => e.item
-      ? `<li data-name="卸下${esc(e.item.name)}"><span class="tag slot">${e.label}</span>${esc(e.item.name)}</li>`
+      ? `<li data-name="卸下${esc(e.item.name)}" title="${esc(e.item.detail || "")}"><span class="tag slot">${e.label}</span>${esc(e.item.name)}</li>`
       : `<li class="empty"><span class="tag slot">${e.label}</span>—</li>`).join("")}</ul>
     ${foldHead("skills", "技能")}
     <ul class="equip fold-body">${s.skills.map(k => `<li class="empty" title="这一级攒了 ${k.have}/${k.need} 次熟练">${k.name} ${k.level}<span class="tag">${k.have}/${k.need}</span></li>`).join("")}</ul>
     <h2>背包</h2>
     <ul>${s.inventory.map(i => li(i.ref, i.name,
-      i.quantity > 1 ? `<span class="tag">x${i.quantity}</span>` : "")).join("") || '<li class="sys">空</li>'}</ul>
+      i.quantity > 1 ? `<span class="tag">x${i.quantity}</span>` : "", i.name, i.detail)).join("") || '<li class="sys">空</li>'}</ul>
     <h2>命令</h2>
     <div id="help">
       看 · 北 南 东 西 上 下<br>

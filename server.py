@@ -107,7 +107,8 @@ def state(conn, view: RoomView, after: Optional[int] = None) -> dict:
         "room": view.room.model_dump(),
         "exits": [{"direction": e.direction, "label": dir_name(e.direction), "to": room_names[e.to_room],
                    "locked": e.locked} for e in view.exits],
-        "items": [{"ref": by_id[i.id], "name": i.name, "quantity": i.quantity} for i in view.items]
+        "items": [{"ref": by_id[i.id], "name": i.name, "quantity": i.quantity, "detail": engine.item_detail(i)}
+                  for i in view.items]
                  # 搜索能找到的：点一下填"搜索"
                  + [{"ref": "", "name": n, "quantity": 1, "fill": "搜索"} for n in view.forage],
         "npcs": [{"ref": by_id[n.id], "name": n.name, "hp": n.hp, "max_hp": n.template.max_hp,
@@ -119,9 +120,10 @@ def state(conn, view: RoomView, after: Optional[int] = None) -> dict:
                    for d in view.dispensers],
         # 装备栏按固定顺序列全部格子，空的 item 为 null；背包只列没装备的
         "equipment": [{"slot": slot, "label": label,
-                       "item": next(({"ref": by_id[i.id], "name": i.name} for i in view.inventory
+                       "item": next(({"ref": by_id[i.id], "name": i.name, "detail": engine.item_detail(i)}
+                                     for i in view.inventory
                                      if i.equipped_slot == slot), None)} for slot, label in SLOT_NAMES.items()],
-        "inventory": [{"ref": by_id[i.id], "name": i.name, "quantity": i.quantity}
+        "inventory": [{"ref": by_id[i.id], "name": i.name, "quantity": i.quantity, "detail": engine.item_detail(i)}
                       for i in view.inventory if not i.equipped_slot],
         # 攻防算上装备：双持时副手武器只加四分之一，所有装备的防御相加
         "attack_total": view.player.attack + engine.weapon_damage(
