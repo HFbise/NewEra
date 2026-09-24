@@ -22,6 +22,7 @@ from pydantic import BaseModel, TypeAdapter, ValidationError
 from zai import ZhipuAiClient
 from zai.core import ZaiError
 
+import commands
 import engine
 from schema import DIR_NAMES, SKILL_NAMES, SLOT_NAMES, ActionResult, ItemInstance, Npc, PlayerAction, RoomView, dir_name
 
@@ -251,7 +252,7 @@ INTENT_SYSTEM = """你是文字 MUD 游戏的指令解析器。读玩家的输�
 - attack: target（NPC 的 ref；打其他玩家时填"其他玩家"里的名字。玩家之间只有决斗中才会受伤，没在决斗也照样输出 attack，由引擎拒绝）
 - talk: target（NPC 的 ref），message（玩家说的话，保留原话）。找 NPC 买东西、问价、砍价、点菜、要东西都是 talk
 - give: item（背包物品的 ref），target（NPC 的 ref；给其他玩家时填"其他玩家"里的名字）。给、递、交、送、塞到他手里是 give：东西到了对方手上，吃不吃是他的事。喂他吃、塞进他嘴里（强行的也算）、给他灌下去是 use 不是 give
-- upgrade: item（背包里武器的 ref），target（会升级武器的铁匠 NPC 的 ref）。找铁匠升级、强化、重新锻打自己的武器；问升级要多少钱也是 upgrade（第一次引擎只开价，再说一次才动手）
+- upgrade: item（背包里武器的 ref，没说哪把就不填），target（会升级武器的铁匠 NPC 的 ref），ore（说用奥利哈刚、矿石填 true，说不用填 false，没提不填），quote（只问升级要多少钱填 true）。找铁匠升级、强化、重新锻打自己的武器，说了就直接动手；铁匠问用不用矿石时回的"用""不用"也是 upgrade
 - sell: item（背包物品的 ref），target（NPC 的 ref）。把自己的东西卖给 NPC 换钱（"把药草卖给麦琪""这个你收不收，卖你了"）。只是问收不收、值多少钱是 talk
 - pay: target（NPC 的 ref；给其他玩家时填名字），amount（金币数，整数）。给钱、付钱、塞钱、打赏都是 pay，金币不是背包物品，不要用 give
 - teleport: floor（第几层，整数）。在地窖里说传送到第几层就填层数；在地牢的传送石边上回城、摸传送石回地面就不填 floor
@@ -413,14 +414,20 @@ def parse_intent(db, view: RoomView, text: str) -> tuple[Optional[list], dict]:
             if (d["action"] == "talk" and re.search(r"开.{0,2}房|住店|住一晚|投宿|睡一觉|过夜", d.get("message", ""))
                     and any(n.template.props.get("inn") for n in view.npcs)):
                 d = {"action": "rest"}
-            # 跟铁匠说要升级、强化自己的武器，模型常写成 talk：转成 upgrade，武器按原话挑，挑不出就用手上拿着的
+            # 跟铁匠说要升级、强化自己的武器，模型常写成 talk：转成 upgrade。武器按玩家原话挑（模型自己挑的也按原话纠正，
+            # 以前"强化闪亮的短剑 +1"被挑成了铁斧 +2），原话里没说哪把就不填，让铁匠问
             by_id = {uid: ref for ref, uid in view.refs.items()}
-            smith =next((n for n in view.npcs if n.template.props.get("upgrades") and by_id[n.id] == d.get("target")), None)
+            smith = next((n for n in view.npcs if n.template.props.get("upgrades") and by_id[n.id] == d.get("target")), None)
             weapons = [i for i in view.inventory if i.template.type == "weapon"]
-            if d["action"] == "talk" and smith and weapons and re.search(r"升级|强化|打磨|重新锻打|加强", d.get("message", "")):
-                named = [i for i in weapons if any(ch in d["message"] for ch in set(i.name) - set("的"))]
-                pick = (named or sorted(weapons, key=lambda i: i.equipped_slot != "right_hand"))[0]
-                d = {"action": "upgrade", "item": by_id[pick.id], "target": d["target"]}
+            if smith and weapons and (d["action"] == "upgrade" or d["action"] == "talk"
+                                      and re.search(r"升级|强化|打磨|重新锻打|加强", d.get("message", ""))):
+                said = d.get("message", "") if d["action"] == "talk" else text
+                pick = commands.named_weapon(weapons, text) or commands.named_weapon(weapons, said)
+                ore = re.search(rf"(不)?(?:用|拿){commands.ORE_RE}", text)
+                d = {"action": "upgrade", "target": d["target"],
+                     "item": by_id[pick.id] if pick else None if d["action"] == "talk" else d.get("item"),
+                     "ore": (not ore[1]) if ore else d.get("ore"),
+                     "quote": bool(commands.UPGRADE_ASK_RE.search(said)) if d["action"] == "talk" else d.get("quote", False)}
             # 说了拿刀剑斧头砍、刺，模型却没填武器：用手上拿着的那把（没填就按空手算，伤害少）
             held = [i for i in view.inventory if i.template.type == "weapon" and i.equipped_slot]
             if (d["action"] == "stunt" and not d.get("item") and held
@@ -689,7 +696,8 @@ def npc_services(npc: Npc, sells: Optional[list[dict]] = None) -> list[str]:
     if inn := p.get("inn"):
         out.append(f"住店，一晚 {inn.get('price', 0)} 金币，价钱固定不讲价，睡一觉回满体力、醒酒（他说一句“住店”就能住）")
     if p.get("upgrades"):
-        out.append("帮人升级武器，每升一级更锋利，但级数越高越容易失败，失败会退一级（不会碎）")
+        out.append("帮人升级武器，每升一级更锋利，但级数越高越容易失败，失败会退一级（不会碎）；"
+                   "带一块奥利哈刚矿石来锻进去，那一次一定成功")
     return out
 
 
@@ -704,7 +712,8 @@ def npc_line(db, view: RoomView, text: str, results: list[ActionResult], npc: Np
                for r in results)
     intro = bool(services) and not busy and (not memory or bool(ASK_SERVICE_RE.search(text)))
     this_turn = "\n".join("；".join(EFFECT_RE.sub("", f) for f in r.facts) for r in results if r.success) or "没什么特别的"
-    goods = "、".join([f"{s['name']}（建议价 {s['base_price']} 金币）" for s in sells or []]
+    goods = "、".join([f"{s['name']}（{'难得进到的稀罕货，只有这一件，价钱固定 ' if s.get('rare') else '建议价 '}{s['base_price']} 金币）"
+                      for s in sells or []]
                      + [g["name"] for g in made_before or []]) or "无"
     tasks = "；".join(f"{q['hook']}（{QUEST_STAGES[st]}）" if st != "closed" else f"{q['after']}"
                      for st, q in quests or []) or "没有"
@@ -725,7 +734,14 @@ def npc_line(db, view: RoomView, text: str, results: list[ActionResult], npc: Np
                "让他知道在你这儿能做什么</important>" if intro else "")
             + ("\n\n<important>他刚送了你最想要的礼物：这一句要有特别的反应，完全按你的性格和对他的好感来："
                "好感低就嘴硬、别扭地收下，好感越高越藏不住高兴和感动，50 以上会真情流露；不要只说谢谢</important>"
-               if any(engine.GIFT_FACT in f for r in results if r.success for f in r.facts) else ""))
+               if any(engine.GIFT_FACT in f for r in results if r.success for f in r.facts) else "")
+            + ("\n\n<important>他在问你有什么卖：顺口提一下这次难得进到的稀罕货（只有一件），按人设说说它的来历或者你对它的感觉</important>"
+               if any(s.get("rare") for s in sells or []) and engine.RARE_ASK_RE.search(text) and not busy else "")
+            + ("\n\n<important>他送你的正是之前从你这儿买走的那件：你认出来了，按性格演出又惊又喜（“这、这不是……”）</important>"
+               if any(engine.RETURNED_FACT in f for r in results if r.success for f in r.facts) else "")
+            + ("\n\n<important>你刚把一件自己很珍惜的东西卖给了他：演出舍不得（犹豫、再看一眼、小声念叨），"
+               "但你是有礼貌的人，最后一定要真心道谢（比如“……但、但还是谢谢你”），不能怪他</important>"
+               if any(engine.RELUCTANT_FACT in f for r in results if r.success for f in r.facts) else ""))
     trading = any(r.success and r.action in TRADE_ACTIONS for r in results)
     rewards = [m[1] for r in results if r.success and r.action == "quest"
                for f in r.facts if (m := re.search(r"把(.+?)交给了", f))]

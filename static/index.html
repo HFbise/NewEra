@@ -66,6 +66,15 @@
   #side ul.equip li.empty { color: var(--dim); cursor: default; }
   #side ul.equip li.empty:hover { background: none; }
   .tag.slot { margin: 0 6px 0 0; }
+  /* 没有鼠标悬停的设备（手机）：点物品弹出详情小窗，按"输入"才填进输入框 */
+  #tip { position: fixed; left: 12px; right: 12px; z-index: 10; max-width: 420px; margin: 0 auto; background: var(--panel);
+         border: 1px solid var(--accent); border-radius: 8px; padding: 10px 12px; box-shadow: 0 6px 24px rgba(0, 0, 0, .5);
+         font-size: 14px; }
+  #tip .name { font-weight: 700; margin-bottom: 4px; }
+  #tip .detail { white-space: pre-wrap; color: var(--text); }
+  #tip .btns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px; }
+  #tip button { padding: 6px 16px; }
+  #tip button.close { background: var(--border); color: var(--text); }
   #login { position: fixed; inset: 0; z-index: 20; background: var(--bg); display: flex; align-items: center; justify-content: center; }
   #login form { border: 1px solid var(--border); border-radius: 8px; flex-direction: column; width: 300px; padding: 20px; }
   #login button { padding: 10px; }
@@ -466,9 +475,44 @@ $("#side").onclick = e => {
     try { localStorage.setItem("newera.folded", JSON.stringify([...folded])); } catch {}
     return;
   }
+  // 手机上没有悬停：有详情的东西点一下先弹小窗看详情，按"输入"才填名字；电脑上照旧悬停看、点一下填
+  const info = e.target.closest("[title]");
+  if (noHover.matches && info && info.title && info.closest("#side")) { showTip(info); return; }
   const li = e.target.closest("li[data-name]");
   if (li) { $("#cmd").value += li.dataset.name; $("#cmd").focus(); }
 };
+
+const noHover = matchMedia("(hover: none)");
+function showTip(el) {
+  let tip = $("#tip");
+  if (!tip) {
+    tip = document.createElement("div");
+    tip.id = "tip";
+    document.body.append(tip);
+  }
+  // 标题是去掉编号的名字；物品详情第一行已经是名字了就不重复
+  const head = el.cloneNode(true);
+  head.querySelectorAll(".ref, .tag").forEach(r => r.remove());
+  const label = head.textContent.trim();
+  const name = el.matches("li") && !el.title.startsWith(label) ? label : "";
+  tip.innerHTML = `${name ? `<div class="name">${esc(name)}</div>` : ""}<div class="detail">${esc(el.title)}</div>
+    <div class="btns">${el.dataset.name ? `<button class="fill">输入</button>` : ""}<button class="close">关闭</button></div>`;
+  tip.querySelector(".close").onclick = hideTip;
+  const fill = tip.querySelector(".fill");
+  if (fill) fill.onclick = () => { $("#cmd").value += el.dataset.name; hideTip(); $("#cmd").focus(); };
+  // 放在点的东西下面，下面放不下就放上面
+  const r = el.getBoundingClientRect();
+  tip.style.top = tip.style.bottom = "";
+  tip.style.visibility = "hidden";
+  tip.hidden = false;
+  if (r.bottom + tip.offsetHeight + 8 < innerHeight) tip.style.top = `${r.bottom + 6}px`;
+  else tip.style.bottom = `${Math.max(8, innerHeight - r.top + 6)}px`;
+  tip.style.visibility = "";
+}
+function hideTip() { const tip = $("#tip"); if (tip) tip.hidden = true; }
+// 点小窗外面、滚动信息栏就关掉
+document.addEventListener("pointerdown", e => { if (!e.target.closest("#tip, #side [title]")) hideTip(); });
+$("#side").addEventListener("scroll", hideTip);
 
 if (playerId) { $("#login").style.display = "none"; enter(); }
 setInterval(refresh, 3000);   // 没有 WebSocket，先轮询看其他玩家的变化

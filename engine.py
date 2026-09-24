@@ -2756,6 +2756,7 @@ def do_sell(cur: Cursor, player: Player, view: RoomView, a: Sell) -> list[str]:
 
 LIKED_GIFT = 10                      # 送心爱的礼物加的好感（不受花钱加好感的上限）
 GIFT_FACT = "心爱的礼物"                # 台词那边认这几个字，演出特别的反应
+RETURNED_FACT = "她自己卖出去的那件"     # 从她那买的礼物又送回给她（诺艾尔的古书），台词那边演认出来
 
 
 def do_give(cur: Cursor, player: Player, view: RoomView, a: Give) -> list[str]:
@@ -2779,12 +2780,14 @@ def do_give(cur: Cursor, player: Player, view: RoomView, a: Give) -> list[str]:
         return [f"{player.name}把{item.name}递给了{npc.name}"]
     # 送她心爱的礼物（world.yaml props.gift_likes 里的种类）：好感固定 +LIKED_GIFT，东西她收下（从世界里拿走）
     if (gift := _prop(item, "gift")) and gift in npc.template.props.get("gift_likes", []):
+        back = item.props.get("sold_by") == npc.template.id
         cur.execute("delete from item_instances where id = %s", (item.id,))
         new = min(100, _affinity(cur, player, npc) + LIKED_GIFT)
         cur.execute("""insert into player_npc_relations (player_id, npc_template, affinity) values (%s, %s, %s)
                        on conflict (player_id, npc_template) do update set affinity = excluded.affinity""",
                     (player.id, npc.template.id, new))
-        return [f"{player.name}把{_label(item)}送给了{npc.name}，这正是她最想要的东西（{GIFT_FACT}）",
+        return [f"{player.name}把{_label(item)}送给了{npc.name}，这正是她最想要的东西（{GIFT_FACT}）"
+                + (f"，而且是{RETURNED_FACT}" if back else ""),
                 f"{npc.name}对{player.name}的好感上升（当前 {new}，收到心爱的礼物）"]
     _move_item(cur, item, npc_id=npc.id)
     return [f"{player.name}把{_label(item)}交给了{npc.name}"]
@@ -2792,10 +2795,12 @@ def do_give(cur: Cursor, player: Player, view: RoomView, a: Give) -> list[str]:
 
 # 铁匠升级武器：每级伤害 +1，名字后面标 +N。升到第 N 级有 N × UPGRADE_BREAK_STEP 的几率失败（最多 UPGRADE_BREAK_MAX），
 # 失败不会碎，而是退一级（+3 升 +4 失败变 +2，+0 失败还是 +0），钱照收。
-# 等级不封顶。费用是升级后和升级前建议价的差（至少 UPGRADE_MIN_COST），跟着伤害指数涨
+# 等级不封顶。费用是升级后和升级前建议价的差（至少 UPGRADE_MIN_COST），跟着伤害指数涨。
+# 用一块奥利哈刚（UPGRADE_ORE）这次必定成功，钱照付
 UPGRADE_BREAK_STEP = 0.10
 UPGRADE_BREAK_MAX = 0.90
 UPGRADE_MIN_COST = 5
+UPGRADE_ORE = "ore"
 
 
 def upgrade_terms(item: ItemInstance) -> tuple[int, int, float]:
@@ -2805,28 +2810,61 @@ def upgrade_terms(item: ItemInstance) -> tuple[int, int, float]:
     return level, cost, min(UPGRADE_BREAK_MAX, UPGRADE_BREAK_STEP * level)
 
 
+def _upgrade_text(item: ItemInstance) -> str:
+    level, cost, risk = upgrade_terms(item)
+    return (f"升到 +{level}（伤害 {item.damage} → {item.damage + 1}）要 {cost} 金币，有 {round(risk * 100)}% 的可能失败"
+            + ("，失败会退一级" if level > 1 else "，失败了钱白花"))
+
+
 def do_upgrade(cur: Cursor, player: Player, view: RoomView, a: Upgrade) -> list[str]:
     npc = _room_npc(cur, view, player, a.target)
     if not npc.template.props.get("upgrades"):
         raise ActionError(f"{npc.name}不会升级武器")
-    item = _inv_item(cur, view, player, a.item)
-    if item.template.type != "weapon":
-        raise ActionError(f"{item.name}不是武器，{npc.name}没法升级")
+    offers = _offers(cur, player.id, npc)
+    if a.quote:
+        items = [_inv_item(cur, view, player, a.item)] if a.item else [i for i in view.inventory if i.template.type == "weapon"]
+        if not items:
+            raise ActionError(f"{player.name}身上没有能升级的武器")
+        return [f"{npc.name}看了看{player.name}的{i.name}：{_upgrade_text(i)}" for i in items]
+    if a.item:
+        item = _inv_item(cur, view, player, a.item)
+        if item.template.type != "weapon":
+            raise ActionError(f"{item.name}不是武器，{npc.name}没法升级")
+    else:
+        # 没说哪把：刚问过要不要用矿石的那把（回"用""不用"），或者身上只有一把；不止一把就列出来问
+        weapons = [i for i in view.inventory if i.template.type == "weapon"]
+        asked = next((i for i in weapons if f"upgrade:{i.id}" in offers), None)
+        if asked is None and a.ore is False:
+            raise ActionError(f"{npc.name}没在问{player.name}用不用矿石")
+        if asked is None and len(weapons) != 1:
+            if not weapons:
+                raise ActionError(f"{player.name}身上没有能升级的武器")
+            return ([f"{npc.name}问{player.name}要升级哪一把："] + [f"{i.name}：{_upgrade_text(i)}" for i in weapons]
+                    + [f"{player.name}说「升级」加武器名字，{npc.name}就动手"])
+        item = asked or weapons[0]
     level, cost, risk = upgrade_terms(item)
     key = f"upgrade:{item.id}"
-    offer = _offers(cur, player.id, npc).get(key)
-    terms = (f"升到 +{level}（伤害 {item.damage} → {item.damage + 1}）要 {cost} 金币，有 {round(risk * 100)}% 的可能失败"
-             + ("，失败会退一级" if level > 1 else "，失败了钱白花"))
-    if offer is None or offer["price"] != cost:
-        # 第一次只开价，说清风险，玩家再说一次才动手
+    terms = _upgrade_text(item)
+    ore = next((i for i in view.inventory if i.template.id == UPGRADE_ORE), None)
+    if a.ore and ore is None:
+        raise ActionError(f"{player.name}身上没有奥利哈刚矿石")
+    if cost > player.gold:
+        raise ActionError(f"{npc.name}看了看{player.name}的{item.name}：{terms}。{player.name}身上只有 {player.gold} 金币，不够")
+    if a.ore is None and ore is not None and level > 1 and key not in offers:
+        # 这次失败会退级，兜里又有矿石：先问一句用不用，回"用""不用"才动手
         _put_offer(cur, player.id, npc, key, cost)
-        return [f"{npc.name}看了看{player.name}的{item.name}：{terms}", f"{player.name}再说一次要升级，{npc.name}就动手"]
+        return [f"{npc.name}看了看{player.name}的{item.name}：{terms}",
+                f"{npc.name}瞥见{player.name}带着奥利哈刚矿石：把它锻进去，这次一定成功（钱照付，矿石用掉）",
+                f"{player.name}说「用」或者「不用」，{npc.name}就动手"]
     patron = _pay(cur, player, cost, npc)
     cur.execute("update player_npc_relations set offers = offers - %s where player_id = %s and npc_template = %s",
                 (key, player.id, npc.template.id))
     facts = [f"{player.name}付了 {cost} 金币，{npc.name}把{item.name}放进炉火里重新锻打（{terms}）"] + patron
     base = re.sub(r" \+\d+$", "", item.name)
-    if _roll(risk):
+    if a.ore:
+        _consume(cur, ore)
+        facts.append(f"{player.name}递上一块奥利哈刚矿石，{npc.name}把它熔进了刃里，这次不会失败")
+    elif _roll(risk):
         down = max(0, level - 2)            # 现在是 level-1，失败退一级
         if down == level - 1:
             return facts + [f"淬火的时候火候没掌握好，{item.name}没升上去，好在也没伤着"]
@@ -3109,19 +3147,82 @@ def npc_give(conn: Connection, player_id: UUID, npc_id: UUID, item_id: UUID, pri
         return ActionResult(action="npc_give", success=False, facts=[str(e)])
 
 
-def sellable(conn: Connection, npc: Npc) -> list[dict]:
-    """NPC 能卖的货（world.yaml 的 sells），给交易 AI 看：物品 id、名字、说明、伤害防御、按效果算的原价"""
-    ids = npc.template.props.get("sells", [])
+def sellable(conn: Connection, npc: Npc, rare: Optional[str] = None) -> list[dict]:
+    """NPC 能卖的货（world.yaml 的 sells），给交易 AI 看：物品 id、名字、说明、伤害防御、按效果算的原价。
+    rare 是这会儿有的稀罕货（rare_stock），标 rare，价钱固定"""
+    ids = npc.template.props.get("sells", []) + ([rare] if rare else [])
     if not ids:
         return []
     with conn.transaction():
         cur = _cursor(conn)
         cur.execute("select id, name, description, type, damage, defense, heal, props->'price' as price"
                     " from item_templates where id = any(%s)", (ids,))
-        return [r | {"base_price": base_price(r)} for r in cur.fetchall()]
+        return [r | ({"base_price": _rare_price(npc, r), "rare": True} if r["id"] == rare else {"base_price": base_price(r)})
+                for r in cur.fetchall()]
 
 
 OFFER_WINDOW = "10 minutes"             # NPC 报的价多久内有效
+
+# 偶尔进的稀罕货（world.yaml rare_sells）：客人问有什么卖的时判一次，不管中没中这段时间里不再判
+RARE_WINDOW = "1 hour"
+RARE_ASK_RE = re.compile(r"卖什么|卖啥|卖些|卖点|有什么|有啥|有没有|什么货|新货|进货|进了|看看货|货架|稀罕|好东西|宝贝|东西卖|什么可以买|能买")
+RELUCTANT_FACT = "舍不得卖"              # 台词那边认这几个字，演舍不得又礼貌道谢
+
+
+def rare_stock(conn: Connection, player_id: UUID, npc: Npc, text: str) -> Optional[str]:
+    """这个客人现在能在 NPC 这儿买到的稀罕货（物品 id），没有就是 None。这段时间还没判过、他又在问有什么卖，就判一次"""
+    rare = npc.template.props.get("rare_sells")
+    if not rare:
+        return None
+    with conn.transaction():
+        cur = _cursor(conn)
+        if (row := _rare_row(cur, player_id, npc)) is not None:
+            return row.get("item")
+        if not RARE_ASK_RE.search(text):
+            return None
+        item = random.choice(rare["items"]) if _roll(rare.get("chance", 0.15)) else None
+        cur.execute(
+            """insert into player_npc_relations (player_id, npc_template, rare)
+               values (%s, %s, jsonb_build_object('at', extract(epoch from now()), 'item', %s::text))
+               on conflict (player_id, npc_template) do update set rare = excluded.rare""",
+            (player_id, npc.template.id, item))
+        return item
+
+
+def _rare_row(cur: Cursor, player_id: UUID, npc: Npc) -> Optional[dict]:
+    """这段时间里判过的稀罕货 {at, item}；没判过或者过期了是 None"""
+    cur.execute(
+        f"""select rare from player_npc_relations where player_id = %s and npc_template = %s and rare is not null
+              and to_timestamp((rare->>'at')::float) > now() - interval '{RARE_WINDOW}'""",
+        (player_id, npc.template.id))
+    row = cur.fetchone()
+    return row["rare"] if row else None
+
+
+def _rare_now(cur: Cursor, player_id: UUID, npc: Npc) -> Optional[str]:
+    return (_rare_row(cur, player_id, npc) or {}).get("item") if npc.template.props.get("rare_sells") else None
+
+
+def _rare_price(npc: Npc, stats: dict) -> int:
+    return round(base_price(stats) * npc.template.props["rare_sells"].get("markup", 2))
+
+
+def _sells(cur: Cursor, player_id: UUID, npc: Npc) -> list[str]:
+    """这个客人能在 NPC 这儿买的货：墙上的 + 这会儿有的稀罕货"""
+    rare = _rare_now(cur, player_id, npc)
+    return npc.template.props.get("sells", []) + ([rare] if rare else [])
+
+
+def _sell_rare(cur: Cursor, player: Player, npc: Npc, template_id: str, name: str, price: int) -> list[str]:
+    """卖出稀罕货：只有一件，卖掉就没了；舍不得卖的那几样多一句，买走的东西记上是谁卖的"""
+    cur.execute("update player_npc_relations set rare = rare || '{\"item\": null}' where player_id = %s and npc_template = %s",
+                (player.id, npc.template.id))
+    cur.execute("insert into item_instances (template_id, player_id, props) values (%s, %s, %s)",
+                (template_id, player.id, Jsonb({"sold_by": npc.template.id})))
+    facts = [_deal(npc, player, name, price)]
+    if template_id in npc.template.props["rare_sells"].get("reluctant", []):
+        facts.insert(0, f"{npc.name}抱着{name}犹豫了好一会儿，{RELUCTANT_FACT}，最后还是依依不舍地推了过去")
+    return facts
 
 
 def get_offers(conn: Connection, player_id: UUID, npc: Npc) -> dict[str, dict]:
@@ -3158,7 +3259,7 @@ def set_offer(conn: Connection, player_id: UUID, npc: Npc, key: str, price: int)
     """叙事里 NPC 报了价、砍价让了步就记下来：卖货清单里的物品 id，或者已经报过价的现造东西"""
     offers = get_offers(conn, player_id, npc)
     if key not in npc.template.props.get("sells", []) and key not in offers:
-        return
+        return                              # 稀罕货不在这里：价钱固定，不砍价
     with conn.transaction():
         cur = _cursor(conn)
         if key.startswith("made:"):
@@ -3183,12 +3284,17 @@ def npc_hand(conn: Connection, player_id: UUID, npc: Npc, key: str, price: int, 
                     raise ActionError(f"{npc.name}没做过{key[5:]}")
                 stats, name = row["spec"], f"{row['spec']['name']}（{effect_text(row['spec'])}）"
             else:
-                if key not in npc.template.props.get("sells", []):
+                if key not in _sells(cur, player_id, npc):
                     raise ActionError(f"{npc.name}不卖这个")
                 cur.execute("select name, damage, defense, heal, props->'price' as price from item_templates where id = %s",
                             (key,))
                 stats = cur.fetchone()
                 name = stats["name"]
+                if key == _rare_now(cur, player_id, npc):
+                    price = _rare_price(npc, stats)
+                    patron = _pay(cur, player, price, npc)
+                    return ActionResult(action="npc_sell", success=True,
+                                        facts=_sell_rare(cur, player, npc, key, name, price) + patron)
             price = 0 if price <= 0 and can_gift(affinity) else clamp_price(stats, price if price > 0 else base_price(stats))
             patron = _pay(cur, player, price, npc)
             if key.startswith("made:"):
@@ -3208,8 +3314,20 @@ def npc_sell(conn: Connection, player_id: UUID, npc: Npc, template_id: str, pric
     """NPC 卖一件货给玩家（货不限量，每卖一件新造一件）。报过价就按报的价收；玩家直接下单（没报过价）就按 AI 这回合
     给的价，限在建议价的一半到两倍（没给就按建议价）"""
     try:
-        if template_id not in npc.template.props.get("sells", []):
-            raise ActionError(f"{npc.name}不卖这个")
+        with conn.transaction():
+            cur = _cursor(conn)
+            if template_id not in _sells(cur, player_id, npc):
+                raise ActionError(f"{npc.name}不卖这个")
+            if template_id == _rare_now(cur, player_id, npc):
+                # 稀罕货：只有一件，价钱固定
+                cur.execute("select name, damage, defense, heal, props->'price' as price from item_templates where id = %s",
+                            (template_id,))
+                stats = cur.fetchone()
+                player = load_player(cur, player_id, lock=True)
+                price = _rare_price(npc, stats)
+                patron = _pay(cur, player, price, npc)
+                return ActionResult(action="npc_sell", success=True,
+                                    facts=_sell_rare(cur, player, npc, template_id, stats["name"], price) + patron)
         offer = get_offers(conn, player_id, npc).get(template_id)
         with conn.transaction():
             cur = _cursor(conn)

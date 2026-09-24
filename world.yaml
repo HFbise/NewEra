@@ -421,6 +421,10 @@ npcs:
     props:
       # 货架上的东西，价钱由 AI 按建议价浮动
       sells: [rope, torch, tent, recall_crystal]
+      # 偶尔进的稀罕货（地牢里的礼物道具）：客人问有什么卖的时判一次 chance，中了这一小时里有一件，
+      # 价钱固定是参考价 × markup，只有一件、卖掉就没了；没问就不提（engine.rare_stock）。
+      # reluctant 里的她舍不得卖，卖的时候台词不一样；卖出去的书送回给她，她认得出来
+      rare_sells: {items: [ore, ancient_wine, old_tome], chance: 0.15, markup: 2, reluctant: [old_tome]}
       buys: {likes: [misc, book]}
       gift_likes: [book]
       revive_lines:

@@ -73,10 +73,13 @@ class Give(BaseModel):
 
 
 class Upgrade(BaseModel):
-    """找铁匠升级武器：第一次说是问价（开价、说清碎掉的几率），开过价再说一次就动手"""
+    """找铁匠升级武器：说了哪把就直接动手（钱不够才只报价）。没说哪把、身上又不止一把，铁匠列出每把的价钱问升哪把。
+    身上有奥利哈刚、这次失败会退级时，铁匠先问要不要用矿石（用了必定成功）"""
     action: Literal["upgrade"]
-    item: str                           # 背包里武器的 ref
+    item: Optional[str] = None          # 背包里武器的 ref；不填就是没说哪把
     target: str                         # 铁匠 NPC 的 ref
+    ore: Optional[bool] = None          # 用不用奥利哈刚：True 用，False 不用，None 没说
+    quote: bool = False                 # 只问升级要多少钱，不动手
 
 
 class Respawn(BaseModel):

@@ -143,6 +143,7 @@ create table player_npc_relations (
   memory       text not null default '',        -- NPC 对这个玩家的记忆摘要，对话时由 AI 更新，限 150 字
   last_created_at timestamptz,                   -- NPC 上次给这个玩家现造东西的时间，冷却用（engine.CREATE_COOLDOWN）
   offers       jsonb not null default '{}',     -- NPC 给这个玩家报过的价 {物品 id: {price, at}}，卖货只按报价成交
+  rare         jsonb,                           -- 偶尔进的稀罕货 {at, item}：问货时判一次，这段时间里 item 就是有的那件（null 是没进到或卖掉了）
   primary key (player_id, npc_template)
 );
 

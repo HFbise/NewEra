@@ -417,7 +417,8 @@ def run_turn(req: CommandReq):
             if npc:
                 giveable = engine.giveable_items(conn, pid, npc_id)
                 creatable = engine.creatable_kinds(conn, pid, npc)
-                sells = engine.sellable(conn, npc)
+                # 偶尔进的稀罕货：问有什么卖的时判一次，有的话这一小时里跟墙上的货一起卖
+                sells = engine.sellable(conn, npc, engine.rare_stock(conn, pid, npc, req.text))
                 offers = engine.get_offers(conn, pid, npc) if sells or creatable else {}
                 made_before = engine.known_goods(conn, npc) if creatable else []
                 affinity = engine.get_affinity(conn, pid, npc_id)

@@ -63,6 +63,51 @@ def _find(view: RoomView, text: str, where: str = "all") -> str:
     raise _Unsure(text)
 
 
+UPGRADE_ASK_RE = re.compile(r"多少|几个?金币|什么价|价格|价钱|贵不贵|怎么收|要花")
+ORE_RE = r"(?:奥利哈刚(?:矿石|矿)?|矿石)"
+
+
+def named_weapon(weapons: list, text: str):
+    """按原话挑武器：名字（去掉 +N、不管空格）整个在话里的优先，+N 也对上的更优先；
+    否则挑共有的字最多的（至少两个字），都对不上就是 None"""
+    said = re.sub(r"\s+", "", text)
+    base = lambda i: re.sub(r"\s*\+\d+$", "", i.name).replace(" ", "")
+    if whole := [i for i in weapons if base(i) in said]:
+        return max(whole, key=lambda i: (i.name.replace(" ", "") in said, len(base(i))))
+    score = lambda i: len((set(base(i)) - set("的")) & set(said))
+    best = max(weapons, key=score, default=None)
+    return best if best is not None and score(best) >= 2 else None
+
+
+def upgrade_request(view: RoomView, t: str, smith: str) -> Optional[dict]:
+    """找铁匠升级的话 → upgrade 的 item / ore / quote（target 调用的人填）；不是升级的话返回 None"""
+    t = re.sub(rf"^(?:对|跟|找|和|向)\s*{re.escape(smith)}\s*(?:说|讲|问)?[:：]?\s*", "", t).strip()
+    t = re.sub(r"[。！!~～…]+$", "", t)
+    if re.fullmatch(rf"(?:那就)?用(?:{ORE_RE}吧?|吧)?", t):
+        return {"action": "upgrade", "ore": True}
+    if re.fullmatch(rf"不用(?:{ORE_RE}(?:了|吧)?)?", t):
+        return {"action": "upgrade", "ore": False}
+    m = re.fullmatch(rf"(?:我要|我想|帮我|给我|请|麻烦|想)*\s*(?:(用|拿|不用)\s*{ORE_RE}\s*)?(?:来)?(?:升级|强化|锻造|改良|打磨)\s*(.*?)"
+                     rf"\s*(?:(?:，|,)?\s*((?:不)?用{ORE_RE}))?\s*(?:吧|一下)?", t)
+    if not m:
+        return None
+    rest = m[2]
+    ask = UPGRADE_ASK_RE.search(rest)
+    rest = re.sub(r"(?:要|得|需要)?(?:多少|几个?金币|什么价|价格|价钱|贵不贵|怎么收|要花).*$", "", rest).strip()
+    rest = re.sub(r"^(?:我的|一下|下)", "", rest).strip()
+    ore_word = m[1] or m[3] or ""
+    out = {"action": "upgrade", "quote": bool(ask)}
+    if ore_word:
+        out["ore"] = not ore_word.startswith("不")
+    if rest and rest not in ("武器", "家伙", "兵器", "装备", "一下武器"):
+        weapons = [i for i in view.inventory if i.template.type == "weapon"]
+        pick = named_weapon(weapons, rest)
+        if pick is None:
+            raise _Unsure(rest)
+        out["item"] = {uid: ref for ref, uid in view.refs.items()}[pick.id]
+    return out
+
+
 def _player(view: RoomView, text: str) -> Optional[str]:
     """同房间其他玩家的名字匹配，先精确后模糊"""
     text = text.strip()
@@ -156,6 +201,12 @@ def _parse_one(view: RoomView, t: str) -> dict:
         foe = next((n for n in view.npcs if n.template.hostile and (n.name in t or n.name[-2:] in t)), None)
         return {"action": "use", "item": by_id[tool.id], "target": by_id[foe.id] if foe else None}
 
+    # 找铁匠升级武器："升级短剑""强化生锈的短剑""对莉娜 升级铁斧""用奥利哈刚升级短剑""升级短剑要多少钱"；
+    # 只说"升级""升级武器"让铁匠问哪把；铁匠问要不要用矿石时回"用""不用"。铁匠就是这里会升级的那个 NPC
+    if smith := next((n for n in view.npcs if n.template.props.get("upgrades")), None):
+        if (up := upgrade_request(view, t, smith.name)) is not None:
+            return up | {"target": {uid: ref for ref, uid in view.refs.items()}[smith.id]}
+
     # 地牢里听见怪声："循着声音去找""去看看是什么声音"
     if re.search(r"循.{0,2}声|顺着声音|找.{0,4}声音|声音.{0,6}(找|看看)", t):
         return {"action": "search", "description": "循着声音找过去"}
@@ -225,13 +276,6 @@ def _parse_one(view: RoomView, t: str) -> dict:
     if m := (re.fullmatch(r"(?:邀请|拉)\s*(.+?)\s*(?:组队|入队|进队|加入队伍)?", t)
              or re.fullmatch(r"invite\s+(.+)", t, re.I)):
         return {"action": "invite", "target": _player_or_unsure(view, m[1])}
-
-    # 找铁匠升级武器："升级短剑""强化生锈的短剑"；铁匠就是这里会升级的那个 NPC
-    if m := re.fullmatch(r"(?:升级|强化|锻造|改良)\s*(.+)", t):
-        smith = next((n for n in view.npcs if n.template.props.get("upgrades")), None)
-        if smith:
-            by_id = {uid: ref for ref, uid in view.refs.items()}
-            return {"action": "upgrade", "item": _find(view, m[1], "inv"), "target": by_id[smith.id]}
 
     # 决斗（PvP）：申请、接受、拒绝、逃跑
     if re.fullmatch(r"逃跑|逃走|逃|跑路|撤退|脱战|脱身|flee", t, re.I):
