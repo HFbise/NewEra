@@ -8,6 +8,15 @@
 #   features  可利用的环境物件，每个战斗房、楼梯间随机放 1 到 2 个（max_tier 是能打出的最重伤害档位）
 #   monsters  这一层会出的怪（下面 monsters 里的 key）
 #   boss      每 5 层楼梯间的头目
+#   events    随机事件房从这些里抽（下面 events 里的 key）
+#   eerie     走路时的怪声怪影（只是气氛）
+#
+# 随机事件房（events）：房间描写 + 一处能取东西的地方（跟酒馆武器桶一样的"取用处"），
+#   skill / difficulty 是取东西要过的技能判定（难度再加 层数/4），fail 是失败时发生的事，fail_damage 失败掉的血；
+#   每人每个房间只能拿到一次
+#
+# 走路时（地牢里两个房间之间）有 ROAD_EVENT_CHANCE 的几率碰上：陷阱（察觉发现就绕过去，没发现挨一下，耐性涨）、
+#   地上的零钱、游荡的怪跟进房间、怪声（eerie）
 #
 # 怪物数值按层数算（dungeon.monster_stats），这里只写跟普通怪比的倍率和加减：
 #   hp 血量倍率、atk 攻击加减、def 防御加减；animal: true 是野兽（以后驯兽能让它避战）
@@ -59,6 +68,11 @@ themes:
       - {name: 垂下来的锁链, max_tier: light}
       - {name: 松动的岩壁, max_tier: heavy}
     monsters: [cave_rat, kobold, rock_beetle]
+    events: [ore_vein, spring, miner_cache]
+    eerie:
+      - 远处传来一声镐头敲在石头上的脆响，然后是很长的寂静。
+      - 头顶簌簌落下一阵细灰，岩壁深处像是有什么东西翻了个身。
+      - 一阵风从矿道深处吹来，带着一股不该出现在地底的、烤肉的香味。
     boss:
       name: 狗头人工头
       description: 比别的狗头人高出一头，披着用矿车铁皮敲成的护甲，手里拎着一把沾满血锈的鹤嘴锄。
@@ -111,6 +125,11 @@ themes:
       - {name: 石棺盖, max_tier: heavy}
       - {name: 长明的烛台, max_tier: light}
     monsters: [skeleton, ghoul, wisp]
+    events: [offering_wine, tomb_notes, spring]
+    eerie:
+      - 身后的骨龛里传来一声轻轻的咔哒，像是有颗头骨转了过来。
+      - 冷风里夹着很低很低的吟诵声，听不清在念什么，一转身就停了。
+      - 地上的骨粉上多了一串小小的脚印，比人的脚小，朝着你来的方向。
     boss:
       name: 守陵人
       description: 一具身披破烂法袍的高大骸骨，胸口嵌着一块发着幽光的石头，手里的长柄镰刀比人还高。
@@ -163,6 +182,11 @@ themes:
       - {name: 铁栅栏门, max_tier: heavy}
       - {name: 翻倒的木凳, max_tier: light}
     monsters: [jailer, armored_guard, dungeon_hound]
+    events: [warden_cellar, prison_records, spring]
+    eerie:
+      - 某间囚室里传出铁链拖地的声音，拖了三下，停了。
+      - 远处有人用指甲在铁栅栏上一根根划过，叮、叮、叮……
+      - 一扇铁门在很远的地方被重重关上，回声在走廊里滚了很久。
     boss:
       name: 典狱长
       description: 一个穿着整套黑铁甲的高大身影，头盔的缝隙里透出两点红光，腰间挂着一大串钥匙。
@@ -170,6 +194,50 @@ themes:
       hp: 1.1
       atk: 1
       def: 1
+
+events:
+  ore_vein:
+    name: 裸露的矿脉
+    description: 一面岩壁被塌方剥开，露出一条闪着暗光的矿脉，旁边丢着一把还能用的旧镐。
+    details: 矿脉里嵌着拳头大的矿石，泛着青灰色的金属光泽，敲一下声音清亮。岩壁上方的石头有些松，挖的时候得小心。
+    take: {name: 矿脉, item: ore, where: 里, skill: athletics, difficulty: 2, fail: 一块松石从头顶崩下来，砸在了手上, fail_damage: 2}
+  spring:
+    name: 地下泉眼
+    description: 岩缝里汩汩冒出一股清泉，在地上积成一汪小小的水潭，水清得能看见底。
+    details: 泉水冰凉，带着一点点甜味。水潭边长着一圈发着微光的青苔，是这片黑暗里唯一干净的东西。旁边有人留下了几只空陶瓶。
+    take: {name: 泉眼, item: spring_water, where: 里}
+  miner_cache:
+    name: 矿工的藏物处
+    description: 一处被木板挡住的凹洞，木板上用炭画着一个矿工行会的标记。
+    details: 木板后面藏着一只油布包，包里是矿工们存下的一点家当。凹洞边缘写着一行小字："给后来的兄弟"。
+    take: {name: 油布包, item: ore, where: 里, skill: investigation, difficulty: 1, fail: 翻了半天只摸到一手煤灰}
+  offering_wine:
+    name: 祭酒台
+    description: 一座低矮的石台，上面摆着几只封着泥的陶罐，是当年献给死者的祭酒。
+    details: 陶罐上的封泥大多完好，有几只已经裂了缝，散出酸败的气味。石台上刻着一行字："饮者须敬"。要挑出一罐没坏的，得懂点门道。
+    take: {name: 祭酒台, item: ancient_wine, where: 上, skill: nature, difficulty: 2, fail: 撬开的那罐早就酸成了醋，呛得人直咳嗽, fail_damage: 1}
+  tomb_notes:
+    name: 墓主的书房
+    description: 一间小小的墓室，四壁都是石架，架上堆满了发霉的卷轴和书册。
+    details: 大部分书一碰就碎成了渣，只有几本用皮绳捆着、封在蜡里的还完好。要从这堆废纸里找出值得带走的，得有耐心和眼力。
+    take: {name: 石架, item: old_tome, where: 上, skill: investigation, difficulty: 2, fail: 翻开的几本一碰就碎了}
+  warden_cellar:
+    name: 典狱长的私藏
+    description: 一间藏在书架后面的小酒窖，架子上躺着几瓶落满灰的酒。
+    details: 酒瓶上的标签写着年份，最老的一瓶比这座城堡还老。有几瓶的软木塞已经朽了，里面的酒多半坏了。
+    take: {name: 酒架, item: ancient_wine, where: 上, skill: nature, difficulty: 2, fail: 拔开塞子，一股霉味冲出来，这瓶早坏了}
+  prison_records:
+    name: 档案室
+    description: 一间堆满卷宗的石室，墙边立着几只上了锁的铁柜。
+    details: 地上散落着被撕碎的卷宗，铁柜的锁大多锈死了，只有一只能撬开。柜子里据说收着典狱长没收来的古书。
+    take: {name: 铁柜, item: old_tome, where: 里, skill: sleight, difficulty: 2, fail: 铁丝在锁眼里断了，还划破了手指, fail_damage: 1}
+
+# 走路时的陷阱（每个主题都可能碰上）
+traps:
+  - 脚下一块石板一沉，墙缝里射出一排锈针
+  - 一根几乎看不见的绊索，连着头顶一块松动的石头
+  - 地面突然塌下去一小块，底下插着削尖的木桩
+  - 墙上的机关咔哒一响，一把生锈的刀片横扫过来
 
 monsters:
   cave_rat:

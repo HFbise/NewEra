@@ -253,6 +253,28 @@ items:
     description: 淡蓝色、微微发光的水晶，据说在远古地牢里捏碎它就能被传回村子。诺艾尔说这是从某本古书里学来的做法。
     type: misc
     props: {price: 20, recall: true}
+  # 地牢随机事件房里的东西。矿石、古酒、古书以后是送给莉娜、麦琪、诺艾尔的礼物
+  ore:
+    name: 矿石
+    description: 一块拳头大的矿石，青灰色，沉甸甸的，断面上闪着金属的光泽。铁匠见了大概会两眼放光。
+    type: misc
+    props: {price: 8, gift: ore}
+  ancient_wine:
+    name: 陈年古酒
+    description: 一只封着泥的旧陶罐（或者落满灰的酒瓶），晃一晃里面的酒还在响，闻着有一股深沉的陈香。爱酒的人会想要。
+    type: consumable
+    heal: 4
+    props: {alcohol: true, strength: 2, price: 12, gift: wine}
+  old_tome:
+    name: 古书残卷
+    description: 一本用皮绳捆着、封在蜡里的古书，书页泛黄发脆，写着看不懂的古老文字。爱书的人会很珍惜。
+    type: misc
+    props: {price: 10, gift: book}
+  spring_water:
+    name: 泉水
+    description: 一瓶从地下泉眼接来的清水，冰凉微甜，喝下去浑身一轻。
+    type: consumable
+    heal: 10
   # 地牢宝箱房里的钱袋：捡起来直接变成金币（数目在实例 props.gold）
   gold_pouch:
     name: 一袋古币

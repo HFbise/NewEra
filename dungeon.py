@@ -30,6 +30,7 @@ BACK = {"north": "south", "south": "north", "west": "east", "east": "west"}
 # 房间里的补给：空房搜索可能找到药草（每人每层一次），宝箱房有一袋古币和药草
 EMPTY_FORAGE = [{"item": "herb", "chance": 0.5, "cooldown": 86400}]
 FEATURE_RESPAWN = 86400                 # 地牢里的环境物件用掉就没了（地牢活不到这么久）
+ROAD_EVENT_CHANCE = 0.15                # 地牢里两个房间之间走动时碰上随机事件的几率（engine._road_event）
 
 _data: Optional[dict] = None
 
@@ -95,6 +96,21 @@ def _template(cur: Cursor, depth: int, kind: str, rank: str, theme: str, size: i
     return tid
 
 
+def floor_info(cur: Cursor, room_id: str) -> dict:
+    """地牢房间所在的那一层：depth、theme、party_size"""
+    run, depth = parse_room(room_id)
+    cur.execute("select depth, theme, party_size from dungeon_floors where run_id = %s and depth = %s", (run, depth))
+    return cur.fetchone()
+
+
+def spawn_wanderer(cur: Cursor, room: str) -> str:
+    """游荡的怪跟进了房间（走路时的随机事件）：这一层主题里的普通怪，返回名字"""
+    f = floor_info(cur, room)
+    kind = random.choice(data()["themes"][f["theme"]]["monsters"])
+    _spawn(cur, room, f["depth"], kind, "normal", f["theme"], f["party_size"])
+    return data()["monsters"][kind]["name"]
+
+
 def _spawn(cur: Cursor, room: str, depth: int, kind: str, rank: str, theme: str, size: int) -> None:
     tid = _template(cur, depth, kind, rank, theme, size)
     cur.execute("insert into npcs (template_id, room_id, hp) select id, %s, max_hp from npc_templates where id = %s",
@@ -147,17 +163,28 @@ def _make_floor(cur: Cursor, run: UUID, depth: int, above: str, size: int) -> st
     cells = [(r, c) for r in range(GRID) for c in range(GRID)]
     rest = [c for c in cells if c not in (start, stairs)]
     random.shuffle(rest)
-    # 七个普通格子：一个宝箱房、两个空房、其余战斗房
-    kinds = {start: "entry", stairs: "stairs", rest[0]: "treasure", rest[1]: "empty", rest[2]: "empty"}
+    # 七个普通格子：一个宝箱房、一个空房、一个随机事件房、其余战斗房
+    kinds = {start: "entry", stairs: "stairs", rest[0]: "treasure", rest[1]: "empty", rest[2]: "event"}
     kinds |= {c: "combat" for c in rest[3:]}
     pool = random.sample(theme["rooms"], len(theme["rooms"]))
     for cell in cells:
         kind = kinds[cell]
-        text = theme[kind] if kind in ("entry", "stairs", "treasure") else (pool.pop() if pool else random.choice(theme["rooms"]))
+        event = data()["events"][random.choice(theme["events"])] if kind == "event" else None
+        text = (event if event else theme[kind] if kind in ("entry", "stairs", "treasure")
+                else pool.pop() if pool else random.choice(theme["rooms"]))
         rid = _room_id(run, depth, cell)
         props = {"dungeon": {"depth": depth, "theme": theme_key, "kind": kind}}
         if kind == "empty":
+            # 空房：搜索可能找到药草；调查（搜索时过调查判定）可能翻出藏着的古币，每人一次
             props["forage"] = EMPTY_FORAGE
+            props["stash"] = {"gold": max(2, round(random.randint(4, 8) * 1.2 ** depth)) * size,
+                              "difficulty": 2 + depth // 3}
+        if event:
+            # 事件房的东西跟酒馆武器桶一样是"取用处"：每人一次，要过技能判定（难度随层数涨）
+            take = dict(event["take"], description=event["description"], once=True, repeat=True)
+            if take.get("skill"):
+                take["difficulty"] = take.get("difficulty", 2) + depth // 4
+            props["dispensers"] = {"event": take}
         cur.execute("insert into rooms (id, name, description, details, props) values (%s, %s, %s, %s, %s)",
                     (rid, f"第 {depth} 层·{text['name']}", text["description"], text.get("details", ""), Jsonb(props)))
     for cell in cells:

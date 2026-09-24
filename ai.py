@@ -203,7 +203,7 @@ def _call(db, player_id: UUID, kind: str, system: str, user: str, fmt: type[Base
 class AIAction(BaseModel):
     """给 AI 的扁平格式，比嵌套 union 好填；回来再转成 PlayerAction 校验"""
     action: Literal["move", "look", "take", "drop", "use", "equip", "unequip", "attack", "talk", "give", "pay", "say",
-                    "upgrade", "respawn", "stand", "rest", "revive", "invite", "join", "leave_party", "follow", "unfollow", "challenge", "accept_duel",
+                    "upgrade", "respawn", "stand", "rest", "camp", "revive", "invite", "join", "leave_party", "follow", "unfollow", "challenge", "accept_duel",
                     "decline_duel", "flee", "stunt", "struggle",
                     "maneuver", "dodge", "hide", "search", "freeform", "reject"]
     direction: Optional[str] = None
@@ -251,6 +251,7 @@ INTENT_SYSTEM = """你是文字 MUD 游戏的指令解析器。读玩家的输�
 - give: item（背包物品的 ref），target（NPC 的 ref；给其他玩家时填"其他玩家"里的名字）。给、递、交、送、塞到他手里是 give：东西到了对方手上，吃不吃是他的事。喂他吃、塞进他嘴里（强行的也算）、给他灌下去是 use 不是 give
 - upgrade: item（背包里武器的 ref），target（会升级武器的铁匠 NPC 的 ref）。找铁匠升级、强化、重新锻打自己的武器；问升级要多少钱也是 upgrade（第一次引擎只开价，再说一次才动手）
 - pay: target（NPC 的 ref；给其他玩家时填名字），amount（金币数，整数）。给钱、付钱、塞钱、打赏都是 pay，金币不是背包物品，不要用 give
+- camp: 不用填字段。在远古地牢里扎营、歇一会儿、搭帐篷睡一觉（回血）。村里的酒馆住店是 rest
 - rest: 不用填字段。在酒馆这种能住的地方住店、开房、要间房睡一觉（跟老板说"我要住店"也是 rest）
 - stand: 不用填字段。自己倒在地上（被绊倒、掀翻）时爬起来、站起来、起身
 - respawn: target 可空（想被抬去的地方名字，不说就是酒馆）。自己倒下了，选择复活、回酒馆、回城

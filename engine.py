@@ -27,7 +27,7 @@ from schema import (
     ActionResult, Attack, Drop, Equip, Feature, Follow, Freeform, Give, Invite, ItemInstance, Join, LeaveParty, Look,
     Move, Npc, OtherPlayer, Player, PlayerAction, Reject, Revive, Room, RoomExit, RoomView, Say, Status, Struggle,
     Stunt, Take, Talk, Unfollow, Unequip, Use, dir_name, Dispenser, SLOT_CHOICES, SLOT_NAMES, Dodge, Hide, Maneuver, Search, Stealth,
-    AcceptDuel, Challenge, DeclineDuel, Duel, Flee, SKILL_NAMES, Upgrade, Respawn, Stand, Rest, Pay,
+    AcceptDuel, Challenge, DeclineDuel, Duel, Flee, SKILL_NAMES, Upgrade, Respawn, Stand, Rest, Pay, Camp,
 )
 
 
@@ -183,8 +183,10 @@ def load_dispensers(cur: Cursor, room: Room, player_id: UUID) -> list[Dispenser]
     return [Dispenser(id=uuid5(NAMESPACE_URL, f"newera:dispenser:{room.id}:{key}"), room=room.id, key=key,
                       container=d["name"], description=d.get("description", ""), item=d["item"],
                       item_name=names[d["item"]], unless=d.get("unless", []), where=d.get("where", "里"),
-                      once=d.get("once", False),
-                      available=not owned & {d["item"], *d.get("unless", [])} and not (d.get("once") and key in taken))
+                      once=d.get("once", False), repeat=d.get("repeat", False), skill=d.get("skill"),
+                      difficulty=d.get("difficulty", 0), fail=d.get("fail", ""), fail_damage=d.get("fail_damage", 0),
+                      available=(d.get("repeat") or not owned & {d["item"], *d.get("unless", [])})
+                      and not (d.get("once") and key in taken))
             for key, d in cfg.items()]
 
 
@@ -681,12 +683,74 @@ def do_move(cur: Cursor, player: Player, view: RoomView, a: Move) -> list[str]:
         (to, player.id, player.room_id),
     )
     names = [r["name"] for r in cur.fetchall()]
+    # 地牢里两个房间之间走动：可能碰上陷阱、零钱、跟进来的怪、怪声
+    if not arrived and dungeon.is_dungeon(player.room_id) and dungeon.is_dungeon(to) and _roll(dungeon.ROAD_EVENT_CHANCE):
+        facts += _road_event(cur, player, view, to)
     if names:
         facts.append(f"{'、'.join(names)}跟着{player.name}一起来到了{room.name}")
         if arrived:
             cur.execute("update players set deepest_floor = greatest(deepest_floor, %s) where name = any(%s)",
                         (dungeon.parse_room(to)[1], names))
     return facts
+
+
+ROAD_TRAP, ROAD_COINS, ROAD_WANDERER = 0.5, 0.75, 0.9    # 走路随机事件的累计几率：陷阱、零钱、跟进来的怪，剩下是怪声
+
+
+def _road_event(cur: Cursor, player: Player, view: RoomView, to: str) -> list[str]:
+    """地牢里走路时碰上的事。陷阱：察觉发现就绕过去，没发现挨一下（活下来耐性一定涨）"""
+    f = dungeon.floor_info(cur, to)
+    depth, r = f["depth"], random.random()
+    if r < ROAD_TRAP:
+        trap = random.choice(dungeon.data()["traps"])
+        ok, rolled = _check(cur, player, view, "perception", 2 + depth // 3)
+        if ok:
+            return [f"路上{trap}"] + rolled + [f"{player.name}及时察觉，躲了过去"]
+        dmg = 2 + depth // 3
+        hurt, down = _hurt_player(cur, player, dmg, "other", "陷阱")
+        return [f"路上{trap}"] + rolled + [f"{player.name}没能躲开，受到 {dmg} 点伤害"] + hurt             + ([] if down else _toughen(cur, player))
+    if r < ROAD_COINS:
+        coins = max(1, round(random.randint(1, 3) * 1.2 ** depth))
+        cur.execute("update players set gold = gold + %s where id = %s", (coins, player.id))
+        return [f"{player.name}在路边的碎石里踢到了 {coins} 枚古币，顺手捡了起来"]
+    if r < ROAD_WANDERER:
+        name = dungeon.spawn_wanderer(cur, to)
+        return [f"一只{name}从暗处悄悄跟着{player.name}进了这里"]
+    return [random.choice(dungeon.data()["themes"][f["theme"]]["eerie"])]
+
+
+# 扎营：回 max_hp × CAMP_BASE，带帐篷再加 CAMP_TENT（用掉一顶），生存判定成功再加 CAMP_SURVIVAL，空房里整体 ×CAMP_EMPTY
+CAMP_BASE, CAMP_TENT, CAMP_SURVIVAL, CAMP_EMPTY = 0.3, 0.3, 0.15, 1.5
+
+
+def do_camp(cur: Cursor, player: Player, view: RoomView, a: Camp) -> list[str]:
+    """地牢里清完怪的房间扎营，每层每人一次"""
+    if not dungeon.is_dungeon(player.room_id):
+        raise ActionError("只有在远古地牢里才用得着扎营，村里可以去酒馆住店")
+    if foes := [n.name for n in _enemies(cur, player.room_id)]:
+        raise ActionError(f"{'、'.join(foes)}还在这里，没法扎营")
+    run, depth = dungeon.parse_room(player.room_id)
+    cur.execute("""update dungeon_floors set camped = array_append(camped, %s)
+                   where run_id = %s and depth = %s and not (%s = any(camped)) returning 1""",
+                (player.id, run, depth, player.id))
+    if not cur.fetchone():
+        raise ActionError(f"{player.name}在这一层已经扎过营了，再歇也缓不过来，得往下走")
+    tent = next((i for i in view.inventory if _prop(i, "camp")), None)
+    facts = [f"{player.name}在{view.room.name}扎营休息" + (f"，搭起了{tent.name}" if tent else "")]
+    share = CAMP_BASE + (CAMP_TENT if tent else 0)
+    if tent:
+        _consume(cur, tent)
+    ok, rolled = _check(cur, player, view, "survival", 1 + depth // 3)
+    facts += rolled
+    if ok:
+        share += CAMP_SURVIVAL
+        facts.append("营地收拾得很妥当，睡得更安稳")
+    if view.room.props.get("dungeon", {}).get("kind") == "empty":
+        share *= CAMP_EMPTY
+        facts.append("这里安静空旷，是个扎营的好地方")
+    hp = min(player.max_hp, player.hp + round(player.max_hp * share))
+    cur.execute("update players set hp = %s, updated_at = now() where id = %s", (hp, player.id))
+    return facts + [f"{player.name}恢复了 {hp - player.hp} 点 HP，当前 HP {hp}/{player.max_hp}"]
 
 
 def do_follow(cur: Cursor, player: Player, view: RoomView, a: Follow) -> list[str]:
@@ -793,15 +857,30 @@ def _give_player_new(cur: Cursor, player: Player, template_id: str) -> None:
         cur.execute("insert into item_instances (template_id, player_id) values (%s, %s)", (template_id, player.id))
 
 
-def _take_from(cur: Cursor, player: Player, d: Dispenser) -> list[str]:
-    """从武器桶这类地方拿一件：身上已经有同类的（锈剑、磨亮的剑）就不能拿；once 的拿过一次就再也不能拿"""
+def _take_from(cur: Cursor, player: Player, view: RoomView, d: Dispenser) -> list[str]:
+    """从武器桶这类地方拿一件：身上已经有同类的（锈剑、磨亮的剑）就不能拿；once 的拿过一次就再也不能拿。
+    要技能判定的（挖矿、挑酒）先判，失败了这次拿不到（可能挨一下），下次还能再试"""
     cur.execute(
         """select t.name from item_instances i join item_templates t on t.id = i.template_id
            where i.player_id = %s and i.template_id = any(%s) limit 1""",
         (player.id, [d.item] + d.unless),
     )
-    if row := cur.fetchone():
+    if (row := cur.fetchone()) and not d.repeat:
         raise ActionError(f"{player.name}身上已经有{row['name']}了，{d.container}{d.where}的留给别人")
+    if d.once:
+        cur.execute("select 1 from dispenser_log where player_id = %s and room_id = %s and key = %s",
+                    (player.id, d.room, d.key))
+        if cur.fetchone():
+            raise ActionError(f"{d.container}{d.where}已经没有{player.name}能拿的东西了")
+    facts = []
+    if d.skill:
+        ok, facts = _check(cur, player, view, d.skill, d.difficulty)
+        if not ok:
+            facts = [f"{player.name}想从{d.container}{d.where}取{d.item_name}"] + facts + [d.fail or "没能成功"]
+            if d.fail_damage:
+                hurt, _ = _hurt_player(cur, player, d.fail_damage, "other", d.container)
+                facts += [f"{player.name}受到 {d.fail_damage} 点伤害"] + hurt
+            return facts
     if d.once:
         # 拿过一次就没了：并发时靠主键挡住第二次
         cur.execute("""insert into dispenser_log (player_id, room_id, key) values (%s, %s, %s)
@@ -809,13 +888,13 @@ def _take_from(cur: Cursor, player: Player, d: Dispenser) -> list[str]:
         if not cur.fetchone():
             raise ActionError(f"{d.container}{d.where}已经没有{player.name}能拿的东西了")
     _give_player_new(cur, player, d.item)
-    return [f"{player.name}从{d.container}{d.where}拿了一件{d.item_name}"]
+    return facts + [f"{player.name}从{d.container}{d.where}拿了一件{d.item_name}"]
 
 
 def do_take(cur: Cursor, player: Player, view: RoomView, a: Take) -> list[str]:
     uid = _resolve(view, a.item)
     if d := next((d for d in view.dispensers if d.id == uid), None):
-        return _take_from(cur, player, d)
+        return _take_from(cur, player, view, d)
     item = _get_item(cur, view, a.item)
     if item.player_id == player.id:
         # "从背包里拿出钥匙开门"会解析成先 take，东西本来就在身上，算成功，后面的动作照常执行
@@ -1357,6 +1436,18 @@ def do_search(cur: Cursor, player: Player, view: RoomView, a: Search) -> list[st
             facts.append(f"{player.name}找到了{name}")
         else:
             facts.append(f"{player.name}没找到{name}")
+    # 地牢空房里藏着的古币：搜的时候过调查判定，每人一次机会
+    if stash := view.room.props.get("stash"):
+        cur.execute("""insert into dispenser_log (player_id, room_id, key) values (%s, %s, 'stash')
+                       on conflict do nothing returning 1""", (player.id, player.room_id))
+        if cur.fetchone():
+            ok, rolled = _check(cur, player, view, "investigation", stash["difficulty"])
+            facts += rolled
+            if ok:
+                cur.execute("update players set gold = gold + %s where id = %s", (stash["gold"], player.id))
+                facts.append(f"{player.name}在不起眼的角落里发现了藏着的 {stash['gold']} 枚古币")
+            else:
+                facts.append("这里就算藏着什么，也没被找到")
     return facts if len(facts) > 1 else facts + ["什么也没找到"]
 
 
@@ -1971,7 +2062,7 @@ HANDLERS: dict[str, Callable[..., list[str]]] = {
     "say": do_say, "revive": do_revive, "stunt": do_stunt, "struggle": do_struggle,
     "follow": do_follow, "unfollow": do_unfollow, "invite": do_invite, "join": do_join, "leave_party": do_leave_party,
     "maneuver": do_maneuver, "dodge": do_dodge, "hide": do_hide, "search": do_search, "reject": do_reject,
-    "upgrade": do_upgrade, "pay": do_pay, "respawn": do_respawn, "stand": do_stand, "rest": do_rest, "challenge": do_challenge, "accept_duel": do_accept_duel, "decline_duel": do_decline_duel, "flee": do_flee,
+    "upgrade": do_upgrade, "pay": do_pay, "respawn": do_respawn, "stand": do_stand, "rest": do_rest, "camp": do_camp, "challenge": do_challenge, "accept_duel": do_accept_duel, "decline_duel": do_decline_duel, "flee": do_flee,
 }
 
 

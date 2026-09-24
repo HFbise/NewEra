@@ -93,6 +93,11 @@ class Pay(BaseModel):
     amount: int = Field(gt=0)
 
 
+class Camp(BaseModel):
+    """地牢里在清完怪的房间扎营：回一部分血（空房更多、带帐篷更多、生存判定成功再多），每层每人一次"""
+    action: Literal["camp"]
+
+
 class Rest(BaseModel):
     """住店：在有店家的地方付钱睡一觉，回满血、醒酒"""
     action: Literal["rest"]
@@ -254,7 +259,7 @@ class Reject(BaseModel):
 
 
 PlayerAction = Annotated[
-    Union[Move, Look, Take, Drop, Use, Equip, Unequip, Attack, Talk, Give, Pay, Upgrade, Say, Revive, Respawn, Stand, Rest, Invite, Join, LeaveParty,
+    Union[Move, Look, Take, Drop, Use, Equip, Unequip, Attack, Talk, Give, Pay, Upgrade, Say, Revive, Respawn, Stand, Rest, Camp, Invite, Join, LeaveParty,
           Follow, Unfollow, Challenge, AcceptDuel, DeclineDuel, Flee, Stunt, Struggle, Maneuver, Dodge, Hide, Search,
           Freeform, Reject],
     Field(discriminator="action"),
@@ -296,6 +301,11 @@ class Dispenser(BaseModel):
     unless: list[str] = []
     where: str = "里"                   # 东西放在"桶里""桌上"
     once: bool = False                  # 每人一辈子只能拿一次（丢了也不能再拿），记在 dispenser_log
+    repeat: bool = False                # 身上已经有同样的东西也能拿（地牢里挖矿石、接泉水）
+    skill: Optional[str] = None         # 拿之前要过的技能判定（挖矿要运动、挑没坏的酒要自然），过了才拿得到
+    difficulty: int = 0
+    fail: str = ""                      # 判定失败时发生的事
+    fail_damage: int = 0                # 失败掉的血
     available: bool = True              # 这个玩家还能不能拿（身上已经有了就只看得到桶、桌子本身）
 
     @property

@@ -309,6 +309,7 @@ create table dungeon_floors (
   entry_room  text not null,
   stairs_room text not null,
   party_size  int not null default 1,           -- 生成时队伍在线人数：怪的血量、钱袋跟着涨
+  camped      uuid[] not null default '{}',     -- 在这一层扎过营的人（每层每人一次）
   primary key (run_id, depth)
 );
 
