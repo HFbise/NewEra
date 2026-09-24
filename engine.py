@@ -85,6 +85,11 @@ SKILL_SURE = 0.95
 SKILL_GAP_CHANCE = {1: 0.9, 2: 0.6, 3: 0.3}
 # 从 n 级升到 n+1 级要攒 SKILL_STEP * (n+1) 次熟练；只有难度高于当前等级的成功才算熟练
 SKILL_STEP = 3
+# 耐性：每升一级 HP 上限 +ENDURANCE_HP。除了硬扛的判定，挨打（活下来的）、扛住没喝醉有 ENDURE_HIT_CHANCE 的几率涨熟练，
+# 吃了有毒的东西活下来一定涨；耐性每级让喝醉的几率乘 DRUNK_RESIST
+ENDURANCE_HP = 3
+ENDURE_HIT_CHANCE = 0.25
+DRUNK_RESIST = 0.85
 FLEE_DIFFICULTY = {0: 3, 1: 2, 2: 1}    # 决斗逃跑（运动）按距离的难度，更远不用判定
 REVIVE_DIFFICULTY = 1                   # 急救倒下的人（医药）
 
@@ -855,7 +860,10 @@ def _eat_effect(cur: Cursor, eater: Player, item: ItemInstance, user: Player) ->
     if hp == 0:
         facts.append(f"{eater.name}倒下了")
         _downed_by(cur, eater, "poison", item.name)
-    elif item.knockout:
+    elif item.harm:
+        eater.hp = hp
+        facts += _toughen(cur, eater)                   # 毒扛过去了，耐性一定涨
+    if hp > 0 and item.knockout:
         _knock_out(cur, "players", eater.id, item.knockout)
         facts.append(f"{eater.name}{item.knockout}，失去战斗能力")
     if _prop(item, "sober"):
@@ -868,9 +876,13 @@ def _eat_effect(cur: Cursor, eater: Player, item: ItemInstance, user: Player) ->
                                                          then drinks else 0 end + %s, last_drink_at = now()
                         where id = %s returning drinks""", (_prop(item, "strength") or 1, eater.id))
         n = cur.fetchone()["drinks"]
-        if hp > 0 and _roll(min(1.0, DRUNK_CHANCE * 2 ** (n - 1))):
+        resist = DRUNK_RESIST ** skill_level(eater.skills.get("endurance", 0))
+        if hp > 0 and _roll(min(1.0, DRUNK_CHANCE * 2 ** (n - 1) * resist)):
             cur.execute(f"update players set drunk_until = now() + interval '{DRUNK_TIME}' where id = %s", (eater.id,))
             facts.append(f"{eater.name}喝醉了（连着喝了 {n} 杯）：接下来一阵子说话含糊，做什么都不太利索")
+        elif hp > 0 and n >= 2:
+            eater.hp = hp
+            facts += _toughen(cur, eater, ENDURE_HIT_CHANCE)   # 连着喝还没醉，扛住了酒劲
     return facts
 
 
@@ -1035,12 +1047,34 @@ def _check(cur: Cursor, player: Player, view: RoomView, skill: Optional[str], di
              + ("，喝醉了" if player.drunk else "") + f"：{'成功' if ok else '失败'}）"]
     if ok and skill and difficulty > level and skill not in view.trained:
         view.trained.append(skill)
-        player.skills[skill] = count + 1
-        cur.execute("update players set skills = skills || jsonb_build_object(%s::text, %s::int) where id = %s",
-                    (skill, count + 1, player.id))
-        new, have, need = skill_progress(count + 1)
-        facts.append(f"{player.name}的{name}升到了 {new} 级" if new > level else f"{name}熟练 +1（{have}/{need}）")
+        facts += _gain_skill(cur, player, skill)
     return ok, facts
+
+
+def _gain_skill(cur: Cursor, player: Player, skill: str) -> list[str]:
+    """熟练 +1；耐性升级顺带涨 HP 上限（当前 HP 一起涨）"""
+    count = player.skills.get(skill, 0)
+    level = skill_level(count)
+    player.skills[skill] = count + 1
+    cur.execute("update players set skills = skills || jsonb_build_object(%s::text, %s::int) where id = %s",
+                (skill, count + 1, player.id))
+    new, have, need = skill_progress(count + 1)
+    name = SKILL_NAMES[skill]
+    if new == level:
+        return [f"{name}熟练 +1（{have}/{need}）"]
+    facts = [f"{player.name}的{name}升到了 {new} 级"]
+    if skill == "endurance":
+        gain = ENDURANCE_HP * (new - level)
+        player.max_hp += gain
+        player.hp += gain
+        cur.execute("update players set max_hp = max_hp + %s, hp = hp + %s where id = %s", (gain, gain, player.id))
+        facts.append(f"{player.name}的 HP 上限 +{gain}，现在 HP {player.hp}/{player.max_hp}")
+    return facts
+
+
+def _toughen(cur: Cursor, player: Player, chance: float = 1.0) -> list[str]:
+    """扛住了一下（挨了打还站着、喝了毒还活着、扛住酒劲）：按几率涨一次耐性熟练"""
+    return _gain_skill(cur, player, "endurance") if player.hp > 0 and _roll(chance) else []
 
 
 def _escape_chance(escape: int, attempts: int) -> float:
@@ -1127,7 +1161,8 @@ def _hurt_player(cur: Cursor, target: Player, dmg: int, kind: str, by: str) -> t
     if hp == 0:
         facts.append(f"{target.name}倒下了")
         _downed_by(cur, target, kind, by)
-    return facts, hp == 0
+    target.hp = hp
+    return facts + _toughen(cur, target, ENDURE_HIT_CHANCE), hp == 0
 
 
 def _downed_by(cur: Cursor, player: Player, kind: str, by: str) -> None:
@@ -1164,7 +1199,7 @@ def _npc_strike(cur: Cursor, player: Player, npc: Npc, verb: str, chance: float 
     if player.hp == 0:
         facts.append(f"{player.name}倒下了")
         _downed_by(cur, player, "npc", npc.name)
-    return facts
+    return facts + _toughen(cur, player, ENDURE_HIT_CHANCE)
 
 
 def _stealth(player: Player) -> Stealth:

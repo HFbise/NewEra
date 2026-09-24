@@ -171,9 +171,10 @@ Difficulty = Annotated[int, BeforeValidator(_difficulty), Field(ge=1, le=10)]
 
 # 生活技能：AI 判一个动作用哪个技能、难度几级，引擎拿难度和技能等级比掷骰（engine.skill_chance）
 SKILL_NAMES = {"acrobatics": "体操", "animal": "驯兽", "athletics": "运动", "sleight": "巧手", "stealth": "隐匿",
-               "investigation": "调查", "nature": "自然", "perception": "察觉", "survival": "生存", "medicine": "医药"}
+               "investigation": "调查", "nature": "自然", "perception": "察觉", "survival": "生存", "medicine": "医药",
+               "endurance": "耐性"}
 Skill = Literal["acrobatics", "animal", "athletics", "sleight", "stealth", "investigation", "nature", "perception",
-                "survival", "medicine"]
+                "survival", "medicine", "endurance"]
 Tier = Literal["none", "light", "heavy", "lethal"]      # 无伤 / 轻伤 / 重伤 / 致命
 # 失去战斗能力（昏迷、砸晕） / 束缚（捆住、压住） / 倒地（绊倒、扫腿、掀翻：站起来之前不能走、不能打）
 StatusKind = Literal["incapacitated", "restrained", "prone"]
