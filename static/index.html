@@ -48,6 +48,13 @@
   /* 装备栏两列，格子名在前；空格子不能点 */
   #side ul.equip { display: grid; grid-template-columns: 1fr 1fr; gap: 0 8px; }
   /* 能收起的栏目：做成按钮的样子，一看就知道能点 */
+  /* 地牢里的光亮：条上的竖线是 50，低于它命中开始打折 */
+  #side .light { margin-top: 8px; font-size: 13px; }
+  #side .lightbar { position: relative; height: 6px; background: var(--border); border-radius: 3px; margin: 4px 0; }
+  #side .lightbar div { height: 100%; background: #e3b341; border-radius: 3px; }
+  #side .lightbar .mark { position: absolute; left: 50%; top: -2px; width: 1px; height: 10px; background: var(--dim); }
+  #side .light ul.sys li { padding: 1px 0; cursor: default; }
+  #side .light ul.sys li:hover { background: none; }
   #side h2.fold { cursor: pointer; user-select: none; display: inline-block; padding: 3px 12px;
                   border: 1px solid var(--border); border-radius: 6px; background: var(--bg); color: var(--text); }
   #side h2.fold:hover { border-color: var(--accent); }
@@ -161,6 +168,10 @@ function render(s) {
     <h2>位置</h2>
     <div class="room">${esc(s.room.name)}</div>
     <div class="sys">${esc(s.room.description)}</div>
+    ${s.light ? `<div class="light" title="${esc(s.light.source)}">光亮 ${s.light.value}/100 · ${esc(s.light.word)}
+      <div class="lightbar"><div style="width:${s.light.value}%"></div><span class="mark"></span></div>
+      <ul class="sys">${s.light.lines.map(l => `<li>${esc(l)}</li>`).join("")}</ul>
+      <div class="tag">光从哪来：${esc(s.light.source)}</div></div>` : ""}
     <h2>出口</h2>
     <ul>${s.exits.map(e => `<li data-name="${e.label}">${e.label}<span class="tag">${esc(e.to)}${e.locked ? "（锁着）" : ""}</span></li>`).join("")}</ul>
     ${s.npcs.length ? `<h2>NPC</h2><ul>${s.npcs.map(n => li(n.ref, n.name,

@@ -101,10 +101,12 @@ def state(conn, view: RoomView, after: Optional[int] = None) -> dict:
               for n, hp, awake, st in cur.fetchall()]
     cur.execute("select id, name from rooms where id = any(%s)", ([e.to_room for e in view.exits],))
     room_names = dict(cur.fetchall())
+    light = engine.light_info(engine._cursor(conn), view.player, view.room)      # 地牢里的光亮和它的效果
     conn.commit()
     return {
         "player": view.player.model_dump(mode="json"),
         "room": view.room.model_dump(),
+        "light": light,
         "exits": [{"direction": e.direction, "label": dir_name(e.direction), "to": room_names[e.to_room],
                    "locked": e.locked} for e in view.exits],
         "items": [{"ref": by_id[i.id], "name": i.name, "quantity": i.quantity, "detail": engine.item_detail(i)}

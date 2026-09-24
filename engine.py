@@ -2002,6 +2002,46 @@ def _dark_factor(light: int) -> float:
     return (LIGHT_FULL - light) / LIGHT_FULL
 
 
+def light_info(cur: Cursor, player: Player, room: Room) -> Optional[dict]:
+    """给界面看的光亮：数值、说法、这个亮度现在对这个人有什么影响、光从哪来。没设环境的房间（村里）是 None"""
+    env = room.props.get("env")
+    if not env:
+        return None
+    base = _base_light(env)
+    light = _light(cur, room.id, env, player=player)
+    lines = []
+    if _effect(player, "blind"):
+        lines.append("你看不清东西，这一回合当作一片漆黑")
+    hit_light = max(light, LIGHT_FULL) if gear_has(cur, player, "darkvision") and not _effect(player, "blind") else light
+    hit = round(_light_hit(hit_light, MELEE_HIT[0]) * 100)
+    lines.append(f"你贴身普通攻击的命中 {hit}%" + ("（夜视，不受暗处影响）" if hit_light > light
+                                                  else "（亮度 50 以上不打折）" if light >= LIGHT_FULL else "（越暗越低，带火把能补）"))
+    if light < LIGHT_DARK:
+        lines.append("几乎漆黑：做花样难一级，躲起来容易一级")
+    atk = math.floor(_dark_factor(light) + 0.5)
+    lines.append("怪下手更狠（攻击 +1）" if atk > 0 else "怪被照得缩手缩脚（攻击 −1）" if atk < 0 else "怪的攻击正常")
+    if light >= LIGHT_BRIGHT:
+        lines.append("怕光的怪攻击再 −1")
+    lines.append(f"打怪掉的钱 ×{1 + 0.5 * _dark_factor(light):.2f}（越暗越多）")
+    parts = [f"房间 {base}"]
+    cur.execute("""select max((t.props->>'light')::int) filter (where t.props ? 'burning') as torch,
+                          max((t.props->>'light')::int) filter (where not t.props ? 'burning') as lamp
+                   from item_instances i join item_templates t on t.id = i.template_id join players p on p.id = i.player_id
+                   where p.room_id = %s and t.props ? 'light' and i.equipped_slot is not null""", (room.id,))
+    row = cur.fetchone()
+    if row["torch"]:
+        parts.append(f"火把 +{row['torch']}")
+    if row["lamp"]:
+        parts.append(f"随身的光 +{row['lamp']}")
+    if (scroll := env.get("scroll")) and light > base:
+        parts.append(f"光明卷轴 +{scroll['value']}")
+    if env.get("ground") == "water":
+        lines.append("地上积水：闪避效果减半，逃跑难一级")
+    if env.get("cover"):
+        lines.append("有掩体：躲起来容易一级")
+    return {"value": light, "word": dungeon.light_word(light), "source": "，".join(parts), "lines": lines}
+
+
 def env_text(cur: Cursor, room: Room) -> str:
     """给 AI 看的环境说明，没设环境的房间是空的"""
     env = room.props.get("env")
