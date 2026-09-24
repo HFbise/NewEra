@@ -222,6 +222,13 @@ class Maneuver(BaseModel):
     description: str = ""
 
 
+class Uncurse(BaseModel):
+    """找会解咒的 NPC（诺艾尔，props.uncurse）付钱解掉身上装备的诅咒"""
+    action: Literal["uncurse"]
+    target: str                         # NPC 的 ref
+    item: Optional[str] = None          # 哪件；不填就是身上被诅咒的那件
+
+
 class Tame(BaseModel):
     """安抚、驯服野兽（怪标了 animal）：驯兽判定，成了这一群同种的野兽平静下来走开（收获照给），不成它们扑上来先打一下"""
     action: Literal["tame"]
@@ -272,7 +279,7 @@ class Reject(BaseModel):
 
 PlayerAction = Annotated[
     Union[Move, Look, Take, Drop, Use, Equip, Unequip, Attack, Talk, Give, Sell, Pay, Upgrade, Say, Revive, Respawn, Stand, Rest, Camp, Teleport, LeaveParty,
-          Follow, Unfollow, Challenge, AcceptDuel, DeclineDuel, Flee, Stunt, Struggle, Maneuver, Dodge, Tame, Hide, Search,
+          Follow, Unfollow, Challenge, AcceptDuel, DeclineDuel, Flee, Stunt, Struggle, Maneuver, Dodge, Tame, Uncurse, Hide, Search,
           Freeform, Reject],
     Field(discriminator="action"),
 ]

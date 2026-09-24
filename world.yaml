@@ -417,7 +417,7 @@ npcs:
       # 现打武器，伤害最多 4（墙上的铁斧是 5）
       creates:
         weapon: {damage: 4}
-      # 能帮人升级武器：每级伤害 +1，费用和失败的几率随等级涨，失败退一级不会碎（engine.upgrade_terms）
+      # 能帮人升级武器和防具：每级伤害（防具是防御）+1，费用和失败的几率随等级涨，失败退一级不会碎（engine.upgrade_terms）
       upgrades: true
       buys: {likes: [weapon, armor, ore]}
       gift_likes: [ore]
@@ -438,6 +438,8 @@ npcs:
       # 价钱固定是参考价 × markup，只有一件、卖掉就没了；没问就不提（engine.rare_stock）。
       # reluctant 里的她舍不得卖，卖的时候台词不一样；卖出去的书送回给她，她认得出来
       rare_sells: {items: [ore, ancient_wine, old_tome], chance: 0.15, markup: 2, reluctant: [old_tome]}
+      # 会解咒：地牢里的诅咒装备（props.cursed）戴上就卸不下来，找她按那件东西的参考价付钱解开（engine.do_uncurse）
+      uncurse: true
       buys: {likes: [misc, book]}
       gift_likes: [book]
       revive_lines:

@@ -27,6 +27,7 @@ from schema import (
     ActionResult, Attack, Drop, Equip, Feature, Follow, Freeform, Give, ItemInstance, LeaveParty, Look,
     Move, Npc, OtherPlayer, Player, PlayerAction, Reject, Revive, Room, RoomExit, RoomView, Say, Status, Struggle,
     Stunt, Take, Talk, Unfollow, Unequip, Use, dir_name, Dispenser, SLOT_CHOICES, SLOT_NAMES, Dodge, Hide, Maneuver, Search, Stealth, Tame,
+    Uncurse,
     AcceptDuel, Challenge, DeclineDuel, Duel, Flee, SKILL_NAMES, Upgrade, Respawn, Stand, Rest, Pay, Camp, Teleport, Sell,
     Effect,
 )
@@ -1301,6 +1302,7 @@ def do_take(cur: Cursor, player: Player, view: RoomView, a: Take) -> list[str]:
 
 def do_drop(cur: Cursor, player: Player, view: RoomView, a: Drop) -> list[str]:
     item = _inv_item(cur, view, player, a.item)
+    _no_curse(item, "扔")
     if _burning(item):
         return _douse(cur, player, item)
     facts = [f"{player.name}卸下了{item.name}"] if item.equipped_slot else []
@@ -1640,16 +1642,20 @@ def do_equip(cur: Cursor, player: Player, view: RoomView, a: Equip) -> list[str]
             slot = "right_hand"
             other = worn.get("left_hand")
             if other and other.id != item.id:
+                _no_curse(other, "放")
                 if _burning(other):
                     raise ActionError(f"{item.name}要两只手拿，左手的{other.name}点着，收起来就灭了；先把火把熄掉再换")
                 cur.execute("update item_instances set equipped_slot = null where id = %s", (other.id,))
                 facts.append(f"{player.name}放下了{other.name}，腾出两只手")
                 worn.pop("left_hand")
         elif (big := next((i for i in worn.values() if _prop(i, "two_handed") and i.id != item.id), None)):
+            _no_curse(big, "放")
             cur.execute("update item_instances set equipped_slot = null where id = %s", (big.id,))
             facts.append(f"{player.name}放下了要两只手拿的{big.name}")
             worn = {s: i for s, i in worn.items() if i.id != big.id}
     old = worn.get(slot)
+    if old and not item.equipped_slot:
+        _no_curse(old, "换")
     if old and _burning(old) and not item.equipped_slot:
         raise ActionError(f"{SLOT_NAMES[slot]}拿着点着的{old.name}，收起来就灭了；要换就先把火把熄掉（卸下火把），或者说换到另一只手")
     prev = item.equipped_slot
@@ -1677,6 +1683,7 @@ def do_unequip(cur: Cursor, player: Player, view: RoomView, a: Unequip) -> list[
         item = next((i for i in _worn(cur, player) if i.name.startswith(item.name)), item)
     if not item.equipped_slot:
         raise ActionError(f"{item.name}没有装备着")
+    _no_curse(item)
     if _burning(item):
         return _douse(cur, player, item)
     cur.execute("update item_instances set equipped_slot = null where id = %s", (item.id,))
@@ -3078,6 +3085,7 @@ def do_sell(cur: Cursor, player: Player, view: RoomView, a: Sell) -> list[str]:
     if not npc.template.props.get("buys"):
         raise ActionError(f"{npc.name}不收东西")
     item = _inv_item(cur, view, player, a.item)
+    _no_curse(item, "拿")
     if _burning(item):
         raise ActionError(f"点着的{item.name}{npc.name}可不收")
     if _precious(cur, item):
@@ -3095,6 +3103,7 @@ RETURNED_FACT = "她自己卖出去的那件"     # 从她那买的礼物又送�
 
 def do_give(cur: Cursor, player: Player, view: RoomView, a: Give) -> list[str]:
     item = _inv_item(cur, view, player, a.item)
+    _no_curse(item, "拿")
     if _burning(item):
         raise ActionError(f"点着的{item.name}只能拿在自己手上，递不出去")
     if a.target not in view.refs:
@@ -3137,45 +3146,69 @@ UPGRADE_MIN_COST = 5
 UPGRADE_ORE = "ore"
 
 
+STAT_WORDS = {"damage": "伤害", "defense": "防御"}
+
+
+def upgrade_stat(item: ItemInstance) -> Optional[str]:
+    """升级加的是哪项：武器加伤害，有防御的防具（盔甲、盾、帽子……）加防御，别的升不了"""
+    if item.template.type == "weapon":
+        return "damage"
+    if item.template.type == "armor" and item.defense > 0:
+        return "defense"
+    return None
+
+
+def upgradable(items: list[ItemInstance]) -> list[ItemInstance]:
+    return [i for i in items if upgrade_stat(i)]
+
+
 def upgrade_terms(item: ItemInstance) -> tuple[int, int, float]:
-    """(升到几级, 费用, 失败的几率)"""
+    """(升到几级, 费用, 失败的几率)。武器的费用是伤害 +1 前后建议价的差；防具的数值小，套武器的曲线差价几乎是 0，
+    改按护甲定价 8×防 + 防² 的差（9 + 2×当前防御：1→2 要 11，3→4 要 15），比例减伤下每点防御都很值钱"""
+    stat = upgrade_stat(item)
+    now = getattr(item, stat)
     level = item.props.get("plus", 0) + 1
-    cost = max(UPGRADE_MIN_COST, base_price({"damage": item.damage + 1}) - base_price({"damage": item.damage}))
+    diff = (9 + 2 * now) if stat == "defense" else base_price({stat: now + 1}) - base_price({stat: now})
+    cost = max(UPGRADE_MIN_COST, diff)
     return level, cost, min(UPGRADE_BREAK_MAX, UPGRADE_BREAK_STEP * level)
 
 
 def _upgrade_text(item: ItemInstance) -> str:
     level, cost, risk = upgrade_terms(item)
-    return (f"升到 +{level}（伤害 {item.damage} → {item.damage + 1}）要 {cost} 金币，有 {round(risk * 100)}% 的可能失败"
+    stat = upgrade_stat(item)
+    now = getattr(item, stat)
+    return (f"升到 +{level}（{STAT_WORDS[stat]} {now} → {now + 1}）要 {cost} 金币，有 {round(risk * 100)}% 的可能失败"
             + ("，失败会退一级" if level > 1 else "，失败了钱白花"))
 
 
 def do_upgrade(cur: Cursor, player: Player, view: RoomView, a: Upgrade) -> list[str]:
     npc = _room_npc(cur, view, player, a.target)
     if not npc.template.props.get("upgrades"):
-        raise ActionError(f"{npc.name}不会升级武器")
+        raise ActionError(f"{npc.name}不会升级装备")
     offers = _offers(cur, player.id, npc)
+    gear = upgradable(view.inventory)
     if a.quote:
-        items = [_inv_item(cur, view, player, a.item)] if a.item else [i for i in view.inventory if i.template.type == "weapon"]
-        if not items:
-            raise ActionError(f"{player.name}身上没有能升级的武器")
+        items = [_inv_item(cur, view, player, a.item)] if a.item else gear
+        if not items or not all(upgrade_stat(i) for i in items):
+            raise ActionError(f"{player.name}身上没有能升级的武器、防具")
         return [f"{npc.name}看了看{player.name}的{i.name}：{_upgrade_text(i)}" for i in items]
     if a.item:
         item = _inv_item(cur, view, player, a.item)
-        if item.template.type != "weapon":
-            raise ActionError(f"{item.name}不是武器，{npc.name}没法升级")
+        if not upgrade_stat(item):
+            raise ActionError(f"{item.name}不是武器，也不是带防御的防具，{npc.name}没法升级")
     else:
-        # 没说哪把：刚问过要不要用矿石的那把（回"用""不用"），或者身上只有一把；不止一把就列出来问
-        weapons = [i for i in view.inventory if i.template.type == "weapon"]
-        asked = next((i for i in weapons if f"upgrade:{i.id}" in offers), None)
+        # 没说哪件：刚问过要不要用矿石的那件（回"用""不用"），或者身上只有一件；不止一件就列出来问
+        asked = next((i for i in gear if f"upgrade:{i.id}" in offers), None)
         if asked is None and a.ore is False:
             raise ActionError(f"{npc.name}没在问{player.name}用不用矿石")
-        if asked is None and len(weapons) != 1:
-            if not weapons:
-                raise ActionError(f"{player.name}身上没有能升级的武器")
-            return ([f"{npc.name}问{player.name}要升级哪一把："] + [f"{i.name}：{_upgrade_text(i)}" for i in weapons]
-                    + [f"{player.name}说「升级」加武器名字，{npc.name}就动手"])
-        item = asked or weapons[0]
+        if asked is None and len(gear) != 1:
+            if not gear:
+                raise ActionError(f"{player.name}身上没有能升级的武器、防具")
+            return ([f"{npc.name}问{player.name}要升级哪一件："] + [f"{i.name}：{_upgrade_text(i)}" for i in gear]
+                    + [f"{player.name}说「升级」加名字，{npc.name}就动手"])
+        item = asked or gear[0]
+    stat = upgrade_stat(item)
+    now = getattr(item, stat)
     level, cost, risk = upgrade_terms(item)
     key = f"upgrade:{item.id}"
     terms = _upgrade_text(item)
@@ -3197,20 +3230,52 @@ def do_upgrade(cur: Cursor, player: Player, view: RoomView, a: Upgrade) -> list[
     base = re.sub(r" \+\d+$", "", item.name)
     if a.ore:
         _consume(cur, ore)
-        facts.append(f"{player.name}递上一块奥利哈刚矿石，{npc.name}把它熔进了刃里，这次不会失败")
+        facts.append(f"{player.name}递上一块奥利哈刚矿石，{npc.name}把它熔了进去，这次不会失败")
     elif _roll(risk):
         down = max(0, level - 2)            # 现在是 level-1，失败退一级
         if down == level - 1:
             return facts + [f"淬火的时候火候没掌握好，{item.name}没升上去，好在也没伤着"]
-        dmg = item.damage - 1
         name = base + (f" +{down}" if down else "")
         cur.execute("update item_instances set props = props || %s where id = %s",
-                    (Jsonb({"plus": down, "damage": dmg, "name": name}), item.id))
-        return facts + [f"淬火的时候刃口崩了一块，{item.name}退回了{name}，伤害 {dmg}"]
+                    (Jsonb({"plus": down, stat: now - 1, "name": name}), item.id))
+        return facts + [f"淬火的时候崩了一块，{item.name}退回了{name}，{STAT_WORDS[stat]} {now - 1}"]
     name = base + f" +{level}"
     cur.execute("update item_instances set props = props || %s where id = %s",
-                (Jsonb({"plus": level, "damage": item.damage + 1, "name": name}), item.id))
-    return facts + [f"升级成功：{item.name}变成了{name}，伤害 {item.damage + 1}"]
+                (Jsonb({"plus": level, stat: now + 1, "name": name}), item.id))
+    return facts + [f"升级成功：{item.name}变成了{name}，{STAT_WORDS[stat]} {now + 1}"]
+
+
+# ============ 诅咒 ============
+# 诅咒装备（props.cursed）：装上就粘在身上，卸不下、扔不掉、给不出、卖不掉，别的东西也顶不掉它。
+# 找诺艾尔（props.uncurse）按参考价付钱解咒：解了就是普通装备（实例上记 cursed: false），特效还在
+
+def _cursed(item: ItemInstance) -> bool:
+    return bool(item.equipped_slot and _prop(item, "cursed"))
+
+
+def _no_curse(item: Optional[ItemInstance], what: str = "卸") -> None:
+    if item is not None and _cursed(item):
+        raise ActionError(f"{item.name}被诅咒了，粘在身上{what}不下来（找杂货铺的诺艾尔付钱解咒）")
+
+
+def do_uncurse(cur: Cursor, player: Player, view: RoomView, a: Uncurse) -> list[str]:
+    npc = _room_npc(cur, view, player, a.target)
+    if not npc.template.props.get("uncurse"):
+        raise ActionError(f"{npc.name}不会解咒")
+    if a.item:
+        item = _inv_item(cur, view, player, a.item)
+        if not _cursed(item):
+            raise ActionError(f"{item.name}身上没有诅咒" if not _prop(item, "cursed") else f"{item.name}没戴在身上，用不着解咒，直接扔掉就行")
+    else:
+        worn = [i for i in _worn(cur, player) if _cursed(i)]
+        if not worn:
+            raise ActionError(f"{player.name}身上没有被诅咒的装备")
+        item = worn[0]
+    price = base_price(item_stats(item))
+    patron = _pay(cur, player, price, npc)
+    cur.execute("update item_instances set props = props || '{\"cursed\": false}'::jsonb where id = %s", (item.id,))
+    return ([f"{player.name}付了 {price} 金币，{npc.name}翻开怀里那本旧书，小声念了一段古老的句子，"
+             f"{item.name}上缠着的诅咒散开了：现在能卸下来了"] + patron)
 
 
 def do_respawn(cur: Cursor, player: Player, view: RoomView, a: Respawn) -> list[str]:
@@ -3265,7 +3330,7 @@ HANDLERS: dict[str, Callable[..., list[str]]] = {
     "equip": do_equip, "unequip": do_unequip, "attack": do_attack, "talk": do_talk, "give": do_give, "freeform": do_freeform,
     "say": do_say, "revive": do_revive, "stunt": do_stunt, "struggle": do_struggle,
     "follow": do_follow, "unfollow": do_unfollow, "leave_party": do_leave_party,
-    "maneuver": do_maneuver, "dodge": do_dodge, "tame": do_tame, "hide": do_hide, "search": do_search, "reject": do_reject,
+    "maneuver": do_maneuver, "dodge": do_dodge, "tame": do_tame, "uncurse": do_uncurse, "hide": do_hide, "search": do_search, "reject": do_reject,
     "upgrade": do_upgrade, "pay": do_pay, "sell": do_sell, "respawn": do_respawn, "stand": do_stand, "rest": do_rest, "camp": do_camp, "teleport": do_teleport, "challenge": do_challenge, "accept_duel": do_accept_duel, "decline_duel": do_decline_duel, "flee": do_flee,
 }
 

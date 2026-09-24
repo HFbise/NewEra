@@ -99,8 +99,8 @@ def upgrade_request(view: RoomView, t: str, smith: str) -> Optional[dict]:
     out = {"action": "upgrade", "quote": bool(ask)}
     if ore_word:
         out["ore"] = not ore_word.startswith("不")
-    if rest and rest not in ("武器", "家伙", "兵器", "装备", "一下武器"):
-        weapons = [i for i in view.inventory if i.template.type == "weapon"]
+    if rest and rest not in ("武器", "家伙", "兵器", "装备", "一下武器", "防具", "护甲"):
+        weapons = [i for i in view.inventory if i.template.type == "weapon" or i.template.type == "armor" and i.defense > 0]
         pick = named_weapon(weapons, rest)
         if pick is None:
             raise _Unsure(rest)
@@ -202,6 +202,16 @@ def _parse_one(view: RoomView, t: str) -> dict:
     if smith := next((n for n in view.npcs if n.template.props.get("upgrades")), None):
         if (up := upgrade_request(view, t, smith.name)) is not None:
             return up | {"target": {uid: ref for ref, uid in view.refs.items()}[smith.id]}
+
+    # 解咒（找诺艾尔）："解咒""解除诅咒""对诺艾尔说 帮我解咒""找诺艾尔解开饮血双刃剑的诅咒"
+    if seller := next((n for n in view.npcs if n.template.props.get("uncurse")), None):
+        if m := re.fullmatch(rf"(?:(?:对|跟|找|向)\s*{re.escape(seller.name)}\s*(?:说|讲)?[:：]?\s*)?(?:帮我|请|我要|我想)?\s*"
+                             r"(?:把\s*(.+?)\s*(?:的|上的)?\s*)?(?:解咒|解除诅咒|驱咒|去掉诅咒|解开诅咒|除咒)\s*(.*?)\s*(?:的诅咒)?", t):
+            said = (m[1] or m[2] or "").strip()
+            out = {"action": "uncurse", "target": {uid: ref for ref, uid in view.refs.items()}[seller.id]}
+            if said:
+                out["item"] = _find(view, said, "inv")
+            return out
 
     # 驯兽："安抚狼""驯服巨鼠""安抚一下那只狼"（只对野兽有用，是不是野兽引擎查）
     if m := re.fullmatch(r"(?:试着|试试|慢慢)?(?:安抚|驯服|驯养|平息|哄走|哄哄|安慰)\s*(?:一下)?\s*(?:那只|这只|那群|这群)?\s*(.+)", t):
