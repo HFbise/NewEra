@@ -92,7 +92,7 @@ themes:
       - {name: 碎石堆, max_tier: light}
       - {name: 垂下来的锁链, max_tier: light}
       - {name: 松动的岩壁, max_tier: heavy}
-    monsters: [cave_rat, kobold, rock_beetle, kobold_slinger]
+    monsters: [cave_rat, kobold, rock_beetle, kobold_slinger, kobold_shieldbearer]
     events: [ore_vein, spring, miner_cache]
     eerie:
       - 远处传来一声镐头敲在石头上的脆响，然后是很长的寂静。
@@ -592,6 +592,17 @@ monsters:
   # 远程的怪（ranged: true）：不主动靠近，离人一步以上就射；被贴身了先往后跳开（这一下不射），
   #   除非这一轮刚被这个人贴身砍中（被缠住了），那就只能贴身硬射。有掩体的房间射得没那么准。verb 是出手的说法
   # 治疗的怪（healer: 比例）：有同伴掉到六成血以下，这一下给伤得最重的那个回这么多血，不打人
+  # guard_allies：打向它身后同伴的近战攻击，这么大几率被它挡下（落在它身上）；同伴都倒下它就扔下挡板逃跑。
+  # min_floor：这一层以上才会刷出来
+  kobold_shieldbearer:
+    name: 狗头人盾卫
+    description: 一只扛着矿车挡板当盾牌的狗头人，挡板上坑坑洼洼全是凿痕，缩在后面只露出两只眼睛。
+    persona: 胆小但死忠，只要身后还有同伴，就死死挡在前面不挪步；同伴一死就扔下盾牌逃跑。
+    hp: 1.2
+    atk: -1
+    def: 2
+    guard_allies: 0.5
+    min_floor: 8
   kobold_slinger:
     name: 狗头人投石手
     description: 一个瘦小的狗头人，腰上挂着一袋磨圆的石子，手里甩着一根皮投石索，站得远远的。

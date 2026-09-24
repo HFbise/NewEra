@@ -237,6 +237,10 @@ def _parse_one(view: RoomView, t: str) -> dict:
         u = re.sub(rf"^(?:对|跟|找|向)\s*{re.escape(keeper.name)}\s*(?:说|讲)?[:：]?\s*(?:帮我|请|给我)?\s*", "", t)
         if re.fullmatch(r"(?:续杯|续上|续一下|再续一杯|灌满|加满|满上|续满)(?:吧|一下)?|(?:把|给)?\s*.{0,8}?\s*(?:灌满|续上|满上|加满)", u):
             return {"action": "refill", "target": {uid: ref for ref, uid in view.refs.items()}[keeper.id]}
+    # 摔烟雾弹："摔烟雾弹""扔出烟雾弹""用烟雾弹"
+    if (smoke := next((i for i in view.inventory if "smoke" in i.template.props and "烟雾弹" in t), None)) \
+            and re.search(r"摔|扔|丢|砸|用|点", t):
+        return {"action": "use", "item": {uid: ref for ref, uid in view.refs.items()}[smoke.id]}
     # 泼迷药："把特制迷药泼向哥布林""对哥布林用特制迷药"
     if (drug := next((i for i in view.inventory if "drug" in i.template.props and (i.name in t or "迷药" in t)), None)) \
             and re.search(r"泼|洒|用|喂|倒", t):
@@ -301,6 +305,25 @@ def _parse_one(view: RoomView, t: str) -> dict:
              or re.fullmatch(r"把\s*(.+?)\s*(?:给|帮)\s*(.+?)\s*(?:敷上|涂上|抹上|用上|灌下|灌下去|包扎上)", t)):
         if _player(view, m[2]):
             return {"action": "use", "item": _find(view, m[1], "inv"), "target": _player(view, m[2])}
+    # 带特殊弹药装填："用钩索箭装填""装填火油箭""给猎弓装上火油箭"
+    if re.search(r"装填|上弦|装箭|填装|装上|装好", t) and len(t) <= 20:
+        refs = {uid: ref for ref, uid in view.refs.items()}
+        said = lambda i: i.name in t or (len(i.name) > 2 and i.name[:2] in t and i.name[-1] in t)
+        ammo = next((i for i in view.inventory if "ammo" in i.template.props and said(i)), None)
+        gun = next((i for i in view.inventory if ("loads" in i.template.props or "ranged" in i.template.props)
+                    and said(i)), None)
+        if ammo or gun or re.fullmatch(r"(?:重新)?(?:装填|上弦|装箭|填装)", t):
+            return {"action": "reload", "item": refs[gun.id] if gun else None, "ammo": refs[ammo.id] if ammo else None}
+    # 用手上的武器打（"用弩射哥布林""用飞刀掷它"），要在"用某物"之前认
+    if m := re.fullmatch(r"(?:用|拿)\s*(.+?)\s*(?:射|攻击|打|砍|刺|劈|掷|甩|投)(?:向)?\s*(.+)", t):
+        try:
+            item = _find(view, m[1], "inv")
+        except _Unsure:
+            item = None                     # 拿地形、手边的东西砸人是花样（stunt），交给 AI
+        if item and any(i.equipped_slot and view.refs.get(item) == i.id for i in view.inventory):
+            name = m[2].strip()
+            target = name if any(p.name == name for p in view.others) else _find(view, name, "npc")
+            return {"action": "attack", "target": target, "item": item}
     if m := re.fullmatch(r"(?:use|使用|用|吃|喝)\s*(\S+?)(?:\s+(?:on\s+)?(.+))?", t, re.I):
         return {"action": "use", "item": _find(view, m[1], "inv"),
                 "target": _target(view, m[2]) if m[2] else None}
@@ -334,18 +357,7 @@ def _parse_one(view: RoomView, t: str) -> dict:
     # 打的是玩家就是 PvP，target 填名字；否则是 NPC 的 ref。
     # 先认准确的玩家名，再找 NPC，最后才模糊匹配玩家，免得有人叫"布"时"打哥布林"打到他
     # 远程："装填""给弩上弦"；"射哥布林""用弩射哥布林""用短剑砍哥布林"
-    if m := re.fullmatch(r"(?:重新)?(?:装填|上弦|装箭|填装)|(?:给|把)\s*(.+?)\s*(?:重新)?(?:装填|上弦|装上箭|上好弦|装好)", t):
-        return {"action": "reload", "item": _find(view, m[1], "inv") if m[1] else None}
-    if m := re.fullmatch(r"(?:用|拿)\s*(.+?)\s*(?:射|攻击|打|砍|刺|劈)\s*(.+)", t):
-        try:
-            item = _find(view, m[1], "inv")
-        except _Unsure:
-            item = None                     # 拿地形、手边的东西砸人是花样（stunt），交给 AI
-        if item and any(i.equipped_slot and view.refs.get(item) == i.id for i in view.inventory):
-            name = m[2].strip()
-            target = name if any(p.name == name for p in view.others) else _find(view, name, "npc")
-            return {"action": "attack", "target": target, "item": item}
-    if m := re.fullmatch(r"(?:射|射击)\s*(.+)", t):
+    if m := re.fullmatch(r"(?:射|射击|掷|投掷)(?:向)?\s*(.+)", t):
         name = m[1].strip()
         return {"action": "attack", "target": name if any(p.name == name for p in view.others) else _find(view, name, "npc")}
     if m := re.fullmatch(r"(?:attack|kill|hit|攻击|杀|打)\s*(.+)", t, re.I):

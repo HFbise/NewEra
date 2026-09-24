@@ -322,7 +322,7 @@ def _template(cur: Cursor, depth: int, kind: str, rank: str, theme: str, share: 
     for flag in ("animal", "light_averse", "undead", "keen", "ranged"):
         if m.get(flag):
             props[flag] = True
-    for key in ("healer", "verb"):              # 治疗的比例、出手的说法（"甩出一颗石子"）
+    for key in ("healer", "verb", "guard_allies"):   # 治疗的比例、出手的说法（"甩出一颗石子"）、盾卫护同伴的几率
         if m.get(key):
             props[key] = m[key]
     if rank == "boss":
@@ -346,9 +346,14 @@ def floor_info(cur: Cursor, room_id: str) -> dict:
 def spawn_wanderer(cur: Cursor, room: str) -> str:
     """游荡的怪跟进了房间（走路时的随机事件）：这一层主题里的普通怪，返回名字"""
     f = floor_info(cur, room)
-    kind = random.choice(data()["themes"][f["theme"]]["monsters"])
+    kind = random.choice(_kinds(data()["themes"][f["theme"]], f["depth"]))
     _spawn_group(cur, room, f["depth"], kind, "normal", f["theme"], f["party_size"] or 1)
     return data()["monsters"][kind]["name"]
+
+
+def _kinds(theme: dict, depth: int) -> list[str]:
+    """这一层能刷的怪（有的要到 min_floor 才出，比如狗头人盾卫）"""
+    return [k for k in theme["monsters"] if data()["monsters"][k].get("min_floor", 1) <= depth] or theme["monsters"]
 
 
 def _spawn_group(cur: Cursor, room: str, depth: int, kind: str, rank: str, theme: str, size: int, groups: int = 1) -> None:
@@ -486,10 +491,10 @@ def _make_floor(cur: Cursor, run: UUID, depth: int, above: Optional[str], size: 
             count = random.randint(1, min(3, 1 + depth // 8))
             ranks = ["elite" if i == 0 and random.random() < min(0.35, 0.02 * depth) else "normal" for i in range(count)]
             for rank in ranks:
-                _spawn_group(cur, rid, depth, random.choice(theme["monsters"]), rank, theme_key, size, len(ranks))
+                _spawn_group(cur, rid, depth, random.choice(_kinds(theme, depth)), rank, theme_key, size, len(ranks))
         elif kind == "stairs":
             boss = depth % BOSS_EVERY == 0
-            _spawn_boss(cur, rid, depth, "boss" if boss else random.choice(theme["monsters"]), "boss" if boss else "elite",
+            _spawn_boss(cur, rid, depth, "boss" if boss else random.choice(_kinds(theme, depth)), "boss" if boss else "elite",
                         theme_key, size)
             cur.execute("insert into room_exits (room_id, direction, to_room) values (%s, 'down', %s)", (rid, GATE))
         elif kind == "treasure":
@@ -510,7 +515,7 @@ def _make_floor(cur: Cursor, run: UUID, depth: int, above: Optional[str], size: 
             if guarded:
                 # 有一半的宝箱房有怪守着（越深越可能是精英）
                 rank = "elite" if random.random() < min(0.35, 0.02 * depth) else "normal"
-                _spawn_group(cur, rid, depth, random.choice(theme["monsters"]), rank, theme_key, size)
+                _spawn_group(cur, rid, depth, random.choice(_kinds(theme, depth)), rank, theme_key, size)
     if theme_key == "castle" and theme.get("cell"):
         _prison_cell(cur, run, depth, theme, cells, start, size)
     entry = _room_id(run, depth, start)

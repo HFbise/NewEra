@@ -16,14 +16,21 @@ monsters:
   cave_rat: []
   kobold_slinger:
     - {item: sling, chance: 0.08}
+    - {item: lead_shot, chance: 0.2}
+  kobold_shieldbearer:
+    - {item: beetle_shell_shield, chance: 0.05}
   skeleton_archer:
     - {item: bone_bow, chance: 0.05, min_floor: 3}
   grave_nun: []
   jail_crossbowman:
+    - {item: grapple_bolt, chance: 0.15}
+    - {item: hand_crossbow, chance: 0.05}
     - {item: tower_shield, chance: 0.05, min_floor: 3}
     - {item: heavy_crossbow, chance: 0.03, min_floor: 7}
   goblin_hunter:
     - {item: hunting_bow, chance: 0.06, min_floor: 2}
+    - {item: fire_arrow, chance: 0.15}
+    - {item: quiver_belt, chance: 0.04, min_floor: 3}
   spit_toad: []
   ink_scribe: []
   kobold:
@@ -87,9 +94,18 @@ stair_guard:
   - {item: blood_potion,   weight: 6, min_floor: 3}
   - {item: map_scrap,      weight: 5, min_floor: 2}
   - {item: recall_crystal, weight: 3, min_floor: 4}
+  - {item: smoke_bomb,     weight: 5, min_floor: 3}
+  - {item: grapple_bolt,   weight: 4, min_floor: 4}
+  - {item: fire_arrow,     weight: 4}
+  - {item: lead_shot,      weight: 4}
 
 pool:
   - {item: sling,            weight: 6,  min_floor: 2}
+  - {item: hand_crossbow,    weight: 5,  min_floor: 3}
+  - {item: throwing_knives,  weight: 5,  min_floor: 2}
+  - {item: repeater_crossbow, weight: 3, min_floor: 7}
+  - {item: quiver_belt,      weight: 4,  min_floor: 4}
+  - {item: hunter_ring,      weight: 3,  min_floor: 5}
   - {item: hunting_bow,      weight: 5,  min_floor: 4}
   - {item: tower_shield,     weight: 4,  min_floor: 5}
   - {item: heavy_crossbow,   weight: 2,  min_floor: 9}

@@ -90,9 +90,10 @@ class Refill(BaseModel):
 
 
 class Reload(BaseModel):
-    """给射完的远程武器重新装填（弩上弦），算一个动作"""
+    """给射完的远程武器重新装填（弩上弦），算一个动作。ammo 是装上的特殊弹药（钩索箭、火油箭、铅弹），不填就是普通的"""
     action: Literal["reload"]
     item: Optional[str] = None
+    ammo: Optional[str] = None
 
 
 class Talk(BaseModel):
@@ -539,6 +540,7 @@ class Stealth(BaseModel):
     hidden: bool = False                # 躲着：几率不再上涨
     distance: dict[str, int] = {}       # 和每只 NPC（id）隔几格，没记的是 engine.START_DISTANCE
     struck: bool = False                # 这场仗已经出过手了（伏击者短刀这类"每场第一次攻击"的效果用）
+    reloaded: bool = False              # 这场仗箭袋腰带已经白给过一次装填了
 
 
 Player.model_rebuild()                  # stealth 引用了后面才定义的 Stealth

@@ -371,14 +371,14 @@ items:
     type: weapon
     slot: hand
     damage: 11
-    props: {price: 150, ranged: true, steady: true, unloaded: maggie_crossbow_empty}
+    props: {price: 150, ranged: true, steady: true, ammo_kind: crossbow, unloaded: maggie_crossbow_empty}
   maggie_crossbow_empty:
     name: 麦琪的轻弩（空）
     description: 麦琪的那把轻弩，弦松着，槽里空空的。说"装填"重新上弦才能再射。
     type: weapon
     slot: hand
     damage: 11
-    props: {price: 150, loads: maggie_crossbow}
+    props: {price: 150, ammo_kind: crossbow, loads: maggie_crossbow}
   # 莉娜的回礼（好感 100）：伤害按玩家走到过的最深层数定，带一个武器词条，能自己起名（engine._exclusive_blade）
   lina_blade:
     name: 莉娜打的剑
@@ -519,7 +519,7 @@ npcs:
     persona: 性格极度内向害羞且胆小怕人，说话声音细小如蚊蝇，面对陌生人时容易紧张到结巴，稍微受到惊吓就会下意识用怀里的书挡住脸或缩进柜台下。极度嗜书如命，把杂货铺当成自己的私人藏书室。虽然生人勿近，但凭借浩瀚的阅读量，对店里各种稀奇古怪的杂货、古董与魔法素材的来历与用途了如指掌。只要客人保持距离、语气温和，或是聊起书里的奇闻异事，她会慢慢放下戒心，小声且条理分明地介绍商品。最讨厌嘈杂粗鲁的举动，对懂得爱惜书籍的人天然有好感。
     props:
       # 货架上的东西，价钱由 AI 按建议价浮动
-      sells: [rope, torch, tent, recall_crystal, blood_potion]
+      sells: [rope, torch, tent, recall_crystal, blood_potion, fire_arrow, lead_shot, smoke_bomb]
       # 偶尔进的稀罕货（地牢里的礼物道具）：客人问有什么卖的时判一次 chance，中了这一小时里有一件，
       # 价钱固定是参考价 × markup，只有一件、卖掉就没了；没问就不提（engine.rare_stock）。
       # reluctant 里的她舍不得卖，卖的时候台词不一样；卖出去的书送回给她，她认得出来

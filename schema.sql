@@ -93,7 +93,8 @@ create table npcs (
   died_at     timestamptz,                       -- 死亡时间，模板 props.respawn_seconds 之后复活
   memory      text not null default '',         -- 长期记忆摘要
   status      jsonb,                             -- 负面状态，同 players.status
-  effects     jsonb not null default '[]'        -- 玩家装备打上去的中毒、流血、看不清、腐蚀
+  effects     jsonb not null default '[]',       -- 玩家装备打上去的中毒、流血、看不清、腐蚀
+  tally       jsonb not null default '{}'        -- 这只怪这场用了几次本事：{backs: 往后跳了几次, heals: 治了几次}
 );
 
 -- 可利用地形：能拿来砸人、绊人的环境物件。用掉 uses 次后 respawn_seconds 秒恢复

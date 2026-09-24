@@ -232,6 +232,7 @@ class AIAction(BaseModel):
     steps: Optional[int] = None
     consume: Optional[bool] = None
     to: Optional[str] = None             # transfer：接过强化的那件
+    ammo: Optional[str] = None           # reload：装上的特殊弹药
     name: Optional[str] = None           # rename：新名字
     ore: Optional[bool] = None           # upgrade：用不用奥利哈刚
     quote: Optional[bool] = None         # upgrade：只问价
@@ -291,7 +292,7 @@ INTENT_SYSTEM = """你是文字 MUD 游戏的指令解析器。读玩家的输�
   - status_label：状态的说法，简短，如"被石头砸晕了""被绳子捆住了"。泼酒、撒沙、撒石灰迷眼是短暂的 incapacitated，写"被迷了眼"这类，不要写成晕了，escape 填 1；escape：这个状态挣脱或醒来的难度 1 到 10（松松绕两圈是 1，捆得结结实实是 3，铁链锁住是 5）
 - struggle: description（第三人称简述怎么挣脱的），difficulty（这次挣脱或醒来的难度 1 到 10，看方法合不合理、状态有多严重）。玩家自己带着负面状态时想摆脱它就是 struggle；失去战斗能力时说什么做什么都算 struggle（挣扎着醒来）
 - maneuver: target（NPC 的 ref；决斗中靠近、退开对手就填对手的名字，距离看"决斗"那行），steps（整数格数，靠近填正数、退开填负数，每次最多 2 格：后退一步、挪开一点是 -1，拔腿往后跑、拉开距离是 -2，凑近一步是 1，冲上去是 2），description。同一个区域里走近、退开某个 NPC 都是 maneuver，不是 move；"冲上去砍它"是 maneuver 加 attack，"悄悄摸到它背后扭断脖子""绕过去把它打晕"是 maneuver（steps 填把距离缩到 0 的格数，最多 2）加 stunt。看"敌人"那行的距离，扭脖子、打晕、掐、割喉这类贴身动作，玩家说了摸过去、凑近、绕到背后，就先 maneuver
-- reload: item（要装填的远程武器 ref，可不填）。给弩上弦、装填、装箭
+- reload: item（要装填的远程武器 ref，可不填），ammo（装上的特殊弹药 ref，比如钩索箭、火油箭、铅弹，没说就不填）。给弩上弦、装填、装箭
 - refill: target（麦琪的 ref）。找她续杯，把她给的空酒壶、空药瓶灌满
 - transfer: item（转出强化的装备 ref），to（接过去的装备 ref），target（铁匠的 ref）。找铁匠把一件装备的强化等级转到另一件上
 - reroll: item（装备 ref），target（铁匠的 ref）。找铁匠刷新、重铸装备的词条（特效）
