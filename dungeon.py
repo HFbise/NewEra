@@ -419,7 +419,8 @@ def arrived(cur: Cursor, names: list[str], depth: int) -> list[str]:
     cur.execute("""update players set waypoints = array_append(waypoints, %s)
                    where name = any(%s) and not (%s = any(waypoints)) returning name""", (depth, names, depth))
     new = [r["name"] for r in cur.fetchall()]
-    return [f"传送石的纹路亮了一下，记住了{'、'.join(new)}：以后在地窖的漆黑入口前就能直接传送到第 {depth} 层"] if new else []
+    return [f"传送石的纹路亮了一下，记住了{'、'.join(new)}：以后在地窖的漆黑入口前就能直接传送到第 {depth} 层；"
+            f"在传送石边说「回城」就能回到地面"] if new else []
 
 
 def through_gate(cur: Cursor, player, from_room: str, online: str) -> tuple[str, list[str]]:

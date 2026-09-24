@@ -1051,6 +1051,9 @@ def narrate_round(db, player_id: UUID, room, turns: list[tuple[str, str, list[st
     return out.narrative if out else None
 
 
+MUST_MENTION = ("传送石",)
+
+
 def narrate(db, view: RoomView, text: str, results: list[ActionResult],
             npc: Optional[Npc], affinity: int, memory: str = "", recent: Optional[list[str]] = None,
             quests: Optional[list[tuple[str, dict]]] = None, eject_to: Optional[str] = None,
@@ -1188,6 +1191,14 @@ def narrate(db, view: RoomView, text: str, results: list[ActionResult],
     def check(out: Narration, last: bool) -> Narration:
         if not last and (words := _stray_english(out.narrative, known)):
             raise ValueError(f"叙事里混进了英文（{'、'.join(words)}），全部用中文写")
+        # 要紧的东西叙事不能漏：界面上有叙事时 facts 是折起来的，只看叙事的人会错过
+        # （玩家A到了第 6 层，叙事只写了主题介绍，没看见传送石，白捏了一个回城水晶）
+        for word in MUST_MENTION:
+            if any(word in f for r in results for f in r.facts) and word not in out.narrative:
+                if not last:
+                    raise ValueError(f"facts 里有{word}，叙事一定要写到它：它是什么样、有什么用")
+                out.narrative = out.narrative.rstrip() + "
+" + next(f for r in results for f in r.facts if word in f)
         # 4.5 常用英文单引号包台词，换成中文引号
         out.narrative = re.sub(r"'([^'\n]+)'", r"“\1”", out.narrative)
         # 台词是单独演好的：叙事得原样用上，没写进去就重写一次，还没写就补在末尾
