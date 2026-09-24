@@ -47,7 +47,7 @@ ROAD_EVENT_CHANCE = 0.15                # 地牢里两个房间之间走动时�
 _data: Optional[dict] = None
 _loot: Optional[dict] = None
 # 掉落表里暂时不出的东西：它们的机制还没做（地图残片要小地图，大钥匙要上锁的牢房，诅咒要诺艾尔解咒）
-LOOT_NOT_YET = {"map_scrap", "warden_key", "cursed_twinblade", "greed_ring"}
+LOOT_NOT_YET: set[str] = set()         # 机制还没做的物品先不掉（第三批做完以后都放出来了）
 
 
 def data() -> dict:
@@ -125,6 +125,101 @@ def is_dungeon(room_id: str) -> bool:
 
 def _room_id(run: UUID, depth: int, cell: tuple[int, int]) -> str:
     return f"dg-{run.hex}-{depth}-{cell[0] * GRID + cell[1]}"
+
+
+OPPOSITE = {"north": "south", "south": "north", "east": "west", "west": "east"}
+CELL_INDEX = GRID * GRID                # 城堡层的牢房接在九宫格外面，编号在格子后面
+
+
+def _prison_cell(cur: Cursor, run: UUID, depth: int, theme: dict, cells: list, start: tuple, size: int) -> None:
+    """城堡层：挑一个靠边的格子，往外开一扇锁着的门（典狱长的大钥匙开），门后是上锁的牢房：
+    一袋比宝箱房多一倍的钱、一件通用池的东西、一件城堡宝箱池的东西，没有怪"""
+    sides = [(c, d) for c in cells if c != start for d, (dr, dc) in DIRS.items()
+             if not (0 <= c[0] + dr < GRID and 0 <= c[1] + dc < GRID)]
+    parent, d = random.choice(sides)
+    text = theme["cell"]
+    rid = f"dg-{run.hex}-{depth}-{CELL_INDEX}"
+    light = theme.get("light", 35) + LIGHT_OFFSET.get(text.get("light", "dark"), 0)
+    props = {"dungeon": {"depth": depth, "theme": "castle", "kind": "cell"},
+             "env": {"light": max(0, min(100, light)), "ground": "normal", "cover": False}}
+    cur.execute("insert into rooms (id, name, description, details, props) values (%s, %s, %s, %s, %s)",
+                (rid, f"第 {depth} 层·{text['name']}", text["description"], text.get("details", ""), Jsonb(props)))
+    cur.execute("""insert into room_exits (room_id, direction, to_room, locked, key_item) values (%s, %s, %s, true, 'warden_key')""",
+                (_room_id(run, depth, parent), d, rid))
+    cur.execute("insert into room_exits (room_id, direction, to_room) values (%s, %s, %s)",
+                (rid, OPPOSITE[d], _room_id(run, depth, parent)))
+    dark = (50 - light) / 50
+    coins = round(random.randint(8, 15) * 1.2 ** depth * (1 + 0.5 * dark)) * size * 2
+    cur.execute("insert into item_instances (template_id, room_id, props) values ('gold_pouch', %s, %s)", (rid, Jsonb({"gold": coins})))
+    for item in (_pick(loot_data()["pool"], depth), _pick(loot_data()["treasure"].get("castle"), depth)):
+        if item:
+            _put_item(cur, item, depth, room=rid)
+
+
+# ============ 小地图 ============
+# 地牢一层是 3×3 的九宫格：走过的格子记在 dungeon_floors.seen（全队共用一份地牢），用地图残片显出整层（revealed）。
+# 走过的格子标房间种类，显出来但没走过的只标入口、楼梯间、宝箱房；门只画走过的格子的（显出整层就全画）
+
+KIND_MARK = {"entry": "入", "stairs": "梯", "treasure": "宝", "empty": "空", "event": "事", "combat": "战"}
+
+
+def _cell_of(room_id: str) -> int:
+    """地牢房间在这一层的格子编号；不是地牢房间（地窖、入口）是 -1"""
+    tail = room_id.rsplit("-", 1)[-1]
+    return int(tail) if is_dungeon(room_id) and tail.isdigit() else -1
+
+
+def mark_seen(cur: Cursor, room_id: str) -> None:
+    """有人走进了地牢的这个房间：记进这一层走过的格子"""
+    if not is_dungeon(room_id):
+        return
+    run, depth = parse_room(room_id)
+    cell = _cell_of(room_id)
+    cur.execute("""update dungeon_floors set seen = array_append(seen, %s)
+                   where run_id = %s and depth = %s and not (%s = any(seen))""", (cell, run, depth, cell))
+
+
+def reveal(cur: Cursor, room_id: str) -> bool:
+    """用地图残片显出这一层：已经显出过就返回 False"""
+    run, depth = parse_room(room_id)
+    cur.execute("update dungeon_floors set revealed = true where run_id = %s and depth = %s and not revealed returning 1",
+                (run, depth))
+    return cur.fetchone() is not None
+
+
+def minimap(cur: Cursor, room_id: str) -> Optional[dict]:
+    """给界面画小地图：每个格子的标记、是不是走过、是不是现在所在、往东往南有没有门（画格子之间的连线）"""
+    if not is_dungeon(room_id):
+        return None
+    run, depth = parse_room(room_id)
+    cur.execute("select seen, revealed from dungeon_floors where run_id = %s and depth = %s", (run, depth))
+    f = cur.fetchone()
+    if f is None:
+        return None
+    prefix = f"dg-{run.hex}-{depth}-"
+    cur.execute("select id, props from rooms where id like %s", (prefix + "%",))
+    props = {_cell_of(r["id"]): r["props"] for r in cur.fetchall()}
+    cur.execute("select room_id, direction, to_room, locked from room_exits where room_id like %s", (prefix + "%",))
+    exits = cur.fetchall()
+    seen, revealed, here = set(f["seen"] or []), f["revealed"], _cell_of(room_id)
+    cells = []
+    for i in range(GRID * GRID):
+        kind = (props.get(i) or {}).get("dungeon", {}).get("kind", "")
+        stone = (props.get(i) or {}).get("stone")
+        walked = i in seen or i == here
+        known = walked or revealed
+        mark = ("石" if stone else KIND_MARK.get(kind, "")) if walked else \
+            ("石" if stone else KIND_MARK[kind] if kind in ("entry", "stairs", "treasure") else "?") if revealed else ""
+        # 只看通往这一层别的格子的门（往上回上一层、往下的楼梯不算）
+        mine = [e for e in exits if _cell_of(e["room_id"]) == i and e["to_room"].startswith(prefix)]
+        cells.append({
+            "mark": mark, "walked": walked, "known": known, "here": i == here,
+            # 往东、往南的门（格子之间的连线只画一次）；往九宫格外面的门（城堡的牢房）标在格子上
+            "east": known and any(e["direction"] == "east" and _cell_of(e["to_room"]) < CELL_INDEX for e in mine),
+            "south": known and any(e["direction"] == "south" and _cell_of(e["to_room"]) < CELL_INDEX for e in mine),
+            "door": next((e["direction"] for e in mine if known and _cell_of(e["to_room"]) == CELL_INDEX), None),
+        })
+    return {"depth": depth, "grid": GRID, "cells": cells, "revealed": revealed, "in_cell": here == CELL_INDEX}
 
 
 def parse_room(room_id: str) -> tuple[UUID, int]:
@@ -360,6 +455,8 @@ def _make_floor(cur: Cursor, run: UUID, depth: int, above: Optional[str], size: 
                 # 有一半的宝箱房有怪守着（越深越可能是精英）
                 rank = "elite" if random.random() < min(0.35, 0.02 * depth) else "normal"
                 _spawn_group(cur, rid, depth, random.choice(theme["monsters"]), rank, theme_key, size)
+    if theme_key == "castle" and theme.get("cell"):
+        _prison_cell(cur, run, depth, theme, cells, start, size)
     entry = _room_id(run, depth, start)
     if above:
         cur.execute("insert into room_exits (room_id, direction, to_room) values (%s, 'up', %s)", (entry, above))

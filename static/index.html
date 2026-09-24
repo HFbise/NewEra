@@ -28,6 +28,19 @@
   /* 战斗回合：结算（每个人出手的结果、敌人的行动）和整队共用的叙事 */
   .round { border-left: 2px solid #e3b341; padding-left: 12px; white-space: pre-wrap; font-size: 14px; }
   .round-story { white-space: pre-wrap; margin: 4px 0; }
+  /* 地牢小地图：3×3 格子，格子之间有门就画连线；走过的亮、显出来没走过的暗、没去过的空着；现在所在的高亮 */
+  #side .minimap { display: grid; grid-template-columns: repeat(5, auto); justify-content: start; align-items: center;
+                   margin: 8px 0 4px; }
+  #side .minimap .c { width: 28px; height: 28px; border: 1px solid var(--border); border-radius: 4px; display: flex;
+                      align-items: center; justify-content: center; font-size: 12px; color: var(--dim); position: relative; }
+  #side .minimap .c.walked { background: var(--border); color: var(--text); }
+  #side .minimap .c.known { border-style: dashed; }
+  #side .minimap .c.here { border: 2px solid var(--accent); color: var(--accent); font-weight: 700; }
+  #side .minimap .c.none { border-color: transparent; }
+  #side .minimap .h { width: 10px; height: 2px; }
+  #side .minimap .v { width: 2px; height: 10px; justify-self: center; }
+  #side .minimap .h.on, #side .minimap .v.on { background: var(--dim); }
+  #side .minimap .door { position: absolute; font-size: 9px; color: #e3b341; }
   #side .combat { margin-top: 8px; padding: 8px 10px; border: 1px solid #e3b341; border-radius: 6px; font-size: 13px; }
   #side .combat b { color: #e3b341; }
   details { color: var(--dim); font-size: 13px; }
@@ -186,6 +199,7 @@ function render(s) {
     <h2>位置</h2>
     <div class="room">${esc(s.room.name)}</div>
     <div class="sys">${esc(s.room.description)}</div>
+    ${s.minimap ? minimapHtml(s.minimap) : ""}
     ${s.room.props && s.room.props.stone ? `<div class="combat">这里有传送石：说“回城”回到地面；到过这里的人，以后在地窖里说“传送到第 N 层”（对石碑说也行）就能直接回来</div>` : ""}
     ${s.light ? `<div class="light">光亮 ${s.light.value}/100 · ${esc(s.light.word)}
       <div class="lightbar"><div style="width:${s.light.value}%"></div><span class="mark"></span></div>
@@ -232,6 +246,27 @@ function render(s) {
     </div>
     <h2></h2>
     <a href="#" id="logout" class="sys">换角色</a>　<a href="#" id="delete" class="sys">删除角色</a>`;
+}
+
+// 地牢小地图：5×5 的网格，偶数位是格子，奇数位是格子之间的门（连线）
+const DOOR_POS = { north: "top:-13px", south: "bottom:-13px", west: "left:-11px", east: "right:-11px" };
+function minimapHtml(m) {
+  const n = m.grid, out = [];
+  for (let r = 0; r < n * 2 - 1; r++) {
+    for (let c = 0; c < n * 2 - 1; c++) {
+      if (r % 2 === 0 && c % 2 === 0) {
+        const cell = m.cells[(r / 2) * n + c / 2];
+        const cls = cell.here ? "here walked" : cell.walked ? "walked" : cell.known ? "known" : "none";
+        out.push(`<div class="c ${cls}">${esc(cell.mark || "")}${cell.door ? `<span class="door" style="${DOOR_POS[cell.door]}">锁</span>` : ""}</div>`);
+      } else if (r % 2 === 0) {
+        out.push(`<div class="h${m.cells[(r / 2) * n + (c - 1) / 2].east ? " on" : ""}"></div>`);
+      } else if (c % 2 === 0) {
+        out.push(`<div class="v${m.cells[((r - 1) / 2) * n + c / 2].south ? " on" : ""}"></div>`);
+      } else out.push("<div></div>");
+    }
+  }
+  return `<div class="minimap">${out.join("")}</div>
+    <div class="tag">第 ${m.depth} 层小地图：入 入口 · 梯 楼梯间 · 宝 宝箱房 · 战 战斗 · 空 空房 · 事 事件${m.revealed ? "（已用地图残片显出整层）" : ""}${m.in_cell ? " · 你在牢房里" : ""}</div>`;
 }
 
 // 进入游戏时显示所在位置：只读状态，不发命令，不调 AI

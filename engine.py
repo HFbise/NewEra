@@ -922,10 +922,8 @@ def do_move(cur: Cursor, player: Player, view: RoomView, a: Move) -> list[str]:
         keys = load_items(cur, "i.player_id = %s and i.template_id = %s", (player.id, ex["key_item"])) \
             if ex["key_item"] else []
         if not keys:
-            raise ActionError(f"往{dir_name(a.direction)}的门锁着")
-        cur.execute("update room_exits set locked = false, unlocked_at = now() where room_id = %s and direction = %s",
-                    (player.room_id, a.direction))
-        facts.append(f"{player.name}用{keys[0].name}打开了往{dir_name(a.direction)}的门")
+            raise ActionError(f"往{dir_name(a.direction)}的门锁着" + ("（要典狱长的大钥匙）" if ex["key_item"] == "warden_key" else ""))
+        facts += _unlock(cur, player, keys[0], a.direction)
     # 地窖的漆黑入口、地牢楼梯间往下：去哪一层由地牢决定（第一次到的那层当场生成）
     to, arrived = ex["to_room"], []
     if to == dungeon.GATE:
@@ -940,6 +938,7 @@ def do_move(cur: Cursor, player: Player, view: RoomView, a: Move) -> list[str]:
     cur.execute("update players set room_id = %s, following = null, stealth = %s, updated_at = now() where id = %s",
                 (to, Jsonb(Stealth(room=to, chance=DETECT_START, detected=bool(spotted)).model_dump()), player.id))
     room = load_room(cur, to)
+    dungeon.mark_seen(cur, to)
     facts.append(f"{player.name}往{dir_name(a.direction)}走，来到了{room.name}")
     if heal := sum(int(e.get("value", 0)) for e in _fire(cur, player, "enter", "heal")):
         facts += _heal_player(cur, player, heal)
@@ -955,7 +954,9 @@ def do_move(cur: Cursor, player: Player, view: RoomView, a: Move) -> list[str]:
     )
     names = [r["name"] for r in cur.fetchall()]
     # 地牢里两个房间之间走动：可能碰上陷阱、零钱、跟进来的怪、怪声
-    if not arrived and dungeon.is_dungeon(player.room_id) and dungeon.is_dungeon(to) and _roll(dungeon.ROAD_EVENT_CHANCE):
+    if (not arrived and dungeon.is_dungeon(player.room_id) and dungeon.is_dungeon(to)
+            and dungeon.CELL_INDEX not in (dungeon._cell_of(player.room_id), dungeon._cell_of(to))      # 进出牢房只是一扇门
+            and _roll(dungeon.ROAD_EVENT_CHANCE)):
         facts += _road_event(cur, player, view, to)
     if names:
         facts.append(f"{'、'.join(names)}跟着{player.name}一起来到了{room.name}")
@@ -1027,6 +1028,7 @@ def do_teleport(cur: Cursor, player: Player, view: RoomView, a: Teleport) -> lis
         raise ActionError("只有在地牢的传送石边上、或者地窖里才能传送")
     cur.execute("update players set room_id = %s, following = null, stealth = null, updated_at = now() where id = %s",
                 (to, player.id))
+    dungeon.mark_seen(cur, to)
     cur.execute(
         f"""update players set room_id = %s, updated_at = now()
             where following = %s and room_id = %s and hp > 0 and status is null
@@ -1328,16 +1330,37 @@ def do_use(cur: Cursor, player: Player, view: RoomView, a: Use) -> list[str]:
             raise ActionError(f"往{dir_name(a.target)}的门没有锁")
         if ex["key_item"] != item.template.id:
             raise ActionError(f"{item.name}打不开往{dir_name(a.target)}的门")
-        cur.execute("update room_exits set locked = false, unlocked_at = now() where room_id = %s and direction = %s",
-                    (player.room_id, a.target))
-        return [f"{player.name}用{item.name}打开了往{dir_name(a.target)}的门"]
+        return _unlock(cur, player, item, a.target)
 
+    if _prop(item, "reveal_floor"):
+        return _read_map(cur, player, item)
     if _prop(item, "recall"):
         return _recall(cur, player, item)
     if item.template.type != "consumable":
         raise ActionError(f"{item.name}不能直接使用")
     _consume(cur, item)
     return [_use_self(player, item)] + _eat_effect(cur, player, item, player)
+
+
+def _unlock(cur: Cursor, player: Player, key: ItemInstance, direction: str) -> list[str]:
+    """用钥匙开门。只开一次的钥匙（典狱长的大钥匙，props.opens）转开以后就卡在锁里拔不出来了"""
+    cur.execute("update room_exits set locked = false, unlocked_at = now() where room_id = %s and direction = %s",
+                (player.room_id, direction))
+    facts = [f"{player.name}用{key.name}打开了往{dir_name(direction)}的门"]
+    if _prop(key, "opens"):
+        _consume(cur, key)
+        facts.append(f"{key.name}转到底就卡死在锁里，拔不出来了")
+    return facts
+
+
+def _read_map(cur: Cursor, player: Player, item: ItemInstance) -> list[str]:
+    """地图残片：显出这一层所有房间，小地图上能看到楼梯间、宝箱房在哪（全队共用）"""
+    if not dungeon.is_dungeon(player.room_id):
+        raise ActionError(f"{item.name}得在地牢里展开，墨迹才会动")
+    if not dungeon.reveal(cur, player.room_id):
+        raise ActionError("这一层的地图已经全显出来了，用不着再展开一张")
+    _consume(cur, item)
+    return [f"{player.name}展开{item.name}，兽皮上的墨迹自己游动起来，画出了这一层所有的房间：侧栏的小地图上能看到楼梯间和宝箱房在哪了"]
 
 
 STUN_ESCAPE = 3                         # 古书残卷念出来的定身：敌人挣脱的难度（每回合 30%、60%、90% 醒过来）

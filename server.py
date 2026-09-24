@@ -28,6 +28,7 @@ from pydantic import BaseModel, TypeAdapter
 import admin
 import ai
 import commands
+import dungeon
 import engine
 from db import pool
 from schema import SKILL_NAMES, SLOT_NAMES, ActionResult, PlayerAction, RoomView, dir_name
@@ -105,6 +106,7 @@ def state(conn, view: RoomView, after: Optional[int] = None) -> dict:
     room_names = dict(cur.fetchall())
     light = engine.light_info(engine._cursor(conn), view.player, view.room)      # 地牢里的光亮和它的效果
     combat = engine.round_info(conn, view.player)                                  # 战斗回合：谁出手了、在等谁
+    minimap = dungeon.minimap(engine._cursor(conn), view.room.id)                   # 地牢这一层的小地图
     totals = engine.gear_totals(view.player.attack, view.player.defense, view.inventory)
     conn.commit()
     return {
@@ -112,6 +114,7 @@ def state(conn, view: RoomView, after: Optional[int] = None) -> dict:
         "room": view.room.model_dump(),
         "light": light,
         "combat": combat,
+        "minimap": minimap,
         "exits": [{"direction": e.direction, "label": dir_name(e.direction), "to": room_names[e.to_room],
                    "locked": e.locked} for e in view.exits],
         "items": [{"ref": by_id[i.id], "name": i.name, "quantity": i.quantity, "detail": engine.item_detail(i)}

@@ -191,9 +191,10 @@ def _parse_one(view: RoomView, t: str) -> dict:
     if book and re.search(r"念|读|翻开|使用|用", t) and any(n.template.hostile for n in view.npcs):
         return {"action": "use", "item": by_id[book.id]}
     # 说了能用的道具的名字又说了怎么用（"把灯油倒在火把上""泼圣水""展开光明卷轴"）就是 use；圣水泼向句子里提到的敌人
-    tool = next((i for i in view.inventory if any(k in i.template.props for k in ("refuel", "whet", "room_light", "holy"))
-                 and i.name in t), None)
-    if tool and re.search(r"用|倒|泼|洒|磨|展开|打开|念|撒", t):
+    # 名字说全了、或者说了后半截（"地图残片"认得出"地牢地图残片"）都算
+    tool = next((i for i in view.inventory if any(k in i.template.props for k in ("refuel", "whet", "room_light", "holy", "reveal_floor"))
+                 and (i.name in t or len(i.name) > 4 and i.name[-4:] in t)), None)
+    if tool and re.search(r"用|倒|泼|洒|磨|展开|打开|念|撒|读|看", t):
         foe = next((n for n in view.npcs if n.template.hostile and (n.name in t or n.name[-2:] in t)), None)
         return {"action": "use", "item": by_id[tool.id], "target": by_id[foe.id] if foe else None}
 
