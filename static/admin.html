@@ -52,6 +52,14 @@
   h2 { font-size: 14px; color: var(--dim); margin: 20px 0 8px; }
   #login { display: flex; justify-content: center; align-items: center; min-height: 80vh; }
   #login form { display: flex; flex-direction: column; gap: 10px; width: 280px; }
+  #give-dialog { border: 1px solid var(--border); border-radius: 8px; background: var(--panel); color: inherit; padding: 16px 20px; }
+  #give-dialog::backdrop { background: rgba(0, 0, 0, .5); }
+  #give-dialog h3 { margin: 0 0 12px; font-size: 15px; }
+  #give-dialog label { display: block; margin: 8px 0; }
+  #give-dialog input[name=item] { width: 18em; }
+  #give-dialog input[name=count] { width: 5em; }
+  #give-dialog .err { color: #f85149; min-height: 1.2em; font-size: 13px; }
+  #give-dialog .btns { text-align: right; margin-top: 8px; }
 </style>
 </head>
 <body>
@@ -228,31 +236,41 @@ async function loadPlayers() {
       body.count = Math.round(+v);
     }
     if (op === "give") {
-      // 在这一行下面展开一个小表单：物品名字自动补全 + 数量
-      document.querySelectorAll("tr.give-row").forEach(r => r.remove());
-      const row = document.createElement("tr");
-      row.className = "give-row";
-      row.innerHTML = `<td colspan="9">给 ${esc(name)}：
-        <input list="item-options" placeholder="物品名字或 id" style="width:18em">
-        <datalist id="item-options">${itemList.map(i => `<option value="${esc(i.name)}">${esc(i.id)} · ${esc(i.type)}</option>`).join("")}</datalist>
-        数量 <input type="number" value="1" min="1" max="99" style="width:4em">
-        <button class="act ok">给</button> <button class="act cancel">取消</button></td>`;
-      tr.after(row);
-      const [itemInput, countInput] = row.querySelectorAll("input");
-      itemInput.focus();
-      row.querySelector(".cancel").onclick = ev => { ev.stopPropagation(); row.remove(); };
-      row.querySelector(".ok").onclick = async ev => {
-        ev.stopPropagation();
-        if (!itemInput.value.trim()) return;
-        try {
-          await api(`/players/${tr.dataset.id}`, { op: "give", item: itemInput.value.trim(), count: +countInput.value || 1 });
-          load();
-        } catch (err) { alert(err.message); }
-      };
+      openGive(tr.dataset.id, name);
       return;
     }
     try { await api(`/players/${tr.dataset.id}`, body); load(); } catch (err) { alert(err.message); }
   };
+}
+
+// 给道具的弹窗：物品名字自动补全 + 数量。放在 body 上，表格自动刷新不影响它
+function openGive(playerId, name) {
+  let dlg = document.getElementById("give-dialog");
+  if (!dlg) {
+    dlg = document.createElement("dialog");
+    dlg.id = "give-dialog";
+    document.body.append(dlg);
+  }
+  dlg.innerHTML = `<form method="dialog">
+    <h3>给 ${esc(name)} 道具</h3>
+    <label>物品 <input name="item" list="item-options" placeholder="名字或 id" required autocomplete="off"></label>
+    <datalist id="item-options">${(itemList || []).map(i => `<option value="${esc(i.name)}">${esc(i.id)} · ${esc(i.type)}</option>`).join("")}</datalist>
+    <label>数量 <input name="count" type="number" value="1" min="1" max="99"></label>
+    <div class="err"></div>
+    <div class="btns"><button value="cancel" formnovalidate class="act">取消</button> <button value="ok" class="act">给</button></div>
+  </form>`;
+  const form = dlg.querySelector("form");
+  form.onsubmit = async ev => {
+    if (ev.submitter?.value !== "ok") return;              // 取消：直接关
+    ev.preventDefault();
+    try {
+      await api(`/players/${playerId}`, { op: "give", item: form.item.value.trim(), count: +form.count.value || 1 });
+      dlg.close();
+      load();
+    } catch (err) { dlg.querySelector(".err").textContent = err.message; }
+  };
+  dlg.showModal();
+  form.item.focus();
 }
 
 // ============ 动态 ============
@@ -365,8 +383,7 @@ async function load() {
 setInterval(() => {
   if (!token || document.hidden) return;
   if (tab === "world") load();
-  // 玩家页开着"给道具"的小表单时不刷，不然表单会被重画掉
-  else if (tab === "players" && !document.querySelector("tr.give-row")) load();
+  else if (tab === "players") load();
   else if (tab === "events" && !paged && !document.activeElement?.matches("input")) load();
 }, 5000);
 
