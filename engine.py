@@ -2560,6 +2560,11 @@ def ago(when: datetime) -> str:
 NPC_REPLY_SHOWN = 12                    # 给叙事看的记录里，NPC 自己以前的回话只留开头这么多字，免得它整句照抄
 
 
+def clip_npc_said(entry: str, name: str) -> str:
+    """房间动态里 NPC 对别人说的话（"莉娜：“……”"）去掉原话：留着开头模型也会照抄给下一个人"""
+    return re.sub(rf"{re.escape(name)}：“[^”]*”", f"{name}回了几句（原话略）", entry)
+
+
 def _clip_replies(entry: str) -> str:
     """NPC 自己说过的话只留个开头（"你回：“哟，杂鱼，这就……”"），玩家说的话完整留着。完整记录在库里不动"""
     return re.sub(r"你回：“([^”]{%d})[^”]+”" % NPC_REPLY_SHOWN, r"你回：“\1……”", entry)

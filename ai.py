@@ -527,6 +527,17 @@ DEAL_RE = re.compile(r"成交|就它了|就要|给我来|来一|来杯|来瓶|�
 EFFECT_RE = re.compile(r"（[^（）]*(?:点血|伤害|防御|有毒|药倒|没什么效果)[^（）]*）")
 STAT_RE = re.compile(r"[^，。！？,.!?“”'‘’]*(?:回|恢复|加|掉)\s*[0-9一二三四五六七八九十两]+\s*点(?:血|HP|生命)[^，。！？,.!?“”'‘’]*[，,]?")
 TRADE_ACTIONS = {"quote", "npc_sell", "npc_create", "npc_give", "pay"}
+
+
+def _names(view: RoomView) -> str:
+    """房间里的人名、NPC 名、东西名：这些里的英文不算混进去的"""
+    return " ".join([view.player.name] + [o.name for o in view.others] + [n.name for n in view.npcs]
+                    + [i.name for i in view.items + view.inventory] + ["HP"])
+
+
+def _stray_english(text: str, source: str) -> list[str]:
+    """中文里夹的英文词（4.5 偶尔写出 "existing"）：输入里本来就有的（玩家名、玩家原话、HP）不算"""
+    return [w for w in re.findall(r"[A-Za-z]{3,}", text) if w.lower() not in source.lower()]
 # 玩家说要白给 NPC 钱、NPC 还没收（engine._tip）：这回合只能问一句"真要给我？"，不能写成已经收下
 TIP_PENDING = "还没收"
 TOOK_MONEY_RE = re.compile(r"接过|收下|收了|收进|收着|塞进|揣进|放进.{0,4}(口袋|钱袋|腰包)|我收")
@@ -678,8 +689,10 @@ def npc_line(db, view: RoomView, text: str, results: list[ActionResult], npc: Np
              sells: Optional[list[dict]] = None, made_before: Optional[list[dict]] = None) -> Optional[str]:
     """NPC 这回合说的话，单独演。失败返回 None（叙事自己写台词）"""
     services = npc_services(npc, sells)
-    # 第一次见面、或者问起能干什么：把能办的事介绍一遍
-    intro = bool(services) and (not memory or bool(ASK_SERVICE_RE.search(text)))
+    # 第一次见面、或者问起能干什么：把能办的事介绍一遍。这回合在交委托、做买卖就先办正事，不插介绍
+    busy = any(r.success and (r.action in TRADE_ACTIONS or r.action in ("quest", "give", "upgrade", "rest"))
+               for r in results)
+    intro = bool(services) and not busy and (not memory or bool(ASK_SERVICE_RE.search(text)))
     this_turn = "\n".join("；".join(EFFECT_RE.sub("", f) for f in r.facts) for r in results if r.success) or "没什么特别的"
     goods = "、".join([f"{s['name']}（建议价 {s['base_price']} 金币）" for s in sells or []]
                      + [g["name"] for g in made_before or []]) or "无"
@@ -705,6 +718,8 @@ def npc_line(db, view: RoomView, text: str, results: list[ActionResult], npc: Np
     def check(out: NpcLine, last: bool) -> NpcLine:
         out.line = out.line.strip().strip("“”\"'").strip()
         out.line = re.sub(r"'([^'\n]+)'", r"「\1」", out.line)      # 台词里的英文单引号：叙事会换引号，先统一掉
+        if not last and (words := _stray_english(out.line, text + this_turn + _names(view))):
+            raise ValueError(f"台词里混进了英文（{'、'.join(words)}），全部用中文说")
         if not out.line:
             raise ValueError("台词是空的")
         if (trading or PRICE_RE.search(out.line)) and STAT_RE.search(out.line):
@@ -1084,7 +1099,11 @@ def narrate(db, view: RoomView, text: str, results: list[ActionResult],
     goods = [s["name"] for s in sells or []] + [v["spec"]["name"] for k, v in (offers or {}).items()
                                                  if k.startswith("made:") and v.get("spec")]
 
+    known = text + facts + _names(view)          # 这些里本来就有的英文（玩家名、原话）不算混进去的
+
     def check(out: Narration, last: bool) -> Narration:
+        if not last and (words := _stray_english(out.narrative, known)):
+            raise ValueError(f"叙事里混进了英文（{'、'.join(words)}），全部用中文写")
         # 4.5 常用英文单引号包台词，换成中文引号
         out.narrative = re.sub(r"'([^'\n]+)'", r"“\1”", out.narrative)
         # 台词是单独演好的：叙事得原样用上，没写进去就重写一次，还没写就补在末尾

@@ -422,6 +422,8 @@ def run_turn(req: CommandReq):
                     eject_to = engine.load_room(engine._cursor(conn), ex["to_room"]).name if ex else None
                     conn.commit()
             recent = _recent_events(conn, now_view.room.id, pid)
+            if npc:
+                recent = [engine.clip_npc_said(r, npc.name) for r in recent]
         elif not ai.enabled() and talk:
             results += placeholder_dialogue(conn, view, talk.target)
 
