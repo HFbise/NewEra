@@ -1259,7 +1259,7 @@ def do_use(cur: Cursor, player: Player, view: RoomView, a: Use) -> list[str]:
     if item.template.type != "consumable":
         raise ActionError(f"{item.name}不能直接使用")
     _consume(cur, item)
-    return [f"{player.name}{_eat_verb(item)}掉了{item.name}"] + _eat_effect(cur, player, item, player)
+    return [_use_self(player, item)] + _eat_effect(cur, player, item, player)
 
 
 STUN_ESCAPE = 3                         # 古书残卷念出来的定身：敌人挣脱的难度（每回合 30%、60%、90% 醒过来）
@@ -1353,9 +1353,28 @@ def _recall(cur: Cursor, player: Player, item: ItemInstance) -> list[str]:
     return [f"{player.name}捏碎了{item.name}，一阵淡蓝色的光裹住全身，再睁眼已经回到了{load_room(cur, RECALL_TO).name}"]
 
 
-def _eat_verb(item: ItemInstance) -> str:
-    """酒、水、汤是喝的"""
-    return "喝" if item.template.id == "made_drink" or _is_alcohol(item) or any(c in item.name for c in "水汤茶奶") else "吃"
+# 消耗品的种类（模板 props.kind）：决定怎么用（吃、喝、敷）、算不算药。没写的按老办法猜：酒、水、汤是喝的，别的是吃的
+USE_KINDS = {"food": "食物", "drink": "饮品", "potion": "药剂", "salve": "外用药"}
+MEDICINE_KINDS = ("potion", "salve")
+MEDIC_BONUS = 0.1                       # 给别人用药：用药的人医药每级多回 10%
+MEDIC_CURE_LEVEL = 3                    # 医药到 3 级，给别人用药顺带解毒、止血
+
+
+def _use_kind(item: ItemInstance) -> str:
+    if kind := _prop(item, "kind"):
+        return kind
+    return "drink" if item.template.id == "made_drink" or _is_alcohol(item) or any(c in item.name for c in "水汤茶奶") else "food"
+
+
+def _use_self(player: Player, item: ItemInstance) -> str:
+    return {"food": f"{player.name}吃掉了{item.name}", "drink": f"{player.name}喝掉了{item.name}",
+            "potion": f"{player.name}喝下了{item.name}", "salve": f"{player.name}给自己用上了{item.name}"}[_use_kind(item)]
+
+
+def _use_other(player: Player, target: Player, item: ItemInstance) -> str:
+    return {"food": f"{player.name}喂{target.name}吃了{item.name}", "drink": f"{player.name}喂{target.name}喝了{item.name}",
+            "potion": f"{player.name}给{target.name}灌下了{item.name}",
+            "salve": f"{player.name}给{target.name}用上了{item.name}"}[_use_kind(item)]
 
 
 # 吃喝回血按血量上限的百分比算，耐性练高了药也跟着管用：heal 每 1 点回 HEAL_PCT%（血量 20 时正好 1 点），
@@ -1376,10 +1395,15 @@ def heal_amount(points: int, max_hp: int, alcohol: bool = False) -> int:
 def _eat_effect(cur: Cursor, eater: Player, item: ItemInstance, user: Player) -> list[str]:
     """吃喝下去的效果：有毒的掉血，蒙汗药这类把人放倒，正常的回血（倒下的人吃了回血药也能站起来）。
     回血按吃的人血量上限的百分比（heal_amount）；药草（模板 props.herbal）按用药的人（自己吃是自己，喂别人是喂的人）
-    的自然等级多回"""
+    的自然等级多回。给别人用药（药剂、外用药）：用药的人医药每级多回 MEDIC_BONUS，用得上（回了血、治好了状态）练医药"""
     facts = []
     points = item.heal + (skill_level(user.skills.get("nature", 0)) if item.heal and item.template.props.get("herbal") else 0)
+    medic = user.id != eater.id and _use_kind(item) in MEDICINE_KINDS
+    medic_level = skill_level(user.skills.get("medicine", 0)) if medic else 0
     heal = heal_amount(points, eater.max_hp, _is_alcohol(item))
+    if medic and heal:
+        heal = round(heal * (1 + MEDIC_BONUS * medic_level))
+    was_hp, was_effects = eater.hp, len(eater.effects)
     harm = item.harm
     if harm and (check := _prop(item, "harm_check")):
         # 沼泽菇这类：认得出来（自然判定）就是好吃的，认不出来吃到有毒的
@@ -1394,11 +1418,14 @@ def _eat_effect(cur: Cursor, eater: Player, item: ItemInstance, user: Player) ->
                 _save_effects(cur, eater)
     hp = max(0, min(eater.max_hp, eater.hp + heal - harm))
     cur.execute("update players set hp = %s, updated_at = now() where id = %s", (hp, eater.id))
-    if (cure := _prop(item, "cure")) and (e := _effect(eater, cure)):
-        # 绷带止血、解毒苔解毒
-        eater.effects.remove(e)
-        _save_effects(cur, eater)
-        facts.append(f"{eater.name}身上的{EFFECT_NAMES[cure]}好了")
+    cures = [_prop(item, "cure")] + (["poison", "bleed"] if medic and medic_level >= MEDIC_CURE_LEVEL else [])
+    for cure in dict.fromkeys(c for c in cures if c):
+        if e := _effect(eater, cure):
+            # 绷带止血、解毒苔解毒；医药练到家的人给别人用什么药都顺带解毒止血
+            eater.effects.remove(e)
+            _save_effects(cur, eater)
+            facts.append(f"{eater.name}身上的{EFFECT_NAMES[cure]}好了")
+    practiced = medic and (hp > was_hp or len(eater.effects) < was_effects)
     if harm:
         facts.append(f"{item.name}有毒，{eater.name}掉了 {harm} 点 HP，当前 HP {hp}/{eater.max_hp}")
     elif item.heal:
@@ -1431,6 +1458,8 @@ def _eat_effect(cur: Cursor, eater: Player, item: ItemInstance, user: Player) ->
         elif hp > 0 and n >= 2:
             eater.hp = hp
             facts += _toughen(cur, eater, ENDURE_HIT_CHANCE)   # 连着喝还没醉，扛住了酒劲
+    if practiced:
+        facts += _gain_skill(cur, user, "medicine")
     return facts
 
 
@@ -1480,7 +1509,7 @@ def _feed(cur: Cursor, player: Player, item: ItemInstance, name: str) -> list[st
     if item.harm and not _active_duel(cur, player.id, target.id):
         raise ActionError(f"{item.name}有毒，{player.name}和{target.name}没有在决斗，不能拿它害人")
     _consume(cur, item)
-    return [f"{player.name}喂{target.name}{_eat_verb(item)}了{item.name}"] + _eat_effect(cur, target, item, player)
+    return [_use_other(player, target, item)] + _eat_effect(cur, target, item, player)
 
 
 def _consume(cur: Cursor, item: ItemInstance) -> None:
@@ -3511,7 +3540,7 @@ def _effect_line(e: dict) -> str:
 def item_detail(item: ItemInstance) -> str:
     """给人看的物品详情：类型、数值、特殊效果、参考价、描述"""
     t = item.template
-    head = item.name + f"（{TYPE_NAMES.get(t.type, t.type)}"
+    head = item.name + f"（{USE_KINDS[_use_kind(item)] if t.type == 'consumable' else TYPE_NAMES.get(t.type, t.type)}"
     if t.slot:
         head += f" · {'双手' if _prop(item, 'two_handed') else PART_NAMES.get(t.slot, t.slot)}"
     lines = [head + "）"]
@@ -3536,6 +3565,8 @@ def item_detail(item: ItemInstance) -> str:
         "recall": "在地牢里用，传回村子", "camp": "扎营时多回 30% 血", "alcohol": "酒，喝多了会醉",
         "sober": "喝了马上酒醒",
     }
+    if t.type == "consumable" and _use_kind(item) in MEDICINE_KINDS:
+        lines.append("能给别人用：用药的人医药越高回得越多，给人用药能练医药")
     lines += [text for key, text in extra.items() if _prop(item, key)]
     if uses := _prop(item, "uses"):
         lines.append(f"能用 {item.props.get('uses_left', uses)} 次")

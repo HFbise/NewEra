@@ -94,7 +94,7 @@ items:
     description: 一卷洗得发白的亚麻布条，边上还缝着一小包止血粉。
     type: consumable
     heal: 2
-    props: {price: 3, cure: bleed}
+    props: {price: 3, cure: bleed, kind: salve}
   lamp_oil:
     name: 灯油
     description: 一只塞着软木塞的小陶瓶，里面的油又稠又黑，闻着有股松脂味。倒在快灭的火把上能让它重新烧旺。
@@ -310,7 +310,7 @@ items:
     description: 一把紫黑色的小野莓，酸得人眯眼，吃完嘴唇都是紫的。
     type: consumable
     heal: 2
-    props: {price: 1}
+    props: {price: 1, kind: food}
 
   # ===================== 沼泽 =====================
   venom_bone_knife:
@@ -343,13 +343,13 @@ items:
     description: 一团灰绿色的苔藓，嚼起来又苦又涩，舌头会麻一会儿。
     type: consumable
     heal: 2
-    props: {price: 3, cure: poison}
+    props: {price: 3, cure: poison, kind: salve}
   marsh_mushroom:              #吃的时候过自然判定，不过就按 harm 掉血并中毒
     name: 沼泽菇
     description: 一朵肥厚的褐色蘑菇，伞盖底下的褶子是淡粉色的，看着能吃，也可能不能。
     type: consumable
     heal: 5
-    props: {price: 2, harm: 3, harm_check: nature}
+    props: {price: 2, harm: 3, harm_check: nature, kind: food}
   witch_bone_ring:             #头目掉落
     name: 女巫的骨戒
     description: 一枚用指骨磨成的戒指，上面刻着歪歪扭扭的符文，戴上去指尖会发麻。

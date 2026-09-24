@@ -252,6 +252,14 @@ def _parse_one(view: RoomView, t: str) -> dict:
         if (d := _dir(m[1])) and keys:
             return {"action": "use", "item": _find(view, keys[0].name, "inv"), "target": d}
 
+    # 给别人用药："给寒风用绷带""给寒风灌血药""用绷带给寒风包扎""把药草给寒风敷上"（"把药草给寒风"是递给他，在后面认）
+    if m := re.fullmatch(r"(?:给|帮)\s*(.+?)\s*(?:用|使用|敷|涂|抹|包扎|灌|喝)\s*(?:上|下|了)?\s*(.+)", t):
+        if _player(view, m[1]):
+            return {"action": "use", "item": _find(view, m[2], "inv"), "target": _player(view, m[1])}
+    if m := (re.fullmatch(r"用\s*(.+?)\s*(?:给|帮)\s*(.+?)\s*(?:包扎|敷上|敷药|治疗|疗伤|止血|解毒|上药|治伤)(?:一下)?", t)
+             or re.fullmatch(r"把\s*(.+?)\s*(?:给|帮)\s*(.+?)\s*(?:敷上|涂上|抹上|用上|灌下|灌下去|包扎上)", t)):
+        if _player(view, m[2]):
+            return {"action": "use", "item": _find(view, m[1], "inv"), "target": _player(view, m[2])}
     if m := re.fullmatch(r"(?:use|使用|用|吃|喝)\s*(\S+?)(?:\s+(?:on\s+)?(.+))?", t, re.I):
         return {"action": "use", "item": _find(view, m[1], "inv"),
                 "target": _target(view, m[2]) if m[2] else None}

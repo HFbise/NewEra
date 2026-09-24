@@ -150,13 +150,13 @@ items:
     description: 有点硬的黑麦面包。
     type: consumable
     heal: 3
-    props: {price: 1}
+    props: {price: 1, kind: food}
   herb:
     name: 药草
     description: 散发清香的绿色草叶，据说能止血。
     type: consumable
     heal: 6
-    props: {price: 4, herbal: true}          # 药草：用药的人自然等级越高回血越多
+    props: {price: 4, herbal: true, kind: salve}   # 药草：用药的人自然等级越高回血越多；外用药，给别人敷还看医药
   rusty_sword:
     name: 生锈的短剑
     description: 剑刃布满锈迹，但还算锋利。
@@ -281,7 +281,7 @@ items:
     name: 解酒药
     description: 麦琪自己熬的醒酒汤，装在小陶瓶里，闻着又苦又冲，一口下去酒意全消。
     type: consumable
-    props: {sober: true, price: 3}   # 喝了马上酒醒；没数值的东西在 props.price 写建议价
+    props: {sober: true, price: 3, kind: potion}   # 喝了马上酒醒；没数值的东西在 props.price 写建议价
   # 诺艾尔杂货铺的货（她的 sells）。火把、帐篷、回城水晶是给地牢准备的，地牢做好之前只是能买
   rope:
     name: 麻绳
@@ -318,6 +318,14 @@ items:
     description: 淡蓝色、微微发光的水晶，据说在远古地牢里捏碎它就能被传回村子。诺艾尔说这是从某本古书里学来的做法。
     type: misc
     props: {price: 20, recall: true}
+  # 血药：回一半血（heal 每点 5%）。比食物贵得多，但一瓶顶三个面包，还能给倒下的队友灌下去；
+  # 价钱按回血公式算是 23，地牢一层的收入大约能买五六瓶
+  blood_potion:
+    name: 血药
+    description: 一只拇指粗的小玻璃瓶，里面是暗红色、微微发稠的药水，瓶口用蜡封着，贴着诺艾尔手写的标签。喝下去伤口很快就不疼了，也能给倒下的同伴灌下去。
+    type: consumable
+    heal: 10
+    props: {price: 24, kind: potion}
   # 地牢随机事件房里的东西。矿石、古酒、古书以后是送给莉娜、麦琪、诺艾尔的礼物
   ore:
     name: 奥利哈刚矿石
@@ -340,7 +348,7 @@ items:
     description: 一瓶从地下泉眼接来的清水，冰凉微甜，喝下去浑身一轻。
     type: consumable
     heal: 10
-    props: {price: 8}
+    props: {price: 8, kind: drink}
   # 地牢宝箱房里的钱袋：捡起来直接变成金币（数目在实例 props.gold）
   gold_pouch:
     name: 一袋古币
@@ -420,7 +428,7 @@ npcs:
     persona: 性格极度内向害羞且胆小怕人，说话声音细小如蚊蝇，面对陌生人时容易紧张到结巴，稍微受到惊吓就会下意识用怀里的书挡住脸或缩进柜台下。极度嗜书如命，把杂货铺当成自己的私人藏书室。虽然生人勿近，但凭借浩瀚的阅读量，对店里各种稀奇古怪的杂货、古董与魔法素材的来历与用途了如指掌。只要客人保持距离、语气温和，或是聊起书里的奇闻异事，她会慢慢放下戒心，小声且条理分明地介绍商品。最讨厌嘈杂粗鲁的举动，对懂得爱惜书籍的人天然有好感。
     props:
       # 货架上的东西，价钱由 AI 按建议价浮动
-      sells: [rope, torch, tent, recall_crystal]
+      sells: [rope, torch, tent, recall_crystal, blood_potion]
       # 偶尔进的稀罕货（地牢里的礼物道具）：客人问有什么卖的时判一次 chance，中了这一小时里有一件，
       # 价钱固定是参考价 × markup，只有一件、卖掉就没了；没问就不提（engine.rare_stock）。
       # reluctant 里的她舍不得卖，卖的时候台词不一样；卖出去的书送回给她，她认得出来
