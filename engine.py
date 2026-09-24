@@ -993,7 +993,7 @@ def do_teleport(cur: Cursor, player: Player, view: RoomView, a: Teleport) -> lis
         to, facts = dungeon.teleport_to(cur, player, a.floor, ONLINE_WINDOW)
         facts = [f"{player.name}站在漆黑的入口前默念第 {a.floor} 层，一阵银光闪过"] + facts
     else:
-        raise ActionError("只有在地牢的传送石边上、或者地窖的漆黑入口前才能传送")
+        raise ActionError("只有在地牢的传送石边上、或者地窖里才能传送")
     cur.execute("update players set room_id = %s, following = null, stealth = null, updated_at = now() where id = %s",
                 (to, player.id))
     cur.execute(

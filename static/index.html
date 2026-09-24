@@ -186,7 +186,7 @@ function render(s) {
     <h2>位置</h2>
     <div class="room">${esc(s.room.name)}</div>
     <div class="sys">${esc(s.room.description)}</div>
-    ${s.room.props && s.room.props.stone ? `<div class="combat">这里有传送石：说“回城”回到地面；到过这里的人，以后在地窖的漆黑入口前说“传送到第 N 层”就能直接回来</div>` : ""}
+    ${s.room.props && s.room.props.stone ? `<div class="combat">这里有传送石：说“回城”回到地面；到过这里的人，以后在地窖里说“传送到第 N 层”（对石碑说也行）就能直接回来</div>` : ""}
     ${s.light ? `<div class="light">光亮 ${s.light.value}/100 · ${esc(s.light.word)}
       <div class="lightbar"><div style="width:${s.light.value}%"></div><span class="mark"></span></div>
       <ul class="sys">${s.light.lines.map(l => `<li>${esc(l)}</li>`).join("")}</ul>
