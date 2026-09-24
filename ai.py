@@ -479,6 +479,12 @@ def parse_intent(db, view: RoomView, text: str) -> tuple[Optional[list], dict]:
                 m = re.match(r"([A-Za-z]+\d*)", v)
                 if d["action"] != "say" and m and (m[1] in view.refs or m[1].lower() in DIR_NAMES):
                     v = m[1].lower() if field in ("direction", "push") else m[1]
+                elif field in ("target", "item") and v and v not in view.refs and not any(p.name == v for p in view.others):
+                    # 模型偶尔把目标写成名字（"墨影"）：对得上这里的 NPC、物品就换成编号，不然会被当成玩家名字，报"不在这里"
+                    named = {o.id: o.name for o in view.npcs + view.items + view.inventory}
+                    ref = next((r for r, uid in view.refs.items() if named.get(uid) == v), None) \
+                        or next((r for r, uid in view.refs.items() if named.get(uid) and (v in named[uid] or named[uid] in v)), None)
+                    v = ref or v
                 d[field] = v
             by_id = {uid: ref for ref, uid in view.refs.items()}
             carried = {by_id[i.id] for i in view.inventory}

@@ -65,6 +65,7 @@
   #player-dialog input[name=item] { width: 14em; }
   #player-dialog input[name=hp], #player-dialog input[name=count] { width: 5em; }
   #player-dialog input[name=gold] { width: 8em; }
+  #player-dialog input[name=password] { width: 14em; }
   #player-dialog .msg { min-height: 1.4em; font-size: 13px; }
   #player-dialog .btns { display: flex; justify-content: space-between; margin-top: 8px; }
 </style>
@@ -251,6 +252,7 @@ function openPlayer(id) {
     </div>
     <label>HP <input name="hp" type="number" value="${p.hp}"> <button class="act" data-op="set_hp">改</button></label>
     <label>金币 <input name="gold" type="number" placeholder="负数是拿走"> <button class="act" data-op="gold">给</button></label>
+    <label>新密码 <input name="password" type="text" placeholder="至少 4 位，忘了密码时用" autocomplete="off"> <button class="act" data-op="password">改</button></label>
     <label>道具 <input name="item" list="item-options" placeholder="名字或 id" autocomplete="off">
       × <input name="count" type="number" value="1" min="1" max="99"> <button class="act" data-op="give">给</button></label>
     <datalist id="item-options">${(itemList || []).map(i => `<option value="${esc(i.name)}">${esc(i.id)} · ${esc(i.type)}</option>`).join("")}</datalist>
@@ -259,6 +261,7 @@ function openPlayer(id) {
   const field = name => dlg.querySelector(`input[name=${name}]`);
   const msg = (text, bad) => { const m = dlg.querySelector(".msg"); m.textContent = text; m.className = "msg " + (bad ? "bad" : "ok"); };
   const DONE = { revive: "治好了", home: "传送回广场了", clear_status: "状态清掉了", set_hp: "HP 改好了", gold: "金币改好了",
+                 password: "密码改好了，告诉他新密码",
                  give: "道具给了", delete: "删掉了" };
   dlg.onclick = async e => {
     if (e.target.matches("[data-close]")) { dlg.close(); return; }
@@ -273,6 +276,10 @@ function openPlayer(id) {
     if (op === "gold") {
       if (field("gold").value.trim() === "" || isNaN(+field("gold").value)) return msg("金币填个数（负数是拿走）", true);
       body.count = Math.round(+field("gold").value);
+    }
+    if (op === "password") {
+      if (field("password").value.trim().length < 4) return msg("新密码至少 4 位", true);
+      body.password = field("password").value.trim();
     }
     if (op === "give") {
       if (!field("item").value.trim()) return msg("填物品名字或 id", true);

@@ -152,7 +152,8 @@ def item_templates():
 
 
 class PlayerOp(BaseModel):
-    op: Literal["revive", "home", "clear_status", "set_hp", "delete", "give", "gold"]
+    op: Literal["revive", "home", "clear_status", "set_hp", "delete", "give", "gold", "password"]
+    password: Optional[str] = None      # password：新密码
     hp: Optional[int] = None
     item: Optional[str] = None          # give：物品 id 或名字
     count: int = 1                      # give：几件；gold：多少金币（可以是负数）
@@ -196,6 +197,11 @@ def player_op(player_id: UUID, req: PlayerOp):
                 for _ in range(n):
                     engine._give_player_new(cur, p, t["id"])
                 _announce(conn, p.room_id, f"管理员给了{p.name}{'' if n == 1 else f' {n} 件'}{t['name']}。")
+            elif req.op == "password":
+                from server import _hash_password       # server 引用了 admin，这里用到时再导入
+                if not req.password or len(req.password) < 4:
+                    raise HTTPException(400, "新密码至少 4 位")
+                conn.execute("update players set password_hash = %s where id = %s", (_hash_password(req.password), player_id))
             elif req.op == "gold":
                 conn.execute("update players set gold = greatest(0, gold + %s) where id = %s", (req.count, player_id))
                 _announce(conn, p.room_id, f"管理员{'给了' if req.count >= 0 else '拿走了'}{p.name} {abs(req.count)} 枚金币。")

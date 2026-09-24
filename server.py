@@ -455,7 +455,9 @@ def run_turn(req: CommandReq):
 
     # 战斗中（房间里有怪、有人被发现了；或者自己在决斗）：命令先排队，在场的人都出完手一起结算（_resolve_round）。
     # 说话、查看马上生效；倒下的人不用排；看别人决斗的人不用排
-    if view.player.hp > 0 and not all(a.action in engine.ROUND_INSTANT for a in actions):
+    sneaking_out = all(a.action in ("move", "look", "say") for a in actions) and not (
+        view.player.stealth and view.player.stealth.room == view.room.id and view.player.stealth.detected)
+    if view.player.hp > 0 and not all(a.action in engine.ROUND_INSTANT for a in actions) and not sneaking_out:
         with pool.connection() as conn:
             fighting = engine.in_round(engine._cursor(conn), view.room.id, pid)
             conn.commit()

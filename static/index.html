@@ -26,7 +26,7 @@
   .pending { color: var(--dim); font-size: 13px; }
   .other { color: var(--other); white-space: pre-wrap; }   /* 别人跟 NPC 的对话是两三行 */
   /* 战斗回合：结算（每个人出手的结果、敌人的行动）和整队共用的叙事 */
-  .round { border-left: 2px solid #e3b341; padding-left: 12px; white-space: pre-wrap; font-size: 14px; }
+  .round { border-left: 2px solid #e3b341; padding-left: 12px; font-size: 14px; }
   .round-story { white-space: pre-wrap; margin: 4px 0; }
   /* 地牢小地图：3×3 格子，格子之间有门就画连线；走过的亮、显出来没走过的暗、没去过的空着；现在所在的高亮 */
   #side .minimap { display: grid; grid-template-columns: repeat(5, auto); justify-content: start; align-items: center;
@@ -273,8 +273,17 @@ function minimapHtml(m) {
 // 进入游戏时显示所在位置：只读状态，不发命令，不调 AI
 // 同房间别人的动态（第三人称），轮询和命令结果里都会带
 function eventHtml(kind, text) {
-  if (kind === "combat") return `<div class="round">${esc(text)}</div>`;
-  if (kind === "combat_story") return `<div class="round-story">${esc(text)}</div>`;
+  if (kind === "combat") {
+    // 【第 N 轮】/ 名字：结果；结果… / 敌人：…  → 标题一行，每条结果一行（跟平时一回合的 facts 一样）
+    const [head, ...rows] = String(text).split("\n");
+    return `<div class="round"><div class="sys">⚔ ${esc(head)}</div>` + rows.map(r => {
+      const i = r.indexOf("：");
+      const who = i > 0 ? r.slice(0, i) : "", body = i > 0 ? r.slice(i + 1) : r;
+      return `<div class="sys" style="margin-top:4px">${esc(who)}</div>` +
+        body.split("；").filter(Boolean).map(f => `<div class="fact">${esc(f)}</div>`).join("");
+    }).join("") + `</div>`;
+  }
+  if (kind === "combat_story") return `<div class="narrative">${esc(text)}</div>`;
   return `<div class="other">${esc(text)}</div>`;
 }
 

@@ -2553,29 +2553,33 @@ def _duel_here(cur: Cursor, room_id: str) -> bool:
 
 
 def in_round(cur: Cursor, room_id: str, player_id: UUID) -> bool:
-    """这个人的命令要不要排队：他是这一轮该出手的人（被怪发现了、或者是被发现的人的队友；或者在这里决斗）"""
-    return any(m["id"] == player_id for m in round_members(cur, room_id))
+    """这个人的命令要不要排队：房间里有活着的敌人（没被发现也算：偷袭、躲藏在回合里照样判，
+    不然每场第一刀即时、被发现以后才变回合，玩家看着一会儿单独一会儿回合），或者他在这里决斗"""
+    if _monster_fight(cur, room_id):
+        return True
+    cur.execute("""select 1 from duels d join players a on a.id = d.challenger join players b on b.id = d.target
+                   where d.accepted and %(p)s in (d.challenger, d.target) and a.room_id = %(r)s and b.room_id = %(r)s""",
+                {"p": player_id, "r": room_id})
+    return cur.fetchone() is not None
 
 
 def _monster_fight(cur: Cursor, room_id: str) -> bool:
-    cur.execute(
-        """select 1 from npcs n join npc_templates t on t.id = n.template_id
-           where n.room_id = %(r)s and n.alive and t.hostile
-             and exists (select 1 from players p where p.room_id = %(r)s and p.hp > 0
-                         and p.stealth->>'room' = %(r)s and (p.stealth->>'detected')::boolean)
-           limit 1""", {"r": room_id})
+    """房间里有活着的敌人"""
+    cur.execute("""select 1 from npcs n join npc_templates t on t.id = n.template_id
+                   where n.room_id = %s and n.alive and t.hostile and t.max_hp is not null limit 1""", (room_id,))
     return cur.fetchone() is not None
 
 
 def round_members(cur: Cursor, room_id: str) -> list[dict]:
-    """这一轮该出手的人：在这个房间、没倒下、在线，而且真的在打：被怪发现了的人和他们的队友（队友藏着也等他），
-    或者在这里决斗的两个人。路过的、没被发现又不是队友的人不算，不然他发呆就把别人的仗卡住了"""
+    """这一轮要等谁出手：在这个房间、没倒下、在线，而且在打：被怪发现了的人和他们的队友（队友藏着也等他）、
+    这一轮已经出了手的人，或者在这里决斗的两个人。路过的、没被发现、没出手又不是队友的人不等，不然他发呆就把别人的仗卡住了"""
     cur.execute(f"""select id, name from players p where room_id = %(r)s and hp > 0
                     and last_active_at > now() - interval '{ONLINE_WINDOW}'
                     and ((%(fight)s and (p.stealth->>'room' = %(r)s and (p.stealth->>'detected')::boolean
                                          or p.party_id in (select q.party_id from players q where q.room_id = %(r)s
                                                            and q.party_id is not null and q.stealth->>'room' = %(r)s
-                                                           and (q.stealth->>'detected')::boolean)))
+                                                           and (q.stealth->>'detected')::boolean)
+                                         or exists (select 1 from combat_queue cq where cq.room_id = %(r)s and cq.player_id = p.id)))
                          or exists (select 1 from duels d where d.accepted and p.id in (d.challenger, d.target)))
                     order by name""", {"r": room_id, "fight": _monster_fight(cur, room_id)})
     return cur.fetchall()
@@ -2686,7 +2690,9 @@ def round_enemies(conn: Connection, room_id: str, done: dict[UUID, list[tuple[Pl
     done 是每个人这一轮做了的动作和结果，hits 是每只怪上一下是谁打的，healers 是这一轮给人用药、急救的人"""
     with conn.transaction():
         cur = _cursor(conn)
-        players = [load_player(cur, m["id"], lock=True) for m in round_members(cur, room_id)]
+        # 这一轮出过手的人也算（没被发现的人出手以后，他的排队已经清掉了，不算进来的话敌人就当他不存在）
+        ids = list(dict.fromkeys([m["id"] for m in round_members(cur, room_id)] + list(done)))
+        players = [load_player(cur, pid, lock=True) for pid in ids]
         players = [p for p in players if p.room_id == room_id and p.hp > 0]
         alive = _enemies(cur, room_id)
         if not players or not alive:
