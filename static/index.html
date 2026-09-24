@@ -25,6 +25,11 @@
   .narrative { white-space: pre-wrap; margin: 4px 0; }
   .pending { color: var(--dim); font-size: 13px; }
   .other { color: var(--other); white-space: pre-wrap; }   /* 别人跟 NPC 的对话是两三行 */
+  /* 战斗回合：结算（每个人出手的结果、敌人的行动）和整队共用的叙事 */
+  .round { border-left: 2px solid #e3b341; padding-left: 12px; white-space: pre-wrap; font-size: 14px; }
+  .round-story { white-space: pre-wrap; margin: 4px 0; }
+  #side .combat { margin-top: 8px; padding: 8px 10px; border: 1px solid #e3b341; border-radius: 6px; font-size: 13px; }
+  #side .combat b { color: #e3b341; }
   details { color: var(--dim); font-size: 13px; }
   summary { cursor: pointer; }
   form { display: flex; gap: 8px; padding: 12px 16px; border-top: 1px solid var(--border); background: var(--panel); }
@@ -174,6 +179,10 @@ function render(s) {
     ${p.status ? `<div class="sys">你${esc(p.status.label)}，${p.status.kind === "incapacitated" ? "说什么都算挣扎着醒来" : p.status.kind === "prone" ? "输入“站起来”爬起来" : "动不了，试试挣脱"}</div>` : ""}
     ${(p.effects || []).map(e => e.kind === "whet" ? `<div class="sys">磨利：普通攻击伤害 +${e.value}（这一层）</div>` : `<div class="sys">${{poison: "中毒", bleed: "流血", blind: "看不清", corrode: "腐蚀"}[e.kind]}：${esc(e.label)}（还剩 ${e.left} ${e.kind === "bleed" ? "个动作" : "回合"}）</div>`).join("")}
     ${Object.keys(p.flags).length ? `<div class="tag">标记：${Object.keys(p.flags).map(esc).join("、")}</div>` : ""}
+    ${s.combat ? `<div class="combat"><b>⚔ 战斗中 · 第 ${s.combat.round} 轮</b> · <span id="round-left">${roundLeftText()}</span>
+      <div>已出手：${s.combat.acted.map(esc).join("、") || "还没人"}</div>
+      <div class="sys">${s.combat.waiting.length ? "等：" + s.combat.waiting.map(esc).join("、") : "全队都出手了"}</div>
+      <div class="sys">大家都出完手、或者倒计时到了就一起结算；没出手的这一轮什么也不做</div></div>` : ""}
     <h2>位置</h2>
     <div class="room">${esc(s.room.name)}</div>
     <div class="sys">${esc(s.room.description)}</div>
@@ -214,6 +223,7 @@ function render(s) {
       打 · 躲起来 · 搜索 · 说 · 对某人说<br>
       地牢：扎营 · 回城（传送石边）· 传送到第 N 层（地窖）<br>
       跟着某人（就是加入他的队伍）· 不跟了 / 离队（地牢里、战斗中不行）<br>
+      战斗中：大家的命令一起按回合结算（全队出完手或者 10 秒到了）<br>
       急救 · 给人用药（给寒风灌血药）· 挣脱<br>
       决斗某人 · 接受决斗 · 拒绝决斗 · 逃跑<br>
       其他想做的事直接写，AI 判定
@@ -224,11 +234,17 @@ function render(s) {
 
 // 进入游戏时显示所在位置：只读状态，不发命令，不调 AI
 // 同房间别人的动态（第三人称），轮询和命令结果里都会带
+function eventHtml(kind, text) {
+  if (kind === "combat") return `<div class="round">${esc(text)}</div>`;
+  if (kind === "combat_story") return `<div class="round-story">${esc(text)}</div>`;
+  return `<div class="other">${esc(text)}</div>`;
+}
+
 function showEvents(s) {
   for (const ev of s.events || []) {
     if (shownEvents.has(ev.id)) continue;
     shownEvents.add(ev.id);
-    log(`<div class="other">${esc(ev.text)}</div>`);
+    log(eventHtml(ev.kind, ev.text));
   }
   if (s.last_event_id != null) lastEventId = Math.max(lastEventId ?? 0, s.last_event_id);
 }
@@ -242,7 +258,7 @@ async function showHistory() {
       logTurn(r);
     } else {
       shownEvents.add(r.event_id);
-      log(`<div class="other">${esc(r.text)}</div>`);
+      log(eventHtml(r.kind, r.text));
     }
   }
   if (rows.length) log(`<div class="sys">（以上是之前的记录）</div>`);
@@ -252,6 +268,7 @@ async function enter() {
   if (!playerId) return;            // 重试期间已经退出了
   try {
     const s = await api(`/api/state?player_id=${playerId}`);
+    trackRound(s);
     lastEventId = s.last_event_id;   // 进来之前的动态不补，历史记录里有看过的
     await showHistory();
     render(s);
@@ -271,10 +288,27 @@ async function enter() {
 
 let entered = false;                // enter 成功之前 refresh 不跑，免得重复显示
 let offline = false;                // 连接中断时只提示一次
+// 战斗回合的倒计时：服务器给的是还剩几秒，换算成本机时间，每 250ms 刷一下侧栏里的数字
+let roundEnd = null, roundBusy = false, inCombat = false;
+function trackRound(s) {
+  inCombat = !!s.combat;
+  roundBusy = !!(s.combat && s.combat.resolving);
+  roundEnd = s.combat && s.combat.left != null ? Date.now() + s.combat.left * 1000 : null;
+}
+function roundLeftText() {
+  if (roundBusy) return "结算中…";
+  if (roundEnd == null) return "等有人出手";
+  return `还剩 ${Math.max(0, Math.ceil((roundEnd - Date.now()) / 1000))} 秒`;
+}
+setInterval(() => { const el = document.getElementById("round-left"); if (el) el.textContent = roundLeftText(); }, 250);
+
+let lastRefresh = 0;
 async function refresh() {
   if (!playerId || !entered) return;
+  lastRefresh = Date.now();
   try {
     const s = await api(`/api/state?player_id=${playerId}` + (lastEventId != null ? `&after=${lastEventId}` : ""));
+    trackRound(s);
     if (offline) { offline = false; log(`<div class="sys">已经重新连上了</div>`); }
     showEvents(s);
     render(s);
@@ -390,6 +424,7 @@ async function send(text) {
     const d = await runTurn(text, s => { stage = s; tick(); });
     showEvents(d.state);              // 等待期间别人做的事先显示
     logTurn(d, ((Date.now() - start) / 1000).toFixed(1));
+    trackRound(d.state);
     render(d.state);
   } catch (err) {
     log(`<div class="fact fail">${esc(err.message)}</div>`);
@@ -519,7 +554,8 @@ document.addEventListener("pointerdown", e => { if (!e.target.closest("#tip, #si
 $("#side").addEventListener("scroll", hideTip);
 
 if (playerId) { $("#login").style.display = "none"; enter(); }
-setInterval(refresh, 3000);   // 没有 WebSocket，先轮询看其他玩家的变化
+// 没有 WebSocket，先轮询看其他玩家的变化：平时 3 秒一次，战斗中 1 秒一次（回合结果、倒计时要跟得上）
+setInterval(() => { if (inCombat || Date.now() - lastRefresh >= 3000) refresh(); }, 1000);
 
 // 关页面、关浏览器、跳走时让角色立刻睡着，不用等心跳超时。sendBeacon 在页面关掉时也能发出去。
 // 刷新也会触发，新页面第一次心跳会把人叫醒；切标签页、手机切后台不算退出，不触发

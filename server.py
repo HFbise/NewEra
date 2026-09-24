@@ -23,14 +23,14 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from psycopg.types.json import Jsonb
-from pydantic import BaseModel
+from pydantic import BaseModel, TypeAdapter
 
 import admin
 import ai
 import commands
 import engine
 from db import pool
-from schema import SKILL_NAMES, SLOT_NAMES, ActionResult, RoomView, dir_name
+from schema import SKILL_NAMES, SLOT_NAMES, ActionResult, PlayerAction, RoomView, dir_name
 
 app = FastAPI()
 app.include_router(admin.router)
@@ -80,18 +80,19 @@ def state(conn, view: RoomView, after: Optional[int] = None) -> dict:
     events = []
     if after is not None:
         cur.execute(
-            """select id, observer from events
+            """select id, observer, kind from events
                where room_id = %s and id > %s and id <= %s and observer is not null
                  and player_id is distinct from %s
                order by id limit 30""",
             (view.room.id, after, last_event_id, view.player.id),
         )
-        events = [{"id": i, "text": t} for i, t in cur.fetchall()]
+        # 战斗回合的结算（combat）和叙事（combat_story）不记在谁名下，全队都看得到
+        events = [{"id": i, "text": t, "kind": k} for i, t, k in cur.fetchall()]
         # 看到的动态记进聊天框记录，轮询和命令可能带回同一条，靠唯一索引只记一次
         cur.executemany(
             """insert into player_log (player_id, kind, event_id, data) values (%s, 'event', %s, %s)
                on conflict (player_id, event_id) where event_id is not null do nothing""",
-            [(view.player.id, e["id"], Jsonb({"text": e["text"]})) for e in events],
+            [(view.player.id, e["id"], Jsonb({"text": e["text"], "kind": e["kind"]})) for e in events],
         )
     cur.execute(
         f"""select name, hp, coalesce(last_active_at > now() - interval '{engine.ONLINE_WINDOW}', false), status
@@ -103,11 +104,13 @@ def state(conn, view: RoomView, after: Optional[int] = None) -> dict:
     cur.execute("select id, name from rooms where id = any(%s)", ([e.to_room for e in view.exits],))
     room_names = dict(cur.fetchall())
     light = engine.light_info(engine._cursor(conn), view.player, view.room)      # 地牢里的光亮和它的效果
+    combat = engine.round_info(conn, view.player)                                  # 战斗回合：倒计时、谁出手了
     conn.commit()
     return {
         "player": view.player.model_dump(mode="json"),
         "room": view.room.model_dump(),
         "light": light,
+        "combat": combat,
         "exits": [{"direction": e.direction, "label": dir_name(e.direction), "to": room_names[e.to_room],
                    "locked": e.locked} for e in view.exits],
         "items": [{"ref": by_id[i.id], "name": i.name, "quantity": i.quantity, "detail": engine.item_detail(i)}
@@ -200,6 +203,7 @@ def get_state(player_id: UUID, after: Optional[int] = None):
         except engine.ActionError as e:
             raise HTTPException(404, str(e))
         engine.touch(conn, player_id)      # 页面每 3 秒拉一次，顺便当心跳
+        _kick_round(conn, view.room.id)    # 战斗回合到点了就结算（没有后台定时器，靠轮询推一把）
         return state(conn, view, after)
 
 
@@ -389,6 +393,25 @@ def run_turn(req: CommandReq):
         except ai.API_ERRORS as e:
             notes.append(f"AI 解析出错：{e.__class__.__name__}")
 
+    # 战斗中（房间里有怪、有人被发现了）：命令先排队，全队出完手或者到点一起结算（_resolve_round）。
+    # 说话、查看马上生效；倒下的人不用排
+    if view.player.hp > 0 and not all(a.action in engine.ROUND_INSTANT for a in actions):
+        with pool.connection() as conn:
+            fighting = engine.in_combat(engine._cursor(conn), view.room.id)
+            conn.commit()
+            if fighting:
+                engine.queue_round(conn, pid, view.room.id, req.text, [a.model_dump() for a in actions], source, notes)
+                _kick_round(conn, view.room.id)
+                final_state = state(conn, engine.load_view(conn, pid), req.after)
+        if fighting:
+            yield {"done": {
+                "actions": [a.model_dump() for a in actions], "source": source,
+                "results": [ActionResult(action="queued", success=True,
+                                         facts=["出手了，等这一轮一起结算（结果会出现在下面）"]).model_dump()],
+                "narrative": None, "usage": usage, "notes": notes, "state": final_state, "queued": True,
+            }}
+            return
+
     # 2. 规则引擎执行。解析期间别人可能动了东西，引擎按 ref 重新查库加锁校验，不会用旧状态
     yield {"stage": "execute"}
     use_ai = ai.enabled() and not all(a.action in NO_NARRATION for a in actions)
@@ -572,6 +595,79 @@ def run_turn(req: CommandReq):
         "notes": notes,
         "state": final_state,
     }}
+
+
+# ============ 战斗回合（tick）============
+
+_ACTION = TypeAdapter(PlayerAction)
+
+
+def _kick_round(conn, room_id: str) -> None:
+    """这一轮该结算了（到点了、全队都出手了）就在后台结算，别让发命令、轮询的请求等着"""
+    if engine.round_due(conn, room_id):
+        threading.Thread(target=_resolve_round, args=(room_id,), daemon=True).start()
+
+
+def _resolve_round(room_id: str) -> None:
+    """结算一轮：队员按出手先后执行，敌人统一行动，结果马上作为房间动态发出去（全队都看得到）；
+    再让 AI 写一段整队共用的叙事，写完才开始下一轮的计时"""
+    try:
+        with pool.connection() as conn:
+            claimed = engine.claim_round(conn, room_id)
+            if claimed is None:
+                return                                  # 别的线程已经在结算了
+            rnd, entries = claimed
+            turns, done, hits, healers = [], {}, {}, set()
+            for e in entries:
+                try:
+                    view = engine.load_view(conn, e["player_id"])
+                except engine.ActionError:
+                    continue
+                if view.room.id != room_id or view.player.hp <= 0:
+                    continue                            # 出手之后被打倒了、被带走了
+                actions = [_ACTION.validate_python(a) for a in e["actions"]]
+                results = engine.execute_all(conn, view, actions, enemies=False)
+                done[view.player.id] = list(zip(actions, results))
+                for a, r in zip(actions, results):
+                    if not r.success:
+                        continue
+                    if a.action in ("attack", "stunt") and getattr(a, "target", None) in view.refs:
+                        hits[view.resolve(a.target)] = view.player.id          # 仇恨：怪先打上一下打它的人
+                    if a.action == "revive" or a.action == "use" and getattr(a, "target", None) and a.target not in view.refs:
+                        healers.add(view.player.id)                            # 头目先打给人用药、急救的
+                turns.append((view.player.name, e["text"], [f for r in results for f in r.facts]))
+                after = engine.load_view(conn, view.player.id)
+                if after.room.id != room_id:            # 逃出去了：那边的人看到他进来
+                    with conn.transaction():
+                        conn.execute("insert into events (room_id, player_id, kind, observer) values (%s, %s, 'arrive', %s)",
+                                     (after.room.id, view.player.id, f"{view.player.name}走了进来。"))
+            enemy = engine.round_enemies(conn, room_id, done, hits, healers)
+            lines = [f"【第 {rnd} 轮】"] + [f"{name}：{'；'.join(facts)}" for name, _, facts in turns]                 + ([f"敌人：{'；'.join(enemy)}"] if enemy else [])
+            with conn.transaction():
+                conn.execute("insert into events (room_id, kind, facts, observer, meta) values (%s, 'combat', %s, %s, %s)",
+                             (room_id, Jsonb(lines), "\n".join(lines),
+                              Jsonb({"round": rnd, "inputs": [(n, t) for n, t, _ in turns]})))
+            room = engine.load_room(engine._cursor(conn), room_id)
+            conn.commit()
+        story = None
+        if ai.enabled() and (turns or enemy):
+            try:
+                story = ai.narrate_round(pool, entries[0]["player_id"] if entries else None, room, turns, enemy)
+            except ai.API_ERRORS:
+                story = None
+        with pool.connection() as conn:
+            if story:
+                with conn.transaction():
+                    conn.execute("insert into events (room_id, kind, observer) values (%s, 'combat_story', %s)",
+                                 (room_id, story))
+            engine.end_round(conn, room_id)
+            _kick_round(conn, room_id)                  # 写叙事的时候大家已经都出手了：马上结算下一轮
+    except Exception:
+        # 出错也要把这一轮收掉，不然这个房间一直卡在"结算中"
+        import traceback
+        traceback.print_exc()
+        with pool.connection() as conn:
+            engine.end_round(conn, room_id)
 
 
 def _recent_events(conn, room_id: str, player_id: UUID, limit: int = 6) -> list[str]:

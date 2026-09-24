@@ -2287,6 +2287,201 @@ def enemy_turn(conn: Connection, player_id: UUID, actions: list[PlayerAction],
         return stood + facts, bool(facts)
 
 
+# ============ 战斗回合（tick）============
+# 房间里有怪、有人被怪发现了就是在战斗：队员的命令先排队，都出完手或者到了 ROUND_SECONDS 一起结算。
+# 队员按出手先后执行，然后每只怪出手一次，挑谁打看 _pick_target；没出手的人这一轮什么也不做，怪照样会打他。
+# 说话、查看不用排队，马上生效
+ROUND_SECONDS = 10
+ROUND_INSTANT = {"say", "look", "reject"}
+
+
+def in_combat(cur: Cursor, room_id: str) -> bool:
+    cur.execute(
+        """select 1 from npcs n join npc_templates t on t.id = n.template_id
+           where n.room_id = %(r)s and n.alive and t.hostile
+             and exists (select 1 from players p where p.room_id = %(r)s and p.hp > 0
+                         and p.stealth->>'room' = %(r)s and (p.stealth->>'detected')::boolean)
+           limit 1""", {"r": room_id})
+    return cur.fetchone() is not None
+
+
+def round_members(cur: Cursor, room_id: str) -> list[dict]:
+    """这一轮该出手的人：在这个房间、没倒下、在线的玩家"""
+    cur.execute(f"""select id, name from players where room_id = %s and hp > 0
+                    and last_active_at > now() - interval '{ONLINE_WINDOW}' order by name""", (room_id,))
+    return cur.fetchall()
+
+
+def queue_round(conn: Connection, player_id: UUID, room_id: str, text: str, actions: list[dict], source: str,
+                notes: list[str]) -> None:
+    """战斗中出手：先排队（这一轮里再说一次就换成新的），这一轮还没开始计时就开始"""
+    with conn.transaction():
+        cur = _cursor(conn)
+        cur.execute(
+            """insert into combat_queue (room_id, player_id, text, actions, source, notes) values (%s, %s, %s, %s, %s, %s)
+               on conflict (room_id, player_id) do update
+                 set text = excluded.text, actions = excluded.actions, source = excluded.source, notes = excluded.notes,
+                     created_at = now()""",
+            (room_id, player_id, text, Jsonb(actions), source, Jsonb(notes)))
+        cur.execute(
+            f"""insert into combat_rounds (room_id, deadline) values (%s, now() + interval '{ROUND_SECONDS} seconds')
+                on conflict (room_id) do update
+                  set deadline = coalesce(combat_rounds.deadline, now() + interval '{ROUND_SECONDS} seconds')
+                  where not combat_rounds.resolving""", (room_id,))
+
+
+def round_due(conn: Connection, room_id: str) -> bool:
+    """这一轮该结算了：到点了，或者该出手的人都出手了"""
+    with conn.transaction():
+        cur = _cursor(conn)
+        cur.execute("select deadline <= now() as late from combat_rounds where room_id = %s and not resolving and deadline is not null",
+                    (room_id,))
+        row = cur.fetchone()
+        if row is None:
+            return False
+        if row["late"]:
+            return True
+        cur.execute("select player_id from combat_queue where room_id = %s", (room_id,))
+        queued = {r["player_id"] for r in cur.fetchall()}
+        return all(m["id"] in queued for m in round_members(cur, room_id))
+
+
+def claim_round(conn: Connection, room_id: str) -> Optional[tuple[int, list[dict]]]:
+    """开始结算这一轮：(第几轮, 按出手先后排好的命令)。别的线程已经在结算了就是 None"""
+    with conn.transaction():
+        cur = _cursor(conn)
+        cur.execute("update combat_rounds set resolving = true where room_id = %s and not resolving and deadline is not null "
+                    "returning round", (room_id,))
+        row = cur.fetchone()
+        if row is None:
+            return None
+        cur.execute("delete from combat_queue where room_id = %s returning player_id, text, actions, source, notes, created_at",
+                    (room_id,))
+        return row["round"], sorted(cur.fetchall(), key=lambda r: r["created_at"])
+
+
+def end_round(conn: Connection, room_id: str) -> None:
+    """这一轮的叙事写完了：还在打就进下一轮（结算期间已经有人出手就开始计时），打完了、没人排队就收掉"""
+    with conn.transaction():
+        cur = _cursor(conn)
+        fighting = in_combat(cur, room_id)
+        cur.execute("select 1 from combat_queue where room_id = %s limit 1", (room_id,))
+        queued = cur.fetchone() is not None
+        if not fighting and not queued:
+            cur.execute("delete from combat_rounds where room_id = %s", (room_id,))
+            return
+        # 打完了但还有人排着队：马上把他们的命令结算掉
+        wait = ROUND_SECONDS if fighting else 0
+        cur.execute(f"""update combat_rounds set resolving = false, round = round + 1,
+                          deadline = case when %s then now() + interval '{wait} seconds' end
+                        where room_id = %s""", (queued, room_id))
+
+
+def round_info(conn: Connection, player: Player) -> Optional[dict]:
+    """给界面看的战斗回合：第几轮、还剩几秒、谁出手了、在等谁"""
+    with conn.transaction():
+        cur = _cursor(conn)
+        cur.execute("""select round, resolving, extract(epoch from deadline - now())::float as left
+                       from combat_rounds where room_id = %s""", (player.room_id,))
+        row = cur.fetchone()
+        if row is None and not in_combat(cur, player.room_id):
+            return None
+        cur.execute("select p.name from combat_queue q join players p on p.id = q.player_id where q.room_id = %s",
+                    (player.room_id,))
+        acted = sorted(r["name"] for r in cur.fetchall())
+        members = [m["name"] for m in round_members(cur, player.room_id)]
+        return {"round": row["round"] if row else 1, "resolving": bool(row and row["resolving"]),
+                "left": max(0.0, row["left"]) if row and row["left"] is not None else None,
+                "acted": acted, "waiting": [n for n in members if n not in acted]}
+
+
+def _holds_fire(cur: Cursor, player: Player) -> bool:
+    cur.execute("""select 1 from item_instances i join item_templates t on t.id = i.template_id
+                   where i.player_id = %s and i.equipped_slot is not null and t.props ? 'burning' limit 1""", (player.id,))
+    return cur.fetchone() is not None
+
+
+def _pick_target(cur: Cursor, npc: Npc, cands: list[dict], hits: dict, healers: set) -> dict:
+    """怪这一下打谁（cands 是发现了、没藏住的人）：
+    头目先打正在给人用药、急救的；野兽扑血最少的；怕光的躲开拿火把的；
+    别的先打上一轮打它的人（仇恨），没人打它就随便挑一个"""
+    props = npc.template.props
+    if props.get("dungeon", {}).get("rank") == "boss" and (h := [c for c in cands if c["p"].id in healers]):
+        return random.choice(h)
+    if props.get("animal"):
+        return min(cands, key=lambda c: (c["p"].hp / max(1, c["p"].max_hp), random.random()))
+    if props.get("light_averse") and (dark := [c for c in cands if not _holds_fire(cur, c["p"])]):
+        cands = dark
+    if (c := next((c for c in cands if c["p"].id == hits.get(npc.id)), None)) is not None:
+        return c
+    return random.choice(cands)
+
+
+def round_enemies(conn: Connection, room_id: str, done: dict[UUID, list[tuple[PlayerAction, ActionResult]]],
+                  hits: dict[UUID, UUID], healers: set[UUID]) -> list[str]:
+    """一轮里全队出完手之后，敌人统一行动一次：发现没发现的人、倒地的爬起来、每只怪挑一个人逼近或者动手。
+    done 是每个人这一轮做了的动作和结果，hits 是每只怪上一下是谁打的，healers 是这一轮给人用药、急救的人"""
+    with conn.transaction():
+        cur = _cursor(conn)
+        players = [load_player(cur, m["id"], lock=True) for m in round_members(cur, room_id)]
+        players = [p for p in players if p.room_id == room_id and p.hp > 0]
+        alive = _enemies(cur, room_id)
+        if not players or not alive:
+            return []
+        facts = _tick_npc_effects(cur, players[0], alive)      # 被装备打中毒、流血的怪先掉血
+        alive = [n for n in alive if n.alive]
+        enemies = [n for n in alive if n.status is None]        # 被放倒、捆住、绊倒的这一轮不动手
+        facts += _enemies_stand(cur, alive)
+        freed = {f for acts in done.values() for _, r in acts for f in r.facts if "摆脱了" in f}
+        cands = []
+        for p in players:
+            st = _stealth(p)
+            hid = dodge = False
+            for a, r in done.get(p.id, []):             # 按先后顺序：先躲再动手就暴露，动完手再躲成了就藏住
+                if a.action in ("attack", "stunt") and r.success:
+                    st.detected, st.hidden, hid = True, False, False
+                elif a.action in ("say", "talk"):
+                    st.hidden = hid = False
+                elif a.action == "hide" and r.success:
+                    st.hidden, st.detected, hid = True, False, True
+                elif a.action == "dodge" and r.success:
+                    dodge = True
+            if enemies and not hid and not st.detected:
+                keen = any(n.template.props.get("keen") for n in enemies)
+                if keen or _roll(st.chance):
+                    st.detected, st.hidden = True, False
+                    facts.append(f"{'、'.join(n.name for n in enemies)}发现了{p.name}")
+                elif not st.hidden:
+                    step = max(DETECT_STEP_MIN, DETECT_STEP - 0.01 * skill_level(p.skills.get("stealth", 0)))
+                    st.chance = round(min(1.0, st.chance + step), 2)
+            bonus = _dodge_bonus(p) if dodge else 0.0
+            if _room_env(cur, room_id).get("ground") == "water" and not gear_has(cur, p, "wade"):
+                bonus /= 2
+            entry = {"p": p, "st": st, "dodge": bonus}
+            if st.detected and not hid:
+                cands.append(entry)
+            else:
+                _save_stealth(cur, p, st)
+        for npc in enemies:
+            if any(f.startswith(f"{npc.name}摆脱了") for f in freed):
+                continue                                # 挨打那一下刚摆脱状态的，这一轮来不及还手
+            # 一轮出手几次：一般一次；组队时房间怪满了、折成血的那些多打几次（dungeon._spawn_group）
+            for _ in range(npc.template.props.get("attacks", 1)):
+                live = [c for c in cands if c["p"].hp > 0]
+                if not live:
+                    break
+                c = _pick_target(cur, npc, live, hits, healers)
+                d = _distance(c["st"], npc)
+                if d > 0:
+                    d = _set_distance(c["st"], npc, d - ENEMY_STEP)
+                    facts.append(f"{npc.name}逼近过来，离{c['p'].name} {distance_word(d)}")
+                if d in MELEE_HIT:
+                    facts += _npc_strike(cur, c["p"], npc, "扑上来攻击", max(0.0, MELEE_HIT[d] - c["dodge"]))
+        for c in cands:
+            _save_stealth(cur, c["p"], c["st"])
+        return facts
+
+
 def _enemies_stand(cur: Cursor, alive: list[Npc]) -> list[str]:
     """被绊倒的敌人轮到行动时只能爬起来，这一轮不扑上来"""
     facts = []
@@ -2985,10 +3180,10 @@ def execute(conn: Connection, view: RoomView, action: PlayerAction) -> ActionRes
                 raise
 
 
-def execute_all(conn: Connection, view: RoomView, actions: list[PlayerAction]) -> list[ActionResult]:
+def execute_all(conn: Connection, view: RoomView, actions: list[PlayerAction], enemies: bool = True) -> list[ActionResult]:
     """按顺序执行，前一步失败就中断。玩家每做 ENEMY_EVERY 个动作，同区域的敌人行动一次（发现、逼近、攻击、爬起来），
     一句话结尾不够数也行动一次；facts 接在那一轮最后一个动作后面，results 和执行了的 actions 一一对应。
-    敌人有动静就打断剩下的"""
+    敌人有动静就打断剩下的。enemies=False 是战斗回合里：敌人等全队出完手统一行动（round_enemies）"""
     results, since = [], 0                  # since：上一轮敌人行动时玩家做到第几个动作
     pending = _tick(conn, view.player.id, "turn")
     for i, action in enumerate(actions, 1):
@@ -3010,14 +3205,14 @@ def execute_all(conn: Connection, view: RoomView, actions: list[PlayerAction]) -
                 and any("点伤害" in f for f in result.facts) and (kicked := _keeper_eject(conn, view))):
             result.facts += kicked
             return results
-        if i - since == ENEMY_EVERY:
+        if enemies and i - since == ENEMY_EVERY:
             enemy, acted = enemy_turn(conn, view.player.id, actions[since:i], results[since:i])
             since = i
             result.facts += enemy
             if acted and i < len(actions):
                 result.facts.append(f"{view.player.name}被打断了，后面的动作没来得及做")
                 return results
-    if since < len(results):
+    if enemies and since < len(results):
         results[-1].facts += enemy_turn(conn, view.player.id, actions[since:len(results)], results[since:])[0]
     return results
 

@@ -322,6 +322,27 @@ create table dungeon_floors (
 );
 
 
+-- 战斗回合（tick）：房间里有人被怪发现了就是在战斗，队员的命令先排进 combat_queue，
+-- 都出完手或者到了 deadline 一起结算（engine.round_enemies、server._resolve_round）
+create table combat_rounds (
+  room_id      text primary key references rooms(id) on delete cascade,
+  round        int not null default 1,
+  deadline     timestamptz,                     -- 这一轮到点结算的时间；null 是还没人出手（或上一轮的叙事还在写）
+  resolving    boolean not null default false   -- 正在结算、写叙事，这时候出手的算下一轮
+);
+create table combat_queue (
+  room_id      text not null references rooms(id) on delete cascade,
+  player_id    uuid not null references players(id) on delete cascade,
+  text         text not null,                   -- 玩家的原话
+  actions      jsonb not null,                  -- 出手时已经解析好的动作
+  source       text,
+  notes        jsonb,
+  created_at   timestamptz not null default now(),
+  primary key (room_id, player_id)
+);
+
+alter table combat_rounds  enable row level security;
+alter table combat_queue   enable row level security;
 alter table item_templates enable row level security;
 alter table npc_templates  enable row level security;
 alter table players        enable row level security;

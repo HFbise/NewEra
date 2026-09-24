@@ -24,7 +24,12 @@ GRID = 3                                # 一层 GRID × GRID 个房间
 BOSS_EVERY = 5                          # 每几层楼梯间守着头目
 THEME_GAP = 3                           # 主题不跟上面几层重复
 TREASURE_GUARD = 0.5                    # 宝箱房有怪守着的几率
-PARTY_HP = 0.8                          # 组队时怪的血量：× (1 + PARTY_HP × (人数 − 1))，2 人 ×1.8、3 人 ×2.6（攻击不变）
+# 组队时多刷怪，不再给怪加血（战斗按回合结算，每只怪一轮只出手一次，以前是每个人出手它都还手）：
+# 每只普通怪、精英变成"人数"只，一个房间最多 ROOM_CAP 只，多出来的折成血；钱按只数分、东西只有第一只带，
+# 整个房间的收获跟以前一样。头目、楼梯间守卫只有一只，带（人数 − 1）只小怪（不掉钱不掉东西），自己的血
+# × (1 + BOSS_PARTY_HP × (人数 − 1))
+ROOM_CAP = 6
+BOSS_PARTY_HP = 0.4
 
 DIRS = {"north": (-1, 0), "south": (1, 0), "west": (0, -1), "east": (0, 1)}
 BACK = {"north": "south", "south": "north", "west": "east", "east": "west"}
@@ -146,17 +151,23 @@ def _gold(depth: int, rank: str) -> list[int]:
     return [max(1, round(2 * scale)), max(2, round(5 * scale))]
 
 
-def _template(cur: Cursor, depth: int, kind: str, rank: str, theme: str, size: int) -> str:
-    """这一层这种怪（几个人的队伍）的 NPC 模板，没有就建"""
+def _template(cur: Cursor, depth: int, kind: str, rank: str, theme: str, share: int = 1, hp_mult: float = 1.0,
+              minion: bool = False, attacks: int = 1) -> str:
+    """这一层这种怪的 NPC 模板，没有就建。share：钱分给几只（组队多刷的同一群）；hp_mult：血的倍数；
+    minion：头目带的小怪，不掉钱；attacks：战斗回合里一轮出手几次（房间满了折成血的，出手也跟着多）"""
     # 头目按主题分（每个主题的头目不一样），别的按怪的种类
     tid = (f"dg_{theme + '_' if rank == 'boss' else ''}{kind}_{depth}" + ("" if rank == "normal" else f"_{rank}")
-           + (f"_p{size}" if size > 1 else ""))
+           + (f"_g{share}" if share > 1 else "") + (f"_h{round(hp_mult * 10)}" if hp_mult != 1 else "")
+           + ("_m" if minion else "") + (f"_a{attacks}" if attacks > 1 else ""))
     m = data()["themes"][theme]["boss"] if rank == "boss" else data()["monsters"][kind]
     hp, atk, df = monster_stats(depth, m, rank)
-    hp = round(hp * (1 + PARTY_HP * (size - 1)))
+    hp = max(2, round(hp * hp_mult))
     name = m["name"] if rank != "elite" else f"凶悍的{m['name']}"
     description = m["description"] + ("它比同类更壮、更凶，身上带着好几道旧伤。" if rank == "elite" else "")
-    props = {"on_death": {"gold": _gold(depth, rank)}, "dungeon": {"depth": depth, "rank": rank}}
+    gold = [max(1, round(g / share)) for g in _gold(depth, rank)]
+    props = {"on_death": {} if minion else {"gold": gold}, "dungeon": {"depth": depth, "rank": rank}}
+    if attacks > 1:
+        props["attacks"] = attacks
     for flag in ("animal", "light_averse", "undead", "keen"):
         if m.get(flag):
             props[flag] = True
@@ -182,16 +193,33 @@ def spawn_wanderer(cur: Cursor, room: str) -> str:
     """游荡的怪跟进了房间（走路时的随机事件）：这一层主题里的普通怪，返回名字"""
     f = floor_info(cur, room)
     kind = random.choice(data()["themes"][f["theme"]]["monsters"])
-    _spawn(cur, room, f["depth"], kind, "normal", f["theme"], f["party_size"])
+    _spawn_group(cur, room, f["depth"], kind, "normal", f["theme"], f["party_size"] or 1)
     return data()["monsters"][kind]["name"]
 
 
-def _spawn(cur: Cursor, room: str, depth: int, kind: str, rank: str, theme: str, size: int) -> None:
-    tid = _template(cur, depth, kind, rank, theme, size)
+def _spawn_group(cur: Cursor, room: str, depth: int, kind: str, rank: str, theme: str, size: int, groups: int = 1) -> None:
+    """放一群同种的怪：一个人一只，组队时"人数"只（这个房间一共 groups 群，总数不超过 ROOM_CAP，多的折成血）。
+    钱按只数分，东西只有第一只带"""
+    copies = max(1, min(size, ROOM_CAP // max(1, groups)))
+    for i in range(copies):
+        _spawn(cur, room, depth, kind, rank, theme, share=copies, hp_mult=size / copies, loot=i == 0,
+               attacks=max(1, round(size / copies)))
+
+
+def _spawn_boss(cur: Cursor, room: str, depth: int, kind: str, rank: str, theme: str, size: int) -> None:
+    """头目、楼梯间守卫：只有一只，组队时自己多些血，再带（人数 − 1）只这个主题的小怪"""
+    _spawn(cur, room, depth, kind, rank, theme, hp_mult=1 + BOSS_PARTY_HP * (size - 1))
+    for _ in range(size - 1):
+        _spawn(cur, room, depth, random.choice(data()["themes"][theme]["monsters"]), "normal", theme, minion=True, loot=False)
+
+
+def _spawn(cur: Cursor, room: str, depth: int, kind: str, rank: str, theme: str, share: int = 1, hp_mult: float = 1.0,
+           minion: bool = False, loot: bool = True, attacks: int = 1) -> None:
+    tid = _template(cur, depth, kind, rank, theme, share, hp_mult, minion, attacks)
     cur.execute("insert into npcs (template_id, room_id, hp) select id, %s, max_hp from npc_templates where id = %s"
                 " returning id", (room, tid))
     npc_id = cur.fetchone()["id"]
-    for item in _drops(kind, rank, theme, depth):       # 身上带的东西，打死了掉在地上
+    for item in _drops(kind, rank, theme, depth) if loot else []:     # 身上带的东西，打死了掉在地上
         _put_item(cur, item, depth, npc=npc_id, boss=rank == "boss")
 
 
@@ -306,11 +334,11 @@ def _make_floor(cur: Cursor, run: UUID, depth: int, above: Optional[str], size: 
             count = random.randint(1, min(3, 1 + depth // 8))
             ranks = ["elite" if i == 0 and random.random() < min(0.35, 0.02 * depth) else "normal" for i in range(count)]
             for rank in ranks:
-                _spawn(cur, rid, depth, random.choice(theme["monsters"]), rank, theme_key, size)
+                _spawn_group(cur, rid, depth, random.choice(theme["monsters"]), rank, theme_key, size, len(ranks))
         elif kind == "stairs":
             boss = depth % BOSS_EVERY == 0
-            _spawn(cur, rid, depth, "boss" if boss else random.choice(theme["monsters"]), "boss" if boss else "elite",
-                   theme_key, size)
+            _spawn_boss(cur, rid, depth, "boss" if boss else random.choice(theme["monsters"]), "boss" if boss else "elite",
+                        theme_key, size)
             cur.execute("insert into room_exits (room_id, direction, to_room) values (%s, 'down', %s)", (rid, GATE))
         elif kind == "treasure":
             # 越暗的房间钱越多（按房间本来的光亮，不按后来点没点灯）
@@ -330,7 +358,7 @@ def _make_floor(cur: Cursor, run: UUID, depth: int, above: Optional[str], size: 
             if guarded:
                 # 有一半的宝箱房有怪守着（越深越可能是精英）
                 rank = "elite" if random.random() < min(0.35, 0.02 * depth) else "normal"
-                _spawn(cur, rid, depth, random.choice(theme["monsters"]), rank, theme_key, size)
+                _spawn_group(cur, rid, depth, random.choice(theme["monsters"]), rank, theme_key, size)
     entry = _room_id(run, depth, start)
     if above:
         cur.execute("insert into room_exits (room_id, direction, to_room) values (%s, 'up', %s)", (entry, above))

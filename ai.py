@@ -1013,6 +1013,44 @@ def decide_give(db, view: RoomView, text: str, npc: Npc, giveable: list[ItemInst
                  count=max(1, min(engine.SELL_MAX_COUNT, out.count)) if out.sell and out.sell.startswith("s") else 1), usage
 
 
+# ============ 战斗回合（tick）的叙事：整队共用一段，第三人称 ============
+
+ROUND_SYSTEM = """你是文字 MUD 游戏的叙事者，用中文第三人称写一轮战斗：一支队伍在同一个地方，这一轮每个人各出了手，然后敌人行动。
+
+硬性规则：
+- 只根据 <turns> 和 <enemies> 里的 facts 写结果：谁打中了、打偏了、掉了多少血、谁倒下了、谁被发现了，照写不改；不编 facts 里没有的伤害、物品、移动、死亡
+- 按先后顺序写：先写队员出手，<turns> 里出了手的每个人都要用名字写到；再写敌人的反应
+- 标了失败的动作只写没做成，不替它补上成功才有的内容
+- 括号里的技能判定（等级、难度、成功率）是给你看的，不要照抄，照成败写就行
+- 场景里的东西只能来自 <room> 和 facts，不添加没写到的家具、人物、动物
+- 玩家是真人在操作，只写 facts 里他们确实做了的事，不替他们编台词、神态
+- 3 到 6 句，一段话，不要列表、不要标题。HP 这类数字可以自然带出来"""
+
+
+class RoundStory(BaseModel):
+    narrative: str
+
+
+def narrate_round(db, player_id: UUID, room, turns: list[tuple[str, str, list[str]]], enemies: list[str]) -> Optional[str]:
+    """一轮战斗的叙事。turns 是每个人的（名字, 原话, facts），enemies 是敌人行动的 facts。失败返回 None（只看 facts）"""
+    user = (f"<room>{room.name}：{room.description}</room>\n\n<turns>\n"
+            + "\n".join(f"{name}（原话：{text}）：{'；'.join(EFFECT_RE.sub('', f) for f in facts) or '这一轮没出手'}"
+                        for name, text, facts in turns)
+            + "\n</turns>\n\n<enemies>\n" + ("；".join(EFFECT_RE.sub("", f) for f in enemies) or "敌人没有动静") + "\n</enemies>")
+    acted = [name for name, _, facts in turns if facts]
+
+    def check(out: RoundStory, last: bool) -> RoundStory:
+        out.narrative = out.narrative.strip()
+        if not out.narrative:
+            raise ValueError("叙事是空的")
+        if not last and (missing := [n for n in acted if n not in out.narrative]):
+            raise ValueError(f"出了手的人都要写到，漏了{'、'.join(missing)}")
+        return out
+
+    out, _ = _call(db, player_id, "narrate", ROUND_SYSTEM, user, RoundStory, 1024, check)
+    return out.narrative if out else None
+
+
 def narrate(db, view: RoomView, text: str, results: list[ActionResult],
             npc: Optional[Npc], affinity: int, memory: str = "", recent: Optional[list[str]] = None,
             quests: Optional[list[tuple[str, dict]]] = None, eject_to: Optional[str] = None,
