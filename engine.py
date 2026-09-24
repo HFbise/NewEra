@@ -678,7 +678,7 @@ def do_move(cur: Cursor, player: Player, view: RoomView, a: Move) -> list[str]:
                 (to, Jsonb(Stealth(room=to, chance=DETECT_START).model_dump()), player.id))
     room = load_room(cur, to)
     facts.append(f"{player.name}往{dir_name(a.direction)}走，来到了{room.name}")
-    facts += arrived
+    facts += arrived + (_torch_floor(cur, [player.name], to) if arrived else [])
     # 同房间跟着他的人一起走：睡着、倒下、带着负面状态的跟不上
     cur.execute(
         f"""update players set room_id = %s, updated_at = now()
@@ -695,7 +695,7 @@ def do_move(cur: Cursor, player: Player, view: RoomView, a: Move) -> list[str]:
     if names:
         facts.append(f"{'、'.join(names)}跟着{player.name}一起来到了{room.name}")
         if arrived:
-            facts += dungeon.arrived(cur, names, dungeon.parse_room(to)[1])
+            facts += dungeon.arrived(cur, names, dungeon.parse_room(to)[1]) + _torch_floor(cur, names, to)
     return facts
 
 
@@ -761,7 +761,7 @@ def do_teleport(cur: Cursor, player: Player, view: RoomView, a: Teleport) -> lis
         facts.append(f"{'、'.join(names)}跟着{player.name}一起传了过去")
         if dungeon.is_dungeon(to):
             facts += dungeon.arrived(cur, names, dungeon.parse_room(to)[1])
-    return facts
+    return facts + _torch_floor(cur, [player.name] + names, to)
 
 
 # 扎营：回 max_hp × CAMP_BASE，带帐篷再加 CAMP_TENT（用掉一顶），生存判定成功再加 CAMP_SURVIVAL，空房里整体 ×CAMP_EMPTY
@@ -972,6 +972,8 @@ def do_take(cur: Cursor, player: Player, view: RoomView, a: Take) -> list[str]:
 
 def do_drop(cur: Cursor, player: Player, view: RoomView, a: Drop) -> list[str]:
     item = _inv_item(cur, view, player, a.item)
+    if _burning(item):
+        return _douse(cur, player, item)
     facts = [f"{player.name}卸下了{item.name}"] if item.equipped_slot else []
     _move_item(cur, item, room_id=player.room_id)
     return facts + [f"{player.name}把{_label(item)}放在了地上"]
@@ -1190,11 +1192,14 @@ def do_equip(cur: Cursor, player: Player, view: RoomView, a: Equip) -> list[str]
     elif item.equipped_slot:
         raise ActionError(f"{item.name}已经装备在{SLOT_NAMES[item.equipped_slot]}了")
     else:
-        slot = next((c for c in choices if c not in worn), choices[0])
+        # 两只手都占着时，火把默认换掉左手（副手），别把主手的武器换下来
+        slot = next((c for c in choices if c not in worn), "left_hand" if _prop(item, "lights") else choices[0])
     if item.equipped_slot == slot:
         raise ActionError(f"{item.name}已经装备在{SLOT_NAMES[slot]}了")
     facts = []
     old = worn.get(slot)
+    if old and _burning(old) and not item.equipped_slot:
+        raise ActionError(f"{SLOT_NAMES[slot]}拿着点着的{old.name}，收起来就灭了；要换就先把火把熄掉（卸下火把），或者说换到另一只手")
     prev = item.equipped_slot
     if prev:
         # 已经装着的换个位置（右手的斧子换到左手）：先腾出来，免得撞上"每格一件"的唯一索引
@@ -1207,13 +1212,21 @@ def do_equip(cur: Cursor, player: Player, view: RoomView, a: Equip) -> list[str]
         cur.execute("update item_instances set equipped_slot = null where id = %s", (old.id,))
         facts.append(f"{player.name}卸下了{old.name}")
     cur.execute("update item_instances set equipped_slot = %s where id = %s", (slot, item.id))
+    if lit := _prop(item, "lights"):
+        cur.execute("update item_instances set template_id = %s, props = '{}' where id = %s", (lit, item.id))
+        return facts + [f"{player.name}把{item.name}拿在{SLOT_NAMES[slot]}点着了，火光一下子亮起来"]
     return facts + [f"{player.name}把{item.name}装备在{SLOT_NAMES[slot]}"]
 
 
 def do_unequip(cur: Cursor, player: Player, view: RoomView, a: Unequip) -> list[str]:
     item = _inv_item(cur, view, player, a.item)
     if not item.equipped_slot:
+        # "卸下火把"：背包里没点的火把名字一模一样，要卸的其实是手上点着的那支
+        item = next((i for i in _worn(cur, player) if i.name.startswith(item.name)), item)
+    if not item.equipped_slot:
         raise ActionError(f"{item.name}没有装备着")
+    if _burning(item):
+        return _douse(cur, player, item)
     cur.execute("update item_instances set equipped_slot = null where id = %s", (item.id,))
     return [f"{player.name}卸下了{SLOT_NAMES[item.equipped_slot]}的{item.name}"]
 
@@ -1552,7 +1565,7 @@ def _tick_effects(cur: Cursor, player: Player, unit: str) -> list[str]:
 # 越暗怪越凶、钱越多（_dark_factor）；怕光的怪在 LIGHT_BRIGHT 以上攻击 -1。
 # 积水：闪避效果减半、逃跑难度 +1。掩体：躲藏容易 1 级
 LIGHT_FULL, LIGHT_MIN_HIT, LIGHT_DARK, LIGHT_BRIGHT = 50, 0.05, 20, 70
-TORCH_LIGHT = 35
+TORCH_LIGHT = 35                        # 说明用；实际按 world.yaml 火把（点燃）/（弱光）的 props.light
 LIGHT_OLD = {"bright": 70, "dim": 40, "dark": 15}      # 旧存档里的文字写法
 
 
@@ -1574,12 +1587,11 @@ def _light(cur: Cursor, room_id: str, env: Optional[dict] = None, player: Option
     env = _room_env(cur, room_id) if env is None else env
     level = _base_light(env)
     if env and level < 100:
-        cur.execute("""select 1 from item_instances i join item_templates t on t.id = i.template_id
+        cur.execute("""select max((t.props->>'light')::int) as torch
+                       from item_instances i join item_templates t on t.id = i.template_id
                        join players p on p.id = i.player_id
-                       where p.room_id = %s and t.props ? 'light' and i.equipped_slot is not null limit 1""",
-                    (room_id,))
-        if cur.fetchone():
-            level += TORCH_LIGHT
+                       where p.room_id = %s and t.props ? 'light' and i.equipped_slot is not null""", (room_id,))
+        level += cur.fetchone()["torch"] or 0
     return max(0, min(100, level))
 
 
@@ -2266,6 +2278,8 @@ def do_sell(cur: Cursor, player: Player, view: RoomView, a: Sell) -> list[str]:
     if not npc.template.props.get("buys"):
         raise ActionError(f"{npc.name}不收东西")
     item = _inv_item(cur, view, player, a.item)
+    if _burning(item):
+        raise ActionError(f"点着的{item.name}{npc.name}可不收")
     if _precious(cur, item):
         raise ActionError(f"{item.name}太要紧了，{npc.name}不收")
     price = buy_price(npc, item, _affinity(cur, player, npc))
@@ -2280,6 +2294,8 @@ GIFT_FACT = "心爱的礼物"                # 台词那边认这几个字，演
 
 def do_give(cur: Cursor, player: Player, view: RoomView, a: Give) -> list[str]:
     item = _inv_item(cur, view, player, a.item)
+    if _burning(item):
+        raise ActionError(f"点着的{item.name}只能拿在自己手上，递不出去")
     if a.target not in view.refs:
         # 给同房间的玩家：target 是名字。睡着、倒下的也能收（东西放进他背包）
         other, _ = _room_player(cur, player, a.target, lock=True)
@@ -2470,31 +2486,48 @@ def _tick(conn: Connection, player_id: UUID, unit: str) -> list[str]:
     with conn.transaction():
         cur = _cursor(conn)
         player = load_player(cur, player_id, lock=True)
-        return _tick_effects(cur, player, unit) + (_burn_torch(cur, player) if unit == "turn" else [])
+        return _tick_effects(cur, player, unit)
 
 
-TORCH_WARN = 5                          # 火把还剩这么多回合时提醒一句
+# 火把：背包里的火把（props.lights）拿到手上就换成点燃的样子；点燃的（props.burning）带到地牢下一层换成弱光的，
+# 弱光的再下一层就烧完了。点燃的只能拿在手上：卸下、扔掉要再说一次确认，确认了就熄灭没了；不能给人、不能卖
+DOUSE_CONFIRM = 120                     # 秒：说了一次要收火把，这么久内再说一次就真的熄灭
 
 
-def _burn_torch(cur: Cursor, player: Player) -> list[str]:
-    """地牢里手上点着的火把（props.burn）每回合烧掉 1，烧完就没了。村里不烧"""
-    if not dungeon.is_dungeon(player.room_id):
+def _burning(item: ItemInstance) -> bool:
+    return "burning" in item.template.props
+
+
+def _torch_floor(cur: Cursor, names: list[str], room_id: str) -> list[str]:
+    """这些人拿着点着的火把下到了地牢新的一层（走下来、传送来）：火光变小，或者烧完"""
+    if not dungeon.is_dungeon(room_id) or not names:
         return []
+    cur.execute("""select i.id, t.name as item, t.props->>'burning' as next, p.name as who
+                   from item_instances i join item_templates t on t.id = i.template_id join players p on p.id = i.player_id
+                   where p.name = any(%s) and t.props ? 'burning' and i.equipped_slot is not null""", (names,))
     facts = []
-    for item in _worn(cur, player):
-        total = _prop(item, "burn")
-        if not total:
-            continue
-        left = item.props.get("burn_left", total) - 1
-        if left <= 0:
-            cur.execute("delete from item_instances where id = %s", (item.id,))
-            facts.append(f"{player.name}手上的{item.name}烧到了头，熄灭了")
+    for r in cur.fetchall():
+        if r["next"]:
+            cur.execute("update item_instances set template_id = %s, props = '{}' where id = %s", (r["next"], r["id"]))
+            facts.append(f"{r['who']}手上的火把火光变小了，照不了那么亮了，再下一层就会烧完")
         else:
-            cur.execute("update item_instances set props = props || jsonb_build_object('burn_left', %s::int) where id = %s",
-                        (left, item.id))
-            if left == TORCH_WARN:
-                facts.append(f"{player.name}手上的{item.name}火苗越来越小，大概只能再烧 {left} 回合了")
+            cur.execute("delete from item_instances where id = %s", (r["id"],))
+            facts.append(f"{r['who']}手上的火把烧到了头，熄灭了")
     return facts
+
+
+def _douse(cur: Cursor, player: Player, item: ItemInstance) -> list[str]:
+    """想把点着的火把收起来、扔掉：第一次只提醒，DOUSE_CONFIRM 秒内再说一次才熄灭（东西没了）"""
+    asked = item.props.get("douse_asked", 0)
+    cur.execute("select extract(epoch from now())::float as t")
+    now = cur.fetchone()["t"]
+    if now - asked > DOUSE_CONFIRM:
+        cur.execute("update item_instances set props = props || jsonb_build_object('douse_asked', %s::float) where id = %s",
+                    (now, item.id))
+        return [f"{item.name}收起来就灭了，灭了就没法再点，只能扔掉",
+                f"{player.name}还没动手：真要熄掉就再说一次"]
+    cur.execute("delete from item_instances where id = %s", (item.id,))
+    return [f"{player.name}把{item.name}按在地上掐灭了，烧过的火把没法再用了"]
 
 
 def _keeper_eject(conn: Connection, view: RoomView) -> list[str]:

@@ -200,6 +200,43 @@ items:
     type: weapon
     damage: 3
     props: {price: 8}
+  # 护甲和盾：防御都加在一起。盾占一只手（slot: hand），跟双持、火把抢位置，所以给的防御比同价位的护甲高
+  # 莉娜墙上卖的是入门的一档（皮帽、皮甲、木盾）；铁盾、锁子甲以后从地牢里出
+  leather_cap:
+    name: 皮帽
+    description: 一顶鞣过的厚皮帽，内衬塞着羊毛，能挡住从头顶落下的碎石。
+    type: armor
+    slot: head
+    defense: 1
+    props: {price: 6}
+  leather_armor:
+    name: 皮甲
+    description: 用几层牛皮缝成的短甲，胸口钉着几片铁片，轻便不碍事。
+    type: armor
+    slot: chest
+    defense: 1
+    props: {price: 8}
+  wooden_shield:
+    name: 木盾
+    description: 一面包了铁边的圆木盾，占一只手，挡得住大多数的抓咬和棍棒。
+    type: armor
+    slot: hand
+    defense: 2
+    props: {price: 10}
+  iron_shield:
+    name: 铁盾
+    description: 一面沉甸甸的铁皮盾，边缘有好几道砍痕，举起来能挡住大半个身子。占一只手。
+    type: armor
+    slot: hand
+    defense: 3
+    props: {price: 30}
+  chain_mail:
+    name: 锁子甲
+    description: 用成千上万个铁环编成的甲衣，穿上身沉，但刀砍上去只擦出火星。
+    type: armor
+    slot: chest
+    defense: 2
+    props: {price: 30}
   # NPC 现造东西用的通用模板（NPC 的 creates 配置），名字和描述由 AI 起，存在物品实例上
   made_food:
     name: 食物
@@ -251,12 +288,26 @@ items:
     description: 一捆结实的粗麻绳，能捆东西、捆人，也能垂下去攀爬。
     type: misc
     props: {price: 2}
+  # 火把三种样子：背包里的火把 → 拿到手上就点着（火把（点燃））→ 带到地牢下一层变成火把（弱光）→ 再下一层烧完。
+  # 点着的火把只能拿在手上：收起来、扔掉就熄了、没了（要玩家再说一次确认），不能给人、不能卖（engine 火把部分）
   torch:
     name: 火把
-    description: 缠着浸油麻布的木火把，得拿在手上点着才照得亮（占一只手），也能拿来烧、拿来吓唬怕火的东西。在地牢里点着大约能烧 30 回合。
+    description: 缠着浸油麻布的木火把，拿到手上就点着（占一只手）。点着以后在地牢里能撑两层：第二层火光变小，到第三层烧完；点着的火把收起来就熄了，没法再点。
     type: weapon
     damage: 2
-    props: {price: 2, light: true, burn: 30}   # 拿在手上才亮；在地牢里每回合烧掉 1，烧完就没了（engine._burn_torch）
+    props: {price: 2, lights: torch_lit}   # 装备时换成 torch_lit
+  torch_lit:
+    name: 火把（点燃）
+    description: 一支正烧得旺的火把，火光能照亮周围一大片。只能拿在手上，收起来就灭了。
+    type: weapon
+    damage: 2
+    props: {light: 35, burning: torch_dim}   # 光亮 +35；到地牢下一层换成 torch_dim
+  torch_dim:
+    name: 火把（弱光）
+    description: 一支快烧到头的火把，火苗缩成了一小簇，只能照亮脚边。再往下走一层就要灭了。
+    type: weapon
+    damage: 2
+    props: {light: 20, burning: ""}   # 光亮 +20；到地牢下一层就烧完
   tent:
     name: 帐篷
     description: 卷成一捆的帆布小帐篷，在野外或地牢里扎营时能睡得安稳些。
@@ -349,7 +400,7 @@ npcs:
     persona: 性格直率寡言，日常极度省字，说话简短冷淡甚至只用单字回复。但对锻造拥有狂热的痴迷，一旦话题涉及武器、护甲、矿石素材或锻造工艺，瞬间两眼放光、语速极快且滔滔不绝，立刻切换成狂热的技术宅模式。眼光极毒，能一眼看穿玩家身上装备的材质缺陷与锻造瑕疵。崇尚优质金属与精湛工艺，对好兵器比对人更有耐心，最讨厌糟蹋武器和不懂装懂的菜鸟。
     props:
       # 能卖的东西（物品 id），价钱、卖不卖、打不打折都由 AI 看人设和心情定
-      sells: [iron_axe, forge_knife, sickle]
+      sells: [iron_axe, forge_knife, sickle, wooden_shield, leather_cap, leather_armor]
       # 现打武器，伤害最多 4（墙上的铁斧是 5）
       creates:
         weapon: {damage: 4}
