@@ -300,7 +300,15 @@ def _parse_one(view: RoomView, t: str) -> dict:
         except _Unsure:
             return {"action": "attack", "target": _player_or_unsure(view, name)}
 
-    # 注意"对麦琪 来杯黑啤"（没有"说"）不在这里认：同样的句式也可能是动作（"对哥布林 发动强力砍击"），交给 AI 分
+    # 对卖东西的 NPC 点单、买东西（不带"说"）："对麦琪 来杯黑啤""对诺艾尔 给来一个回城水晶""找莉娜 买把铁斧"。
+    # 以前交给 AI，"给来一个"被当成把东西给她，报背包里没有。只认卖东西、开店的 NPC，"对哥布林 来一刀"不会进来
+    if m := re.fullmatch(r"(?:对|跟|找|向)\s*(.+?)\s+((?:(?:给我?|帮我|我要|我想|请)\s*(?:来|要|买|拿)?|来|要|买)\s*"
+                         r"(?:点|些|一?[个杯条把份瓶支根块张件壶碗盒]|\d+|[一两三四五六七八九十]+)?.+)", t):
+        npc = next((n for n in view.npcs if not n.template.hostile and (n.name == m[1].strip() or m[1].strip() in n.name)), None)
+        if npc and (npc.template.props.get("sells") or npc.template.props.get("inn") or npc.template.props.get("creates")):
+            return {"action": "talk", "target": {uid: ref for ref, uid in view.refs.items()}[npc.id], "message": m[2]}
+
+    # 注意别的"对麦琪 某某"（没有"说"）不在这里认：同样的句式也可能是动作（"对哥布林 发动强力砍击"），交给 AI 分
     # 对某人说：对方是玩家就是 say（广播，不走 AI），是 NPC 就是 talk（AI 扮演 NPC 回话）
     if m := (re.fullmatch(r"(?:对|跟|和|向)\s*(.+?)\s*(?:说|讲|问)[:：]?\s*(.+)", t)
              or re.fullmatch(r"(?:say|talk)\s+(?:to\s+)?(\S+)\s+(.+)", t, re.I)):
