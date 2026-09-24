@@ -999,18 +999,18 @@ STUN_ESCAPE = 3                         # 古书残卷念出来的定身：敌�
 
 
 def _stun(cur: Cursor, player: Player, view: RoomView, item: ItemInstance, target: Optional[str]) -> list[str]:
-    """对敌人使用能定身的东西（古书残卷：props.stun 是状态说明）：不用判定，一定让它失去战斗能力，东西用掉"""
-    if not target or target not in view.refs:
-        raise ActionError(f"{item.name}要对着一个敌人用")
-    npc = _room_npc(cur, view, player, target)
-    if not (npc.template.hostile and npc.combatable):
-        raise ActionError(f"{item.name}只对敌人有用")
+    """念能定身的东西（古书残卷：props.stun 是状态说明）：不用判定，房间里所有敌人一起失去战斗能力，东西用掉"""
+    foes = _enemies(cur, player.room_id)
+    if not foes:
+        raise ActionError(f"这里没有敌人，{item.name}念了也没用")
     _consume(cur, item)
     label = str(_prop(item, "stun"))[:20]
-    _set_status(cur, "npcs", npc.id, Status(kind="incapacitated", label=label, escape=STUN_ESCAPE,
-                                            since=datetime.now(timezone.utc).isoformat()))
-    return [f"{player.name}翻开{item.name}，对着{npc.name}念出上面的古老文字，书页化成灰烬散开",
-            f"{npc.name}{label}，失去了战斗能力"]
+    for npc in foes:
+        _set_status(cur, "npcs", npc.id, Status(kind="incapacitated", label=label, escape=STUN_ESCAPE,
+                                                since=datetime.now(timezone.utc).isoformat()))
+    names = "、".join(n.name for n in foes)
+    return [f"{player.name}翻开{item.name}，念出上面的古老文字，字句在空气里回荡，书页化成灰烬散开",
+            f"{names}{label}，失去了战斗能力"]
 
 
 RECALL_TO = "square"                    # 回城水晶把人传回这里

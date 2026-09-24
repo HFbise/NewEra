@@ -150,48 +150,56 @@ items:
     description: 有点硬的黑麦面包。
     type: consumable
     heal: 3
+    props: {price: 1}
   herb:
     name: 药草
     description: 散发清香的绿色草叶，据说能止血。
     type: consumable
     heal: 6
-    props: {herbal: true}          # 药草：用药的人自然等级越高回血越多
+    props: {price: 4, herbal: true}          # 药草：用药的人自然等级越高回血越多
   rusty_sword:
     name: 生锈的短剑
     description: 剑刃布满锈迹，但还算锋利。
     type: weapon
     damage: 4
+    props: {price: 5}
   cellar_key:
     name: 地窖钥匙
     description: 一把沉甸甸的铁钥匙。
     type: key
+    props: {price: 10}
   old_amulet:
     name: 古旧护符
     description: 刻着看不懂的符文，在昏暗处微微发着蓝光。
     type: armor
     slot: neck
     defense: 2
+    props: {price: 25}
   shiny_sword:
     name: 闪亮的短剑
     description: 莉娜重新锻打、磨得雪亮的短剑，刃口能照出人影。
     type: weapon
     damage: 6
+    props: {price: 35}
   # 莉娜墙上的货（她的 sells），价钱由 AI 看心情定
   iron_axe:
     name: 铁斧
     description: 斧刃厚实的铁斧，劈柴砍人都顺手。
     type: weapon
     damage: 5
+    props: {price: 20}
   forge_knife:
     name: 锻打小刀
     description: 粗糙但结实的短刀，刀背还留着锤痕。
     type: weapon
     damage: 3
+    props: {price: 8}
   sickle:
     name: 镰刀
     description: 弯月形的农用镰刀，挥起来带着风声。
     type: weapon
     damage: 3
+    props: {price: 8}
   # NPC 现造东西用的通用模板（NPC 的 creates 配置），名字和描述由 AI 起，存在物品实例上
   made_food:
     name: 食物
@@ -219,7 +227,7 @@ items:
     description: 盛在厚木杯里的黑啤，泡沫像奶油一样绵密，麦芽的焦香里带点苦，据说是按矮人的老方子酿的。
     type: consumable
     heal: 2
-    props: {alcohol: true}
+    props: {price: 2, alcohol: true}
   elf_mead:
     name: 精灵蜜酒
     description: 细颈玻璃瓶里金黄透亮的蜜酒，入口清甜，带着野花和松针的香气，后劲绵长。
@@ -263,7 +271,7 @@ items:
     name: 奥利哈刚矿石
     description: 一块拳头大的矿石，青灰色，沉甸甸的，断面上闪着金属的光泽。铁匠见了大概会两眼放光。
     type: misc
-    props: {price: 80, gift: ore}
+    props: {price: 100, gift: ore}
   ancient_wine:
     name: 陈年古酒
     description: 一只封着泥的旧陶罐（或者落满灰的酒瓶），晃一晃里面的酒还在响，闻着有一股深沉的陈香。爱酒的人会想要。
@@ -272,14 +280,15 @@ items:
     props: {alcohol: true, strength: 2, price: 12, gift: wine}
   old_tome:
     name: 古书残卷
-    description: 一本用皮绳捆着、封在蜡里的古书，书页泛黄发脆，写着看不懂的古老文字。对着敌人翻开念出来，能让它一时僵住动弹不得（念完书就化成灰了）。爱书的人会很珍惜。
+    description: 一本用皮绳捆着、封在蜡里的古书，书页泛黄发脆，写着看不懂的古老文字。在敌人面前翻开念出来，周围所有敌人都会一时僵住动弹不得（念完书就化成灰了）。爱书的人会很珍惜。
     type: misc
-    props: {price: 100, gift: book, stun: 被古老的文字定住了身形}   # 对敌人使用：一定定身（engine._stun），书用掉
+    props: {price: 50, gift: book, stun: 被古老的文字定住了身形}   # 有敌人时使用：房间里所有敌人一定定身（engine._stun），书用掉
   spring_water:
     name: 泉水
     description: 一瓶从地下泉眼接来的清水，冰凉微甜，喝下去浑身一轻。
     type: consumable
     heal: 10
+    props: {price: 8}
   # 地牢宝箱房里的钱袋：捡起来直接变成金币（数目在实例 props.gold）
   gold_pouch:
     name: 一袋古币
@@ -292,6 +301,7 @@ items:
       东边是铁匠铺，南边一条小路通到森林边缘。森林边缘画了个叉，旁边写着"哥布林，胆小但手黑"；
       路边土坡上的大石头被圈起来，标着"松了，别站坡下"。
     type: misc
+    props: {price: 15}
 
 npcs:
   innkeeper:

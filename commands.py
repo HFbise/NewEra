@@ -144,13 +144,11 @@ def _parse_one(view: RoomView, t: str) -> dict:
     if m := re.fullmatch(r"(?:(?:在|回|去|到)\s*(.+?)\s*)?(?:复活|重生|回城)|respawn", t, re.I):
         return {"action": "respawn", "target": m[1]}
 
-    # 对敌人用能定身的书（古书残卷 props.stun）："对墨影翻开古书残卷念上面的字"
+    # 念能定身的书（古书残卷 props.stun，房间里所有敌人一起定住）："对墨影翻开古书残卷念上面的字""念古书"
     by_id = {uid: ref for ref, uid in view.refs.items()}
     book = next((i for i in view.inventory if i.template.props.get("stun") and (i.name in t or i.name[:2] in t)), None)
-    foe = next((n for n in view.npcs if n.template.hostile and n.name in t), None) \
-        or next((n for n in view.npcs if n.template.hostile and n.name[-2:] in t), None)
-    if book and foe:
-        return {"action": "use", "item": by_id[book.id], "target": by_id[foe.id]}
+    if book and re.search(r"念|读|翻开|使用|用", t) and any(n.template.hostile for n in view.npcs):
+        return {"action": "use", "item": by_id[book.id]}
 
     # 地牢里听见怪声："循着声音去找""去看看是什么声音"
     if re.search(r"循.{0,2}声|顺着声音|找.{0,4}声音|声音.{0,6}(找|看看)", t):
