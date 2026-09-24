@@ -182,8 +182,12 @@ async function loadWorld() {
 
 // ============ 玩家 ============
 
+let itemList = null;                // 给道具时的物品列表（名字自动补全），第一次用到时拉一次
 async function loadPlayers() {
   const ps = await api("/players");
+  if (!itemList) {
+    try { itemList = await api("/item_templates"); } catch { itemList = []; }
+  }
   $("#main").innerHTML = `<div class="scroll"><table>
     <tr><th>玩家</th><th>位置</th><th>HP</th><th>状态</th><th>队伍 / 跟随</th><th>背包</th><th>标记</th><th>最后活跃</th><th>操作</th></tr>
     ${ps.map(p => `<tr data-id="${p.id}" data-name="${esc(p.name)}">
@@ -200,6 +204,8 @@ async function loadPlayers() {
         <button class="act" data-op="home">传送回广场</button>
         <button class="act" data-op="clear_status">清状态</button>
         <button class="act" data-op="set_hp">改 HP</button>
+        <button class="act" data-op="give">给道具</button>
+        <button class="act" data-op="gold">给金币</button>
         <button class="act danger" data-op="delete">删除</button>
       </td>
     </tr>`).join("")}
@@ -215,6 +221,35 @@ async function loadPlayers() {
       const v = prompt(`把 ${name} 的 HP 改成多少？`);
       if (v === null || v.trim() === "" || isNaN(+v)) return;
       body.hp = Math.round(+v);
+    }
+    if (op === "gold") {
+      const v = prompt(`给 ${name} 多少金币？（负数是拿走）`);
+      if (v === null || v.trim() === "" || isNaN(+v)) return;
+      body.count = Math.round(+v);
+    }
+    if (op === "give") {
+      // 在这一行下面展开一个小表单：物品名字自动补全 + 数量
+      document.querySelectorAll("tr.give-row").forEach(r => r.remove());
+      const row = document.createElement("tr");
+      row.className = "give-row";
+      row.innerHTML = `<td colspan="9">给 ${esc(name)}：
+        <input list="item-options" placeholder="物品名字或 id" style="width:18em">
+        <datalist id="item-options">${itemList.map(i => `<option value="${esc(i.name)}">${esc(i.id)} · ${esc(i.type)}</option>`).join("")}</datalist>
+        数量 <input type="number" value="1" min="1" max="99" style="width:4em">
+        <button class="act ok">给</button> <button class="act cancel">取消</button></td>`;
+      tr.after(row);
+      const [itemInput, countInput] = row.querySelectorAll("input");
+      itemInput.focus();
+      row.querySelector(".cancel").onclick = ev => { ev.stopPropagation(); row.remove(); };
+      row.querySelector(".ok").onclick = async ev => {
+        ev.stopPropagation();
+        if (!itemInput.value.trim()) return;
+        try {
+          await api(`/players/${tr.dataset.id}`, { op: "give", item: itemInput.value.trim(), count: +countInput.value || 1 });
+          load();
+        } catch (err) { alert(err.message); }
+      };
+      return;
     }
     try { await api(`/players/${tr.dataset.id}`, body); load(); } catch (err) { alert(err.message); }
   };

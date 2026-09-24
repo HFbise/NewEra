@@ -140,9 +140,18 @@ def players():
     return rows
 
 
+@protected.get("/item_templates")
+def item_templates():
+    """给道具时选的物品：地牢里现生成的怪、NPC 现做的模板不列"""
+    with pool.connection() as conn:
+        return _rows(conn, "select id, name, type from item_templates where left(id, 5) <> 'made_' and not props ? 'burning' order by type, name")
+
+
 class PlayerOp(BaseModel):
-    op: Literal["revive", "home", "clear_status", "set_hp", "delete"]
+    op: Literal["revive", "home", "clear_status", "set_hp", "delete", "give", "gold"]
     hp: Optional[int] = None
+    item: Optional[str] = None          # give：物品 id 或名字
+    count: int = 1                      # give：几件；gold：多少金币（可以是负数）
 
 
 @protected.post("/players/{player_id}")
@@ -172,6 +181,20 @@ def player_op(player_id: UUID, req: PlayerOp):
                 hp = max(0, min(p.max_hp, req.hp))
                 conn.execute("update players set hp = %s where id = %s", (hp, player_id))
                 _announce(conn, p.room_id, f"管理员把{p.name}的 HP 改成了 {hp}。")
+            elif req.op == "give":
+                cur = engine._cursor(conn)
+                cur.execute("select id, name from item_templates where id = %s or name = %s limit 1",
+                            (req.item or "", req.item or ""))
+                t = cur.fetchone()
+                if t is None:
+                    raise HTTPException(400, f"没有叫「{req.item}」的物品")
+                n = max(1, min(99, req.count))
+                for _ in range(n):
+                    engine._give_player_new(cur, p, t["id"])
+                _announce(conn, p.room_id, f"管理员给了{p.name}{'' if n == 1 else f' {n} 件'}{t['name']}。")
+            elif req.op == "gold":
+                conn.execute("update players set gold = greatest(0, gold + %s) where id = %s", (req.count, player_id))
+                _announce(conn, p.room_id, f"管理员{'给了' if req.count >= 0 else '拿走了'}{p.name} {abs(req.count)} 枚金币。")
             elif req.op == "home" and p.room_id != engine.START_ROOM:
                 conn.execute("update players set room_id = %s, following = null where id = %s",
                              (engine.START_ROOM, player_id))
