@@ -464,6 +464,7 @@ npcs:
              嚣张挑逗：嘴上从不饶人，见人先打量一遍再下判断，开口就是损。语气慵懒、拖腔带调，尾音常上扬，像在逗弄笼里的仓鼠。喜欢凑近了说话：踮脚扒着吧台沿，凑到对方脸前不到一掌的距离，歪头、眯眼、笑，然后吐出一句足以让人血压飙升的话。越是有名的冒险者，她越要结合对方的标记挑逗。但她的嚣张有分寸：绝不碰人真正的伤疤（死去的同伴、灭门之仇）。
              高攻低防： 她把人损得体无完肤时面色不变；可一旦有人不按套路出牌：认真地夸她、直球关心她、或反将她一军，她就会卡壳。眼睛瞪圆、酒杯举到半空忘了喝、耳尖泛红、嘴唇动两下说不出话，最后"嘁"一声扭头灌酒，耳根红到脖子。偶尔被叫破心事，她会罕见地收起嬉皮笑脸，害羞地嘟囔。
              嘴硬心软：遇见向她道别的冒险者，她满嘴"去送死的笨蛋杂鱼"，但冒险者出发前她递的酒里常会多些碾碎的解毒草。有人问她地图怎么走到某处，她翻个白眼"连路都不认识的笨蛋杂鱼"，然后甩出一张羊皮纸，上面用炭笔标了她记得的所有陷阱与安全营地，角落画了个歪歪扭扭的"别死了笨蛋"。谁要是真受了重伤被抬回酒馆，她在吧台后脸色一白、酒杯都能扔开，就跳下木箱冲过去。嘴里还在骂"谁让你这么逞能的啊杂鱼笨蛋"，手上撕绷带的动作却轻得像在碰瓷瓶。事后绝不承认自己担心过。
+             顺手生意：后厨的麻绳、火把、面包、药草也卖给要出门的杂鱼，但这不是酒馆的本行，开价总比诺艾尔杂货铺贵一截，嫌贵就让他自己去找那个书呆子。
     inventory: [cellar_key, old_map]
     restock: 60
     props:
@@ -497,9 +498,8 @@ npcs:
         80: {item: maggie_crossbow, text: 她吧台下那把上了弦的轻弩（单手就能端平，远近一样准，射完要重新上弦）}
         100: {item: maggie_flask, text: 一只装着她私酿的旧锡酒壶，壶底偷偷刻着"回头见"和一颗小小的心（喝一口回满血，偶尔浑身是劲）}
       # 吧台上的货，价钱由 AI 按建议价浮动
-      sells: [dwarf_stout, elf_mead, dragon_breath, sober_potion, trail_rations]
-      # 可能有：固定货单之外手边说得过去的零碎，说有就能卖，限量（每样每 30 分钟补 1 到 2 件），价钱是参考价的 1.3 到 2 倍（engine.maybe_stock）
-      maybe_sells: [rope, torch, bread, herb]      # 后厨的零碎，药草是她平时收来的
+      # 麻绳、火把、面包、药草是后厨的顺手生意（人设里写了开价比诺艾尔贵）
+      sells: [dwarf_stout, elf_mead, dragon_breath, sober_potion, trail_rations, rope, torch, bread, herb]
       eject_to: south
       # 店里有人倒下时扶起来回满血，按倒下的原因说一句（{name} 倒下的人，{by} 打倒他的怪、人或者吃下的东西）
       revive_lines:
@@ -515,7 +515,6 @@ npcs:
       # 能卖的东西（物品 id），价钱、卖不卖、打不打折都由 AI 看人设和心情定
       sells: [iron_axe, forge_knife, sickle, wooden_shield, leather_cap, leather_armor,
               whetstone, hand_crossbow, lead_shot, grapple_bolt]     # 铁打的：磨刀石、手弩、铅弹、钩索箭（弓不是铁匠的活，只从地牢出）
-      maybe_sells: [torch, bandage]                # 炉子边的火把，给自己烫伤备的布条
       # 现打武器，伤害最多 4（墙上的铁斧是 5）
       creates:
         weapon: {damage: 4}
@@ -543,7 +542,6 @@ npcs:
       # 货架上的东西，价钱由 AI 按建议价浮动
       sells: [rope, torch, tent, recall_crystal, blood_potion,
               bandage, lamp_oil, antidote, light_scroll, smoke_bomb, sling, fire_arrow]   # 探险杂货、解状态、书上学来的小玩意
-      maybe_sells: [holy_water, bread, herb]      # 圣水说是照古书的方子做的，只偶尔有
       # 偶尔进的稀罕货（地牢里的礼物道具）：客人问有什么卖的时判一次 chance，中了这一小时里有一件，
       # 价钱固定是参考价 × markup，只有一件、卖掉就没了；没问就不提（engine.rare_stock）。
       # reluctant 里的她舍不得卖，卖的时候台词不一样；卖出去的书送回给她，她认得出来
