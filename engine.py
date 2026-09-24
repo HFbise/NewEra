@@ -2130,7 +2130,11 @@ def npc_hand(conn: Connection, player_id: UUID, npc: Npc, key: str, price: int, 
         return ActionResult(action="npc_sell", success=False, facts=[str(e)])
 
 
-def npc_sell(conn: Connection, player_id: UUID, npc: Npc, template_id: str, price: Optional[int] = None) -> ActionResult:
+SELL_MAX_COUNT = 10                     # 墙上的货一次最多买几件
+
+
+def npc_sell(conn: Connection, player_id: UUID, npc: Npc, template_id: str, price: Optional[int] = None,
+             count: int = 1) -> ActionResult:
     """NPC 卖一件货给玩家（货不限量，每卖一件新造一件）。报过价就按报的价收；玩家直接下单（没报过价）就按 AI 这回合
     给的价，限在建议价的一半到两倍（没给就按建议价）"""
     try:
@@ -2145,14 +2149,16 @@ def npc_sell(conn: Connection, player_id: UUID, npc: Npc, template_id: str, pric
                 stats = cur.fetchone()
                 offer = {"price": clamp_price(stats, price or base_price(stats))}
             player = load_player(cur, player_id, lock=True)
-            patron = _pay(cur, player, offer["price"], npc)
+            count = max(1, min(SELL_MAX_COUNT, count))
+            patron = _pay(cur, player, offer["price"] * count, npc)
             # 成交了这个报价就作废，再买要重新谈
             cur.execute("update player_npc_relations set offers = offers - %s where player_id = %s and npc_template = %s",
                         (template_id, player_id, npc.template.id))
-            cur.execute("insert into item_instances (template_id, player_id) values (%s, %s)", (template_id, player_id))
+            for _ in range(count):
+                cur.execute("insert into item_instances (template_id, player_id) values (%s, %s)", (template_id, player_id))
             cur.execute("select name from item_templates where id = %s", (template_id,))
-            name = cur.fetchone()["name"]
-        return ActionResult(action="npc_sell", success=True, facts=[_deal(npc, player, name, offer["price"])] + patron)
+            name = cur.fetchone()["name"] + (f" ×{count}" if count > 1 else "")
+        return ActionResult(action="npc_sell", success=True, facts=[_deal(npc, player, name, offer["price"] * count)] + patron)
     except ActionError as e:
         return ActionResult(action="npc_sell", success=False, facts=[str(e)])
 

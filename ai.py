@@ -816,7 +816,8 @@ class GiveDecision(BaseModel):
     give: Optional[str] = None           # 可给列表里的编号（g1、g2），不给就 null
     create: Optional[MadeItem] = None    # 现做一件，不做就 null
     sell: Optional[str] = None           # 卖货清单里已报价的编号（s1、m1），不卖就 null；三样最多填一个
-    price: int = 0                       # give 收多少钱；create 填 0 是白送，填正数是要收钱（先报价）
+    price: int = 0                       # give 收多少钱；create 填 0 是白送，填正数是要收钱（先报价）；sell 是一件的价钱
+    count: int = 1                       # sell 买几件（"两捆麻绳""三杯黑啤"），最多 SELL_MAX_COUNT
     reason: str = ""                     # 简短理由，只用来调试
 
 
@@ -850,7 +851,8 @@ GIVE_SYSTEM = """你在扮演文字 MUD 游戏里的一个 NPC，要决定这一
   吃的喝的填 heal（回血）；是酒（啤酒、烈酒、蜜酒）就填 alcohol true，果汁、茶、水、醒酒汤不填；有毒的填 harm（掉血）；蒙汗药这类填 knockout（被放倒后的样子，四到八个字，接在人名后面读得通，如"昏睡不醒""瘫软在地"）；武器填 damage。数值不能超过这个种类的上限，按你做的东西好坏来定
   price 填 0 就是白送、当场给；填正数就是你开的价：这回合不会当场给，先报价，玩家下一句同意了才成交。有数值的东西按"能现做的种类"里的建议价开，可以看人设、好感上下浮动（引擎限在建议价的一半到两倍）；杂物没有建议价，你自己定
   "你做过的货"是你以前做过、随时能再做的东西：玩家要的是其中一样，就 create 同一个名字（引擎会照原来的样子做），不要说没有
-- sell：卖"卖货清单"里的东西。开过价的按报的价收；墙上的货（s 开头）没开过价的，price 填你这回合收的钱（按建议价浮动）
+- sell：卖"卖货清单"里的东西。开过价的按报的价收；墙上的货（s 开头）没开过价的，price 填你这回合收的钱（按建议价浮动）。
+  price 永远是一件的价钱；玩家要好几件（"两捆麻绳""来三杯"）就在 count 填件数（墙上的货才行，最多 10），不说就是 1
 
 怎么判断：
 - wants：先写玩家这回合点名要的是什么东西，照他的说法写（"绳子""一杯黑啤"）；说"跟他一样的""老规矩"就写你理解的具体东西；只是说成交、同意价钱、没点名要东西就填 null
@@ -872,6 +874,7 @@ class Trade(BaseModel):
     made: Optional[MadeItem] = None      # 现做
     sell_id: Optional[str] = None        # 成交已报价的：卖货的物品 id，或者 "made:名字"
     price: int = 0
+    count: int = 1                       # 卖货清单上的东西一次买几件
 
 
 def made_text(made_before: Optional[list[dict]]) -> str:
@@ -946,7 +949,8 @@ def decide_give(db, view: RoomView, text: str, npc: Npc, giveable: list[ItemInst
     if not out or not (out.give or out.create or out.sell):
         return None, usage
     return Trade(give_id=give_refs[out.give].id if out.give else None, made=out.create,
-                 sell_id=sell_refs[out.sell]["id"] if out.sell else None, price=out.price), usage
+                 sell_id=sell_refs[out.sell]["id"] if out.sell else None, price=out.price,
+                 count=max(1, min(engine.SELL_MAX_COUNT, out.count)) if out.sell and out.sell.startswith("s") else 1), usage
 
 
 def narrate(db, view: RoomView, text: str, results: list[ActionResult],

@@ -129,6 +129,20 @@ def sync(conn, world) -> None:
             cur.execute("insert into spawns (room_id, template_id, respawn_seconds) values (%s, %s, %s)",
                         (rid, item, respawn))
             cur.execute("insert into item_instances (template_id, room_id) values (%s, %s)", (item, rid))
+        # 新加的 NPC（房间 npcs 里有、库里还没有这个模板的实例）：放进去，身上的东西和补货规则一起建好
+        for rid, r in world["rooms"].items():
+            for npc_tid in r.get("npcs", []):
+                cur.execute("select 1 from npcs where template_id = %s", (npc_tid,))
+                if cur.fetchone():
+                    continue
+                n = world["npcs"][npc_tid]
+                cur.execute("insert into npcs (template_id, room_id, hp) values (%s, %s, %s) returning id",
+                            (npc_tid, rid, (n.get("stats") or {}).get("hp")))
+                npc_id = cur.fetchone()[0]
+                for item in n.get("inventory", []):
+                    cur.execute("insert into item_instances (template_id, npc_id) values (%s, %s)", (item, npc_id))
+                    cur.execute("insert into spawns (npc_template, template_id, respawn_seconds) values (%s, %s, %s)",
+                                (npc_tid, item, n.get("restock", DEFAULT_RESPAWN)))
 
 
 def seed(conn, world) -> None:

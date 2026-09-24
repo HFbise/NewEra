@@ -463,7 +463,7 @@ def run_turn(req: CommandReq):
                         elif trade.sell_id.startswith("made:"):
                             results.append(engine.npc_buy_made(conn, pid, npc, trade.sell_id))
                         else:
-                            results.append(engine.npc_sell(conn, pid, npc, trade.sell_id, trade.price))
+                            results.append(engine.npc_sell(conn, pid, npc, trade.sell_id, trade.price, trade.count))
                         now_view = engine.load_view(conn, pid)   # 叙事要看到新拿到的东西和剩下的钱
                         offers = engine.get_offers(conn, pid, npc)
             # NPC 说话单独演一次（只管角色扮演），叙事再把台词原样包进场景
