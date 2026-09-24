@@ -371,14 +371,14 @@ items:
     type: weapon
     slot: hand
     damage: 11
-    props: {price: 150, ranged: true, steady: true, ammo_kind: crossbow, unloaded: maggie_crossbow_empty}
+    props: {price: 150, ranged: true, steady: true, ammo_kind: arrow, unloaded: maggie_crossbow_empty}
   maggie_crossbow_empty:
     name: 麦琪的轻弩（空）
     description: 麦琪的那把轻弩，弦松着，槽里空空的。说"装填"重新上弦才能再射。
     type: weapon
     slot: hand
     damage: 11
-    props: {price: 150, ammo_kind: crossbow, loads: maggie_crossbow}
+    props: {price: 150, ammo_kind: arrow, loads: maggie_crossbow}
   # 莉娜的回礼（好感 100）：伤害按玩家走到过的最深层数定，带一个武器词条，能自己起名（engine._exclusive_blade）
   lina_blade:
     name: 莉娜打的剑

@@ -108,14 +108,14 @@ items:
     type: weapon
     slot: hand
     damage: 10
-    props: {ammo_kind: bow, price: 55, ranged: true, two_handed: true, unloaded: hunting_bow_empty}
+    props: {ammo_kind: arrow, price: 55, ranged: true, two_handed: true, unloaded: hunting_bow_empty}
   hunting_bow_empty:
     name: 猎弓（空）
     description: 弦上没搭箭，得重新搭一支才能射（说"装填"）。
     type: weapon
     slot: hand
     damage: 10
-    props: {ammo_kind: bow, price: 55, two_handed: true, loads: hunting_bow}
+    props: {ammo_kind: arrow, price: 55, two_handed: true, loads: hunting_bow}
   bone_bow:
     name: 骨弓
     description: 骷髅弓手那张缠满蛛丝的骨弓，弓身冰凉，要两只手拉。射向亡灵的箭格外狠；射完要重新搭箭（说"装填"）。
@@ -123,7 +123,7 @@ items:
     slot: hand
     damage: 8
     props:
-      ammo_kind: bow
+      ammo_kind: arrow
       price: 60
       ranged: true
       two_handed: true
@@ -136,7 +136,7 @@ items:
     type: weapon
     slot: hand
     damage: 8
-    props: {ammo_kind: bow, price: 60, two_handed: true, loads: bone_bow}
+    props: {ammo_kind: arrow, price: 60, two_handed: true, loads: bone_bow}
   heavy_crossbow:
     name: 绞盘重弩
     description: 弩手狱卒那把沉重的绞盘弩，要两只手端着，远近一样准，扁铁箭头能打穿铠甲；上一次弦很费劲（说"装填"）。
@@ -144,7 +144,7 @@ items:
     slot: hand
     damage: 13
     props:
-      ammo_kind: crossbow
+      ammo_kind: arrow
       price: 120
       ranged: true
       steady: true
@@ -158,7 +158,7 @@ items:
     type: weapon
     slot: hand
     damage: 13
-    props: {ammo_kind: crossbow, price: 120, two_handed: true, loads: heavy_crossbow, reload_steps: 2}   # 绞盘要摇两次
+    props: {ammo_kind: arrow, price: 120, two_handed: true, loads: heavy_crossbow, reload_steps: 2}   # 绞盘要摇两次
   tower_shield:
     name: 塔盾
     description: 一面几乎有半人高的包铁木盾，举起来能把整个人藏在后面，专挡箭矢、石子和飞过来的东西。
@@ -177,14 +177,14 @@ items:
     type: weapon
     slot: hand
     damage: 8
-    props: {price: 45, ranged: true, ammo_kind: crossbow, unloaded: hand_crossbow_empty}
+    props: {price: 45, ranged: true, ammo_kind: arrow, unloaded: hand_crossbow_empty}
   hand_crossbow_empty:
     name: 手弩（空）
     description: 弦松着，得重新上弦才能射（说"装填"）。
     type: weapon
     slot: hand
     damage: 8
-    props: {price: 45, ammo_kind: crossbow, loads: hand_crossbow}
+    props: {price: 45, ammo_kind: arrow, loads: hand_crossbow}
   repeater_crossbow:
     name: 连弩
     description: 弩身上架着一只木匣，里面码着三支短箭，扳一下机括就能再上一支；三发射完得整匣重装（说"装填"）。要两只手端。
@@ -215,24 +215,25 @@ items:
     props: {price: 35, loads: throwing_knives, recover: true}
 
   # ===================== 远程：特殊弹药（装填时说"用钩索箭装填"，下一发带上它的效果，射出去就用掉）=====================
+  # ammo 是种类：arrow 箭（弓、弩都能装）/ sling 石子（投石索）
   grapple_bolt:
     name: 钩索箭
-    description: 弩箭的箭头是一只三爪铁钩，尾巴拴着细麻绳，射中了一拽，谁也跳不开。弩用。
+    description: 箭头是一只三爪铁钩，尾巴拴着细麻绳，射中了一拽，谁也跳不开。弓、弩都能用。
     type: misc
     stackable: true
     props:
       price: 4
-      ammo: crossbow
+      ammo: arrow
       effects:
         - {when: hit, do: status, kind: restrained, label: 被铁钩咬住，一拽就扯了回来}
   fire_arrow:
     name: 火油箭
-    description: 箭杆前端缠着浸过火油的麻布，射出去之前在火把上一点就着。弓用。
+    description: 箭杆前端缠着浸过火油的麻布，射出去之前在火把上一点就着。弓、弩都能用。
     type: misc
     stackable: true
     props:
       price: 3
-      ammo: bow
+      ammo: arrow
       effects:
         - {when: hit, do: bonus, value: 2}
         - {when: hit, do: bonus, value: 2, vs: [light_averse], label: 火苗一沾身，它尖叫着往后缩}
