@@ -160,6 +160,8 @@ def _template(cur: Cursor, depth: int, kind: str, rank: str, theme: str, size: i
     for flag in ("animal", "light_averse", "undead", "keen"):
         if m.get(flag):
             props[flag] = True
+    if rank == "boss":
+        props["keen"] = True                    # 头目都是警觉的：一进门就发现人，偷袭不了
     if m.get("on_hit"):
         props["on_hit"] = m["on_hit"]           # 打中时几率附带的效果（engine._on_hit）
     cur.execute(

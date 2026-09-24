@@ -80,7 +80,7 @@ ENEMY_EVERY = 2
 
 # 徒手一击毙命、直接打晕：只有敌人没发现你时能偷袭，按隐匿判，难度至少这么高；对方有防备就不可能
 ASSASSINATE_DIFFICULTY = 4
-KEEN_DETECT, KEEN_EXTRA = 0.6, 2        # 警觉的怪在场时每回合被发现的几率至少这么多；对它偷袭暗杀难度 +2
+KEEN_EXTRA = 2                          # 对警觉的怪偷袭暗杀难度 +2（它们一见面就发现人，见 _keen_spotted）
 PRONE_DECISIVE_DIFFICULTY = 3           # 对刚被绊倒在地的下狠手（打晕、断手、一击毙命）难度至少这么高
 
 # 技能判定：难度减技能等级的差值 → 成功率，差值不超过 0 是 SKILL_SURE，比表里最大的还大就必定失败
@@ -907,8 +907,9 @@ def do_move(cur: Cursor, player: Player, view: RoomView, a: Move) -> list[str]:
     # 进门前没人在的区域先把该回来的敌人刷出来（走进去才碰上），进门时还没被发现
     _respawn_npcs(cur, to)
     # 自己走就不再跟着别人
+    spotted = _keen_spotted(cur, to)
     cur.execute("update players set room_id = %s, following = null, stealth = %s, updated_at = now() where id = %s",
-                (to, Jsonb(Stealth(room=to, chance=DETECT_START).model_dump()), player.id))
+                (to, Jsonb(Stealth(room=to, chance=DETECT_START, detected=bool(spotted)).model_dump()), player.id))
     room = load_room(cur, to)
     facts.append(f"{player.name}往{dir_name(a.direction)}走，来到了{room.name}")
     if heal := sum(int(e.get("value", 0)) for e in _fire(cur, player, "enter", "heal")):
@@ -929,9 +930,19 @@ def do_move(cur: Cursor, player: Player, view: RoomView, a: Move) -> list[str]:
         facts += _road_event(cur, player, view, to)
     if names:
         facts.append(f"{'、'.join(names)}跟着{player.name}一起来到了{room.name}")
+        if spotted:
+            cur.execute("update players set stealth = %s where name = any(%s)",
+                        (Jsonb(Stealth(room=to, chance=DETECT_START, detected=True).model_dump()), names))
         if arrived:
             facts += dungeon.arrived(cur, names, dungeon.parse_room(to)[1]) + _torch_floor(cur, names, to)
+    if spotted:
+        facts.append(f"{'、'.join(spotted)}一下子就察觉到了来人")
     return facts
+
+
+def _keen_spotted(cur: Cursor, room_id: str) -> list[str]:
+    """房间里警觉的怪（狼、恶犬、石像鬼、所有头目）：一进门就发现人，没有偷偷摸过去这回事"""
+    return [n.name for n in _enemies(cur, room_id) if n.template.props.get("keen") and n.status is None]
 
 
 # 走路随机事件的累计几率：陷阱、零钱、路边小木匣，剩下是怪声（循声去找就会碰上游荡的怪）
@@ -2138,8 +2149,8 @@ def enemy_turn(conn: Connection, player_id: UUID, actions: list[PlayerAction],
             return stood, False
         facts = []
         if not st.detected:
-            keen = any(n.template.props.get("keen") for n in enemies)     # 狼、恶犬、石像鬼：很难摸到身边
-            if _roll(max(st.chance, KEEN_DETECT) if keen else st.chance):
+            keen = any(n.template.props.get("keen") for n in enemies)     # 狼、恶犬、石像鬼、头目：藏不住
+            if keen or _roll(st.chance):
                 st.detected, st.hidden = True, False
                 facts.append(f"{'、'.join(n.name for n in enemies)}发现了{player.name}")
             elif not st.hidden:
