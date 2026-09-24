@@ -614,6 +614,29 @@ def _weapons(cur: Cursor, player: Player) -> list[ItemInstance]:
     return [i for i in _worn(cur, player) if i.template.type == "weapon" and i.equipped_slot in SLOT_CHOICES["hand"]]
 
 
+# ============ 伤害怎么被防御挡掉 ============
+# 按挨打的一方分：挨打的是玩家（怪打人、NPC 打人、决斗）按比例减伤，每一点防御都有用、越往上越少；
+# 挨打的是怪和 NPC 还是减法（怪的防御是我们定的，不会像玩家那样被装备叠上去，重甲怪就该硬，破甲才有价值）。
+# 中毒流血每回合掉的血、陷阱、事件失败、吃了有毒的东西都是固定值，不看防御（这正是对付高防玩家的手段）。
+# 玩家挨打的结算顺序（以后加效果照这个顺序插）：
+#   1 攻击方的破甲先扣掉防御  2 伤害 = 攻击 × K ÷ (K + 防御)  3 小数按几率进位（2.5 就一半 2 一半 3）
+#   4 防守方的减伤（guard，比如项圈 -1）  5 最少 1 点
+DEF_K = 4
+
+
+def def_k(depth: int = 0) -> int:
+    """比例减伤的常数：越大防御越不顶用。先写死，以后当深层难度的旋钮（比如 4 + 层数/5）"""
+    return DEF_K
+
+
+def hurt_player_by(atk: int, defense: int, depth: int = 0, pierce: int = 0, guard: int = 0) -> int:
+    """玩家挨一下打实际掉多少血（顺序见上面）"""
+    k = def_k(depth)
+    x = atk * k / (k + max(0, defense - pierce))
+    dmg = int(x) + (random.random() < x - int(x))
+    return max(1, dmg - guard)
+
+
 def _defense(cur: Cursor, player: Player) -> int:
     """基础防御加上所有装备的防御（护甲、护符、以后的盾）"""
     corrode = _effect(player, "corrode")
@@ -1433,7 +1456,8 @@ def _npc_strike(cur: Cursor, player: Player, npc: Npc, verb: str, chance: float 
     atk = npc.template.attack + (math.floor(_dark_factor(light) + 0.5) if dungeon.is_dungeon(npc.room_id) else 0)
     if npc.template.props.get("light_averse") and light >= LIGHT_BRIGHT:
         atk -= 1                                # 怕光的怪在亮处缩手缩脚
-    dmg = max(1, atk - _defense(cur, player))
+    depth = npc.template.props.get("dungeon", {}).get("depth", 0)
+    dmg = hurt_player_by(atk, _defense(cur, player), depth)
     player.hp = max(0, player.hp - dmg)
     cur.execute("update players set hp = %s, updated_at = now() where id = %s", (player.hp, player.id))
     facts = [f"{npc.name}{verb}，对{player.name}造成 {dmg} 点伤害", f"{player.name} HP {player.hp}/{player.max_hp}"]
@@ -1587,11 +1611,14 @@ def _light(cur: Cursor, room_id: str, env: Optional[dict] = None, player: Option
     env = _room_env(cur, room_id) if env is None else env
     level = _base_light(env)
     if env and level < 100:
-        cur.execute("""select max((t.props->>'light')::int) as torch
+        # 点着的火把（props.burning）取最亮的一支，永久光源（矿工灯、提灯）也只取最亮的一件，两样叠加
+        cur.execute("""select max((t.props->>'light')::int) filter (where t.props ? 'burning') as torch,
+                              max((t.props->>'light')::int) filter (where not t.props ? 'burning') as lamp
                        from item_instances i join item_templates t on t.id = i.template_id
                        join players p on p.id = i.player_id
                        where p.room_id = %s and t.props ? 'light' and i.equipped_slot is not null""", (room_id,))
-        level += cur.fetchone()["torch"] or 0
+        row = cur.fetchone()
+        level += (row["torch"] or 0) + (row["lamp"] or 0)
     return max(0, min(100, level))
 
 
@@ -1810,7 +1837,7 @@ def do_attack(cur: Cursor, player: Player, view: RoomView, a: Attack) -> list[st
                          - _poisoned(player) + _prone_bonus(target, d))):
             return [f"{player.name}用{how}攻击{target.name}，" + (f"隔着 {distance_word(d)}够不着" if d not in MELEE_HIT
                                                                 else f"隔着 {distance_word(d)}，没打中")]
-        dmg = _bled(player, max(1, power - _defense(cur, target)))
+        dmg = hurt_player_by(_bled(player, power), _defense(cur, target))
         facts, down = _hurt_player(cur, target, dmg, "player", player.name)
         return [f"{player.name}用{how}攻击{target.name}，造成 {dmg} 点伤害"] + facts + _duel_over(cur, down)
 
