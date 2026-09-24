@@ -694,11 +694,14 @@ def do_move(cur: Cursor, player: Player, view: RoomView, a: Move) -> list[str]:
     return facts
 
 
-ROAD_TRAP, ROAD_COINS, ROAD_WANDERER = 0.5, 0.75, 0.9    # 走路随机事件的累计几率：陷阱、零钱、跟进来的怪，剩下是怪声
+# 走路随机事件的累计几率：陷阱、零钱、路边小木匣，剩下是怪声（循声去找就会碰上游荡的怪）
+ROAD_TRAP, ROAD_COINS, ROAD_CHEST = 0.45, 0.65, 0.8
+ROAD_CHEST_ITEMS = ["herb", "bread", "torch", "rope"]     # 路边小木匣里的东西：普通补给，不给好东西
 
 
 def _road_event(cur: Cursor, player: Player, view: RoomView, to: str) -> list[str]:
-    """地牢里走路时碰上的事。陷阱：察觉发现就绕过去，没发现挨一下（活下来耐性一定涨）"""
+    """地牢里走路时碰上的事。陷阱：察觉发现就绕过去，没发现挨一下（活下来耐性一定涨）。
+    怪声：在房间上记一笔，有人循声去找（搜索）就引出一只游荡的怪"""
     f = dungeon.floor_info(cur, to)
     depth, r = f["depth"], random.random()
     if r < ROAD_TRAP:
@@ -713,10 +716,14 @@ def _road_event(cur: Cursor, player: Player, view: RoomView, to: str) -> list[st
         coins = max(1, round(random.randint(1, 3) * 1.2 ** depth))
         cur.execute("update players set gold = gold + %s where id = %s", (coins, player.id))
         return [f"{player.name}在路边的碎石里踢到了 {coins} 枚古币，顺手捡了起来"]
-    if r < ROAD_WANDERER:
-        name = dungeon.spawn_wanderer(cur, to)
-        return [f"一只{name}从暗处悄悄跟着{player.name}进了这里"]
-    return [random.choice(dungeon.data()["themes"][f["theme"]]["eerie"])]
+    if r < ROAD_CHEST:
+        item = random.choice(ROAD_CHEST_ITEMS)
+        _give_player_new(cur, player, item)
+        cur.execute("select name from item_templates where id = %s", (item,))
+        return [f"{player.name}在路边的碎石下翻出一只烂木匣，里面有一件{cur.fetchone()['name']}，顺手收下了"]
+    cur.execute("""update rooms set props = props || '{"noise": true}' where id = %s""", (to,))
+    return [random.choice(dungeon.data()["themes"][f["theme"]]["eerie"]),
+            "声音像是就在这附近，要是循声去找（搜索），也许能找到它的来源"]
 
 
 # 扎营：回 max_hp × CAMP_BASE，带帐篷再加 CAMP_TENT（用掉一顶），生存判定成功再加 CAMP_SURVIVAL，空房里整体 ×CAMP_EMPTY
@@ -1412,6 +1419,14 @@ def do_search(cur: Cursor, player: Player, view: RoomView, a: Search) -> list[st
     """四处搜寻：死了的敌人不用等复活时间，直接找出来；房间 forage 里的东西（草药）找到放进背包，
     有冷却的每个人各算各的，不先到先得"""
     facts = [f"{player.name}尝试：{a.description or '四处搜寻'}"]
+    # 地牢里走路时听见的怪声：循声找过去，引出一只游荡的怪，它直接扑上来（已经发现了人）
+    if view.room.props.get("noise"):
+        cur.execute("update rooms set props = props - 'noise' where id = %s", (player.room_id,))
+        name = dungeon.spawn_wanderer(cur, player.room_id)
+        st = _stealth(player)
+        st.detected, st.hidden = True, False
+        _save_stealth(cur, player, st)
+        return facts + [f"{player.name}循着声音找过去，一只{name}从暗处扑了出来"]
     if found := _respawn_npcs(cur, player.room_id, found=True):
         facts.append(f"{player.name}发现了{'、'.join(found)}")
     elif here := [n.name for n in view.npcs if n.template.hostile]:
