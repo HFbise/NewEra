@@ -253,9 +253,10 @@ items:
     props: {price: 2}
   torch:
     name: 火把
-    description: 缠着浸油麻布的木火把，点着了能照亮一小片地方，也能拿来吓唬怕火的东西。
-    type: misc
-    props: {price: 2, light: true}
+    description: 缠着浸油麻布的木火把，得拿在手上点着才照得亮（占一只手），也能拿来烧、拿来吓唬怕火的东西。在地牢里点着大约能烧 30 回合。
+    type: weapon
+    damage: 2
+    props: {price: 2, light: true, burn: 30}   # 拿在手上才亮；在地牢里每回合烧掉 1，烧完就没了（engine._burn_torch）
   tent:
     name: 帐篷
     description: 卷成一捆的帆布小帐篷，在野外或地牢里扎营时能睡得安稳些。

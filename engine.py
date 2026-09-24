@@ -1575,7 +1575,8 @@ def _light(cur: Cursor, room_id: str, env: Optional[dict] = None, player: Option
     level = _base_light(env)
     if env and level < 100:
         cur.execute("""select 1 from item_instances i join item_templates t on t.id = i.template_id
-                       join players p on p.id = i.player_id where p.room_id = %s and t.props ? 'light' limit 1""",
+                       join players p on p.id = i.player_id
+                       where p.room_id = %s and t.props ? 'light' and i.equipped_slot is not null limit 1""",
                     (room_id,))
         if cur.fetchone():
             level += TORCH_LIGHT
@@ -2468,7 +2469,32 @@ def execute_all(conn: Connection, view: RoomView, actions: list[PlayerAction]) -
 def _tick(conn: Connection, player_id: UUID, unit: str) -> list[str]:
     with conn.transaction():
         cur = _cursor(conn)
-        return _tick_effects(cur, load_player(cur, player_id, lock=True), unit)
+        player = load_player(cur, player_id, lock=True)
+        return _tick_effects(cur, player, unit) + (_burn_torch(cur, player) if unit == "turn" else [])
+
+
+TORCH_WARN = 5                          # 火把还剩这么多回合时提醒一句
+
+
+def _burn_torch(cur: Cursor, player: Player) -> list[str]:
+    """地牢里手上点着的火把（props.burn）每回合烧掉 1，烧完就没了。村里不烧"""
+    if not dungeon.is_dungeon(player.room_id):
+        return []
+    facts = []
+    for item in _worn(cur, player):
+        total = _prop(item, "burn")
+        if not total:
+            continue
+        left = item.props.get("burn_left", total) - 1
+        if left <= 0:
+            cur.execute("delete from item_instances where id = %s", (item.id,))
+            facts.append(f"{player.name}手上的{item.name}烧到了头，熄灭了")
+        else:
+            cur.execute("update item_instances set props = props || jsonb_build_object('burn_left', %s::int) where id = %s",
+                        (left, item.id))
+            if left == TORCH_WARN:
+                facts.append(f"{player.name}手上的{item.name}火苗越来越小，大概只能再烧 {left} 回合了")
+    return facts
 
 
 def _keeper_eject(conn: Connection, view: RoomView) -> list[str]:

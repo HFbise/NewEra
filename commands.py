@@ -180,6 +180,10 @@ def _parse_one(view: RoomView, t: str) -> dict:
     if m := re.fullmatch(r"(?:drop|扔掉|丢掉|放下|扔|丢)\s*(.+)", t, re.I):
         return {"action": "drop", "item": _find(view, m[1], "inv")}
 
+    # 点火把就是把火把拿在手上
+    if re.fullmatch(r"(?:点|点上|点燃|举起|举着|拿起|举)火把", t) and (torch := next(
+            (i for i in view.inventory if i.template.props.get("light")), None)):
+        return {"action": "equip", "item": {uid: ref for ref, uid in view.refs.items()}[torch.id]}
     if m := re.fullmatch(r"(?:equip|wear|wield|装备|穿上|戴上)\s*(.+)", t, re.I):
         return {"action": "equip", "item": _find(view, m[1], "inv")}
     if m := re.fullmatch(r"(?:unequip|卸下|脱下|摘下|脱掉|摘掉)\s*(.+)", t, re.I):
