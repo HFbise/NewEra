@@ -1197,8 +1197,7 @@ def narrate(db, view: RoomView, text: str, results: list[ActionResult],
             if any(word in f for r in results for f in r.facts) and word not in out.narrative:
                 if not last:
                     raise ValueError(f"facts 里有{word}，叙事一定要写到它：它是什么样、有什么用")
-                out.narrative = out.narrative.rstrip() + "
-" + next(f for r in results for f in r.facts if word in f)
+                out.narrative = out.narrative.rstrip() + "\n" + next(f for r in results for f in r.facts if word in f)
         # 4.5 常用英文单引号包台词，换成中文引号
         out.narrative = re.sub(r"'([^'\n]+)'", r"“\1”", out.narrative)
         # 台词是单独演好的：叙事得原样用上，没写进去就重写一次，还没写就补在末尾
