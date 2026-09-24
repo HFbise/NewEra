@@ -263,6 +263,7 @@ create table dispenser_log (
   room_id     text not null references rooms(id) on delete cascade,
   key         text not null,
   taken_at    timestamptz not null default now(),
+  fails       int not null default 0,            -- 带判定的取用处失败了几次（key 以 #fails 结尾的那条），每次失败难度降一级
   primary key (player_id, room_id, key)
 );
 

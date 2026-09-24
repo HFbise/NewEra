@@ -403,6 +403,9 @@ def parse_intent(db, view: RoomView, text: str) -> tuple[Optional[list], dict]:
                 d["skill"] = SKILL_KEYS.get(d["skill"].strip(), d["skill"].strip().lower())
                 if d["skill"] not in SKILL_NAMES:
                     d.pop("skill")
+            # 模型偶尔把说明原文抄进 description（"四处搜寻、找找有没有哥布林……都是 search"）
+            if "都是" in d.get("description", "") and d["action"] in d.get("description", ""):
+                d["description"] = "四处搜寻" if d["action"] == "search" else ""
             for field in ("difficulty", "escape", "tier", "status"):
                 if isinstance(d.get(field), str):
                     d[field] = JUDGE_WORDS.get(d[field].strip().lower(), d[field].strip().lower())

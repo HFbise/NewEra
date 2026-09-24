@@ -80,6 +80,7 @@ ENEMY_EVERY = 2
 
 # 徒手一击毙命、直接打晕：只有敌人没发现你时能偷袭，按隐匿判，难度至少这么高；对方有防备就不可能
 ASSASSINATE_DIFFICULTY = 4
+KEEN_DETECT, KEEN_EXTRA = 0.6, 2        # 警觉的怪在场时每回合被发现的几率至少这么多；对它偷袭暗杀难度 +2
 PRONE_DECISIVE_DIFFICULTY = 3           # 对刚被绊倒在地的下狠手（打晕、断手、一击毙命）难度至少这么高
 
 # 技能判定：难度减技能等级的差值 → 成功率，差值不超过 0 是 SKILL_SURE，比表里最大的还大就必定失败
@@ -1153,13 +1154,20 @@ def _take_from(cur: Cursor, player: Player, view: RoomView, d: Dispenser) -> lis
             raise ActionError(f"{d.container}{d.where}已经没有{player.name}能拿的东西了")
     facts = []
     if d.skill:
-        ok, facts = _check(cur, player, view, d.skill, d.difficulty)
+        # 跟挣脱一样：每失败一次难度降一级，多试几次总能成（最多挨几下）
+        cur.execute("select fails from dispenser_log where player_id = %s and room_id = %s and key = %s",
+                    (player.id, d.room, f"{d.key}#fails"))
+        fails = (cur.fetchone() or {}).get("fails", 0)
+        ok, facts = _check(cur, player, view, d.skill, max(1, d.difficulty - fails))
         if not ok:
+            cur.execute("""insert into dispenser_log (player_id, room_id, key, fails) values (%s, %s, %s, 1)
+                           on conflict (player_id, room_id, key) do update set fails = dispenser_log.fails + 1""",
+                        (player.id, d.room, f"{d.key}#fails"))
             facts = [f"{player.name}想从{d.container}{d.where}取{d.item_name}"] + facts + [d.fail or "没能成功"]
             if d.fail_damage:
                 hurt, _ = _hurt_player(cur, player, d.fail_damage, "other", d.container)
                 facts += [f"{player.name}受到 {d.fail_damage} 点伤害"] + hurt
-            return facts
+            return facts + ["摸到了点门道，下次会顺手一些"]
     if d.once:
         # 拿过一次就没了：并发时靠主键挡住第二次
         cur.execute("""insert into dispenser_log (player_id, room_id, key) values (%s, %s, %s)
@@ -2124,7 +2132,8 @@ def enemy_turn(conn: Connection, player_id: UUID, actions: list[PlayerAction],
             return stood, False
         facts = []
         if not st.detected:
-            if _roll(st.chance):
+            keen = any(n.template.props.get("keen") for n in enemies)     # 狼、恶犬、石像鬼：很难摸到身边
+            if _roll(max(st.chance, KEEN_DETECT) if keen else st.chance):
                 st.detected, st.hidden = True, False
                 facts.append(f"{'、'.join(n.name for n in enemies)}发现了{player.name}")
             elif not st.hidden:
@@ -2337,7 +2346,7 @@ def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]
                 facts.append(f"{target.name}有防备，想这样一下制住{'它' if is_npc else '他'}根本不可能")
                 return facts + (_npc_counter(cur, player, target) if is_npc else [])
             else:
-                skill, diff = "stealth", max(diff, ASSASSINATE_DIFFICULTY)
+                skill, diff = "stealth", max(diff, ASSASSINATE_DIFFICULTY) + (KEEN_EXTRA if target.template.props.get("keen") else 0)
                 facts.append(f"{target.name}还没发现{player.name}，可以出其不意地偷袭")
                 tier, finisher = a.tier, True       # 偷袭得手不受徒手最多轻伤的限制
     if harmless_prank:
@@ -2633,6 +2642,7 @@ def _stele(cur: Cursor, npc: Npc, player: Player) -> list[str]:
 # 收购：做生意的 NPC（props.buys.likes 是她用得上的种类）什么都收，按参考价（base_price）的一定比例给钱：
 # 用得上的 BUY_LIKED，别的 BUY_OTHER，好感每 10 点再多 BUY_AFFINITY（最多 ±BUY_AFFINITY_MAX）。钥匙、任务要交的东西不收
 BUY_LIKED, BUY_OTHER = 0.6, 0.3
+BUY_GIFT = 0.2                          # 礼物道具（矿石、古酒、古书）谁收都只给两成：它的价值在送人换好感
 BUY_AFFINITY, BUY_AFFINITY_MAX = 0.02, 0.1
 
 
@@ -2656,7 +2666,8 @@ def item_stats(item: ItemInstance) -> dict:
 def buy_price(npc: Npc, item: ItemInstance, affinity: int) -> int:
     """这个 NPC 收这件东西给多少钱"""
     liked = item_kinds(item) & set(npc.template.props.get("buys", {}).get("likes", []))
-    rate = (BUY_LIKED if liked else BUY_OTHER) + max(-BUY_AFFINITY_MAX, min(BUY_AFFINITY_MAX, affinity // 10 * BUY_AFFINITY))
+    rate = (BUY_GIFT if _prop(item, "gift") else BUY_LIKED if liked else BUY_OTHER) \
+        + max(-BUY_AFFINITY_MAX, min(BUY_AFFINITY_MAX, affinity // 10 * BUY_AFFINITY))
     return max(1, round(base_price(item_stats(item)) * rate)) * item.quantity
 
 

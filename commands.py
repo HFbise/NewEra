@@ -159,7 +159,7 @@ def _parse_one(view: RoomView, t: str) -> dict:
     # 地牢里听见怪声："循着声音去找""去看看是什么声音"
     if re.search(r"循.{0,2}声|顺着声音|找.{0,4}声音|声音.{0,6}(找|看看)", t):
         return {"action": "search", "description": "循着声音找过去"}
-    if re.fullmatch(r"搜索|搜寻|搜查|找找|四处找找|search", t, re.I):
+    if re.fullmatch(r"(?:搜索|搜寻|搜查|找找)+|四处找找|search", t, re.I):
         return {"action": "search", "description": "四处搜寻"}
     if re.fullmatch(r"闪避|闪躲|躲闪|闪开|dodge", t, re.I):
         return {"action": "dodge", "description": "摆好架势，准备闪避"}

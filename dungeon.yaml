@@ -20,6 +20,7 @@
 #
 # 怪物数值按层数算（dungeon.monster_stats），这里只写跟普通怪比的倍率和加减：
 #   hp 血量倍率、atk 攻击加减、def 防御加减；animal: true 是野兽（以后驯兽能让它避战）；
+#   keen: true 是警觉的怪（靠嗅觉、一动不动地守着）：它在场时每回合被发现的几率至少 60%，对它偷袭暗杀难度 +2；
 #   undead: true 是亡灵（圣水、银匕首对它们特别有效）；light_averse: true 是怕光的怪，光亮 70 以上攻击 -1；
 #   on_hit 打中时几率附带：poison 中毒（每回合掉血、命中降低）/ bleed 流血（每个动作掉血、伤害降低）/
 #     blind 看不清（光亮算 0）/ corrode 腐蚀（防御、血量上限临时降低）/ restrained 缠住 / prone 撞倒
@@ -638,6 +639,7 @@ monsters:
     hp: 0.7
     def: 2
   dungeon_hound:
+    keen: true
     name: 地牢恶犬
     description: 瘦得肋骨根根分明的大黑狗，脖子上还拴着半截铁链，眼睛是浑浊的黄色。
     persona: 被饿了太久，闻到活人味就狂吠着冲上来。
@@ -646,6 +648,7 @@ monsters:
     atk: 1
     animal: true
   cave_wolf:
+    keen: true
     name: 苍白狼
     description: 一头毛色灰白的大狼，眼睛是没有瞳孔的乳白色，靠嗅觉在黑暗里找猎物。
     persona: 成群狩猎，先绕着人转圈，找到破绽就扑上来咬腿。
@@ -705,6 +708,7 @@ monsters:
     atk: 1
     light_averse: true
   stone_gargoyle:
+    keen: true
     name: 石像鬼守卫
     description: 一尊蹲在书架顶上的石像鬼，翅膀收拢，爪子抓着书架边缘，眼睛是两颗暗红的宝石。
     persona: 一动不动地守着，有人靠近书架就扑下来，石头身子又硬又沉。

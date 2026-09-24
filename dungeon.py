@@ -157,7 +157,7 @@ def _template(cur: Cursor, depth: int, kind: str, rank: str, theme: str, size: i
     name = m["name"] if rank != "elite" else f"凶悍的{m['name']}"
     description = m["description"] + ("它比同类更壮、更凶，身上带着好几道旧伤。" if rank == "elite" else "")
     props = {"on_death": {"gold": _gold(depth, rank)}, "dungeon": {"depth": depth, "rank": rank}}
-    for flag in ("animal", "light_averse", "undead"):
+    for flag in ("animal", "light_averse", "undead", "keen"):
         if m.get(flag):
             props[flag] = True
     if m.get("on_hit"):
@@ -274,7 +274,8 @@ def _make_floor(cur: Cursor, run: UUID, depth: int, above: Optional[str], size: 
             # 事件房的东西跟酒馆武器桶一样是"取用处"：每人一次，要过技能判定（难度随层数涨）
             take = dict(event["take"], description=event["description"], once=True, repeat=True)
             if take.get("skill"):
-                take["difficulty"] = take.get("difficulty", 2) + depth // 4
+                # 每 6 层难一级：大约跟玩家走到这层时的技能等级对齐（比等级高 2，起步 60%）
+                take["difficulty"] = take.get("difficulty", 2) + depth // 6
             props["dispensers"] = {"event": take}
         cur.execute("insert into rooms (id, name, description, details, props) values (%s, %s, %s, %s, %s)",
                     (rid, f"第 {depth} 层·{text['name']}", text["description"], text.get("details", ""), Jsonb(props)))
