@@ -30,6 +30,11 @@ BACK = {"north": "south", "south": "north", "west": "east", "east": "west"}
 # 房间里的补给：空房搜索可能找到药草（每人每层一次），宝箱房有一袋古币和药草
 EMPTY_FORAGE = [{"item": "herb", "chance": 0.5, "cooldown": 86400}]
 FEATURE_RESPAWN = 86400                 # 地牢里的环境物件用掉就没了（地牢活不到这么久）
+# 光亮 0~100：主题的自然光亮（dungeon.yaml themes.light）+ 房间明暗（bright +30 / dim 0 / dark -20），
+# 点着的灯（火盆、烛台）每盏 +LAMP_LIGHT，带火把的人在场 +engine.TORCH_LIGHT。越暗怪越强、钱越多（engine._dark_factor）
+LIGHT_OFFSET = {"bright": 30, "dim": 0, "dark": -20}
+LAMP_LIGHT = 20
+STONE_LIGHT = 90
 ROAD_EVENT_CHANCE = 0.15                # 地牢里两个房间之间走动时碰上随机事件的几率（engine._road_event）
 
 _data: Optional[dict] = None
@@ -90,6 +95,8 @@ def _template(cur: Cursor, depth: int, kind: str, rank: str, theme: str, size: i
     for flag in ("animal", "light_averse"):
         if m.get(flag):
             props[flag] = True
+    if m.get("on_hit"):
+        props["on_hit"] = m["on_hit"]           # 打中时几率附带的效果（engine._on_hit）
     cur.execute(
         """insert into npc_templates (id, name, description, persona, hostile, max_hp, attack, defense, props)
            values (%s, %s, %s, %s, true, %s, %s, %s, %s) on conflict (id) do nothing""",
@@ -180,8 +187,10 @@ def _make_floor(cur: Cursor, run: UUID, depth: int, above: Optional[str], size: 
                 else theme[kind] if kind in ("entry", "stairs", "treasure")
                 else pool.pop() if pool else random.choice(theme["rooms"]))
         rid = _room_id(run, depth, cell)
+        light = (STONE_LIGHT if kind == "entry" and is_stone(depth)
+                 else theme.get("light", 35) + LIGHT_OFFSET.get(text.get("light", "dim"), 0))
         props = {"dungeon": {"depth": depth, "theme": theme_key, "kind": kind},
-                 "env": {"light": text.get("light", "dim"), "ground": text.get("ground", "normal"),
+                 "env": {"light": max(0, min(100, light)), "ground": text.get("ground", "normal"),
                          "cover": bool(text.get("cover"))}}
         if kind == "entry" and is_stone(depth):
             props["stone"] = True
@@ -214,10 +223,10 @@ def _make_floor(cur: Cursor, run: UUID, depth: int, above: Optional[str], size: 
                 if ft.get("lamp"):
                     lamps.append(f"f{i}")
             if lamps:
-                # 点着火盆、烛台的房间亮一级；灯被拿去砸人就暗下来（engine.do_stunt）
-                cur.execute("""update rooms set props = jsonb_set(jsonb_set(props, '{env,lamps}', %s),
-                                 '{env,light}', to_jsonb((case props->'env'->>'light' when 'dark' then 'dim' else 'bright' end)::text))
-                               where id = %s""", (Jsonb(lamps), rid))
+                # 点着的火盆、烛台让房间更亮；灯被拿去砸人就暗下来（engine.do_stunt）
+                cur.execute("""update rooms set props = jsonb_set(jsonb_set(props, '{env,lamps}', %s), '{env,light}',
+                                 to_jsonb(least(100, (props->'env'->>'light')::int + %s)))
+                               where id = %s""", (Jsonb(lamps), LAMP_LIGHT * len(lamps), rid))
         if kind == "combat":
             count = random.randint(1, min(3, 1 + depth // 8))
             ranks = ["elite" if i == 0 and random.random() < min(0.35, 0.02 * depth) else "normal" for i in range(count)]
@@ -229,7 +238,9 @@ def _make_floor(cur: Cursor, run: UUID, depth: int, above: Optional[str], size: 
                    theme_key, size)
             cur.execute("insert into room_exits (room_id, direction, to_room) values (%s, 'down', %s)", (rid, GATE))
         elif kind == "treasure":
-            coins = round(random.randint(8, 15) * 1.2 ** depth) * size      # 捡的人会分给在场的队友
+            # 越暗的房间钱越多（按房间本来的光亮，不按后来点没点灯）
+            dark = (50 - (theme.get("light", 35) + LIGHT_OFFSET.get(theme["treasure"].get("light", "dim"), 0))) / 50
+            coins = round(random.randint(8, 15) * 1.2 ** depth * (1 + 0.5 * dark)) * size   # 捡的人会分给在场的队友
             cur.execute("insert into item_instances (template_id, room_id, props) values ('gold_pouch', %s, %s)",
                         (rid, Jsonb({"gold": coins})))
             cur.execute("insert into item_instances (template_id, room_id) values ('herb', %s)", (rid,))
@@ -339,14 +350,14 @@ def cleanup(cur: Cursor) -> None:
         cur.execute("delete from dungeon_runs where id = %s", (row["id"],))
 
 
-LIGHT_WORDS = {"bright": "光线明亮", "dim": "光线昏暗，看东西有些吃力", "dark": "一片漆黑，几乎看不见东西"}
+def light_word(light: int) -> str:
+    return ("明亮" if light >= 70 else "昏暗但看得清" if light >= 50 else "昏暗，看东西吃力" if light >= 20
+            else "几乎一片漆黑")
 
 
-def env_text(env: dict, light: str) -> str:
-    """给 AI 看的环境说明（写进房间细节）：light 是算上火把之后的光线"""
-    parts = [LIGHT_WORDS.get(light, "")]
-    if env.get("light") == "dark" and light != "dark":
-        parts[0] = "本来一片漆黑，有人带着火把，勉强能看清周围"
+def env_text(env: dict, light: int) -> str:
+    """给 AI 看的环境说明（写进房间细节）：light 是算上灯、火把之后的光亮"""
+    parts = [f"光亮 {light}/100，{light_word(light)}"]
     if env.get("ground") == "water":
         parts.append("地上积水泥泞，行动不便，很难灵活闪躲，也不好逃跑")
     if env.get("cover"):

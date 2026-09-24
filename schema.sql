@@ -77,6 +77,7 @@ create table players (
   gold        int not null default 0 check (gold >= 0),       -- 金币：打怪掉，跟 NPC 买东西花
   deepest_floor int not null default 0,          -- 到过远古地牢最深第几层（地窖石碑排行榜）
   waypoints   int[] not null default '{}',       -- 到过的传送石在第几层，能从地窖直接传送过去
+  effects     jsonb not null default '[]',       -- 中毒、流血、看不清、腐蚀（schema.Effect 列表，engine 负面效果部分）
   created_at  timestamptz not null default now(),
   updated_at  timestamptz not null default now()
 );

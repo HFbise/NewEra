@@ -445,6 +445,21 @@ class Status(BaseModel):
                                      "prone": "倒在地上，还没爬起来"}[self.kind]
 
 
+EffectKind = Literal["poison", "bleed", "blind", "corrode"]
+
+
+class Effect(BaseModel):
+    """怪打中时附带的负面效果，存在 players.effects（jsonb 列表），跟 status 可以同时有好几个。
+    poison 中毒：每回合（每条消息）掉 value 血、命中降低；bleed 流血：每个动作掉 value 血、伤害降低；
+    blind 看不清：这期间光亮算 0；corrode 腐蚀：防御 -value、血量上限临时 -hp。left 是还剩几回合（流血是几个动作）"""
+    kind: EffectKind
+    value: int = 1
+    left: int = 1
+    label: str = ""
+    source: str = ""                    # 谁弄的（倒下时记原因）
+    hp: int = 0                         # 腐蚀临时扣掉的血量上限，消退时还回去
+
+
 class Feature(BaseModel):
     """可利用地形：world.yaml 里声明的、能拿来做文章的环境物件（松动的大石头）"""
     id: UUID
@@ -470,6 +485,7 @@ class Player(BaseModel):
     stealth: Optional["Stealth"] = None # 在有敌人的地方有没有被发现
     skills: dict[str, int] = {}         # 每个技能攒了几次熟练（有风险的成功），等级由它算出来
     drunk: bool = False                 # 喝醉了（players.drunk_until 没过）：说话含糊，判定成功率降低
+    effects: list[Effect] = []          # 中毒、流血、看不清、腐蚀（engine 的效果部分）
 
 
 class Stealth(BaseModel):

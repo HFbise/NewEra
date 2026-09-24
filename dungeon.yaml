@@ -20,18 +20,22 @@
 #
 # 怪物数值按层数算（dungeon.monster_stats），这里只写跟普通怪比的倍率和加减：
 #   hp 血量倍率、atk 攻击加减、def 防御加减；animal: true 是野兽（以后驯兽能让它避战）；
-#   light_averse: true 是怕光的怪，在明亮的房间里攻击 -1
+#   light_averse: true 是怕光的怪，光亮 70 以上攻击 -1；
+#   on_hit 打中时几率附带：poison 中毒（每回合掉血、命中降低）/ bleed 流血（每个动作掉血、伤害降低）/
+#     blind 看不清（光亮算 0）/ corrode 腐蚀（防御、血量上限临时降低）/ restrained 缠住 / prone 撞倒
 #
 # 环境（房间描写里的 light / ground / cover）：
-#   light  bright 明亮 / dim 昏暗（默认）/ dark 漆黑：越暗玩家普通攻击越难打中，漆黑里做花样难度 +1、躲藏容易 1 级；
-#          房间里有人带着火把（props.light），漆黑算昏暗
+#   光亮 0~100 = 主题的 light（自然光亮）+ 房间的 light（bright +30 / dim 0 / dark -20）+ 点着的灯每盏 20 + 有人带火把 30。
+#          低于 50 普通攻击命中开始打折，0 时只剩 5%；低于 20 做花样难度 +1、躲藏容易 1 级；
+#          越暗怪越凶（光亮 25 以下攻击 +1，100 攻击 -1）、钱越多（最多 1.5 倍，最亮 0.5 倍）
 #   ground water 积水泥泞：闪避效果减半，逃跑难度 +1
 #   cover  true 有掩体：躲藏容易 1 级
-#   环境物件 lamp: true（火盆、烛台）：被拿来砸人用掉之后，房间暗一级；房间里放了灯，光线至少是昏暗、昏暗的变明亮
+#   环境物件 lamp: true（火盆、烛台）：点着时房间光亮 +20，被拿来砸人用掉之后灯灭了、光亮 -20
 
 themes:
   mine:
     name: 远古矿坑
+    light: 30                   # 自然光亮 0~100
     intro: 脚下的石阶变成了粗糙的矿道，空气里是陈年的煤灰和铁锈味，远处隐约有滴水声，像是有什么东西还在这里挖着。
     entry:
       name: 矿道入口
@@ -97,12 +101,14 @@ themes:
       name: 狗头人工头
       description: 比别的狗头人高出一头，披着用矿车铁皮敲成的护甲，手里拎着一把沾满血锈的鹤嘴锄。
       persona: 暴躁，嗓门大，把闯进矿坑的人当成偷矿的贼，会先吼叫着让手下围上来。
+      on_hit: {kind: prone, chance: 0.3, label: 被鹤嘴锄撞翻在地}
       hp: 1.2
       atk: 0
       def: 1
 
   graveyard:
     name: 地下坟场
+    light: 25                   # 自然光亮 0~100
     intro: 石阶尽头是一片低矮的墓穴，空气冷得发干，墙缝里渗出一股陈旧的香灰味，像是这里的祭祀从没停过。
     entry:
       name: 墓道口
@@ -166,12 +172,14 @@ themes:
       name: 守陵人
       description: 一具身披破烂法袍的高大骸骨，胸口嵌着一块发着幽光的石头，手里的长柄镰刀比人还高。
       persona: 沉默，动作缓慢而精准，把一切活人都当作要被安葬的东西，从不追出墓室。
+      on_hit: {kind: corrode, chance: 0.3, label: 被镰刃带走了一股生气}
       hp: 1.3
       atk: 1
       def: 0
 
   castle:
     name: 城堡地牢
+    light: 40                   # 自然光亮 0~100
     intro: 石阶变成了整齐的方砖，墙上每隔几步就有一个锈蚀的火把架，远处传来铁链拖地的声音，这里曾经关押过什么人，也许现在还关着。
     entry:
       name: 地牢门厅
@@ -236,12 +244,14 @@ themes:
       name: 典狱长
       description: 一个穿着整套黑铁甲的高大身影，头盔的缝隙里透出两点红光，腰间挂着一大串钥匙。
       persona: 冷酷，一板一眼，把闯进来的人都当成越狱的犯人，一边追一边念着罪名。
+      on_hit: {kind: restrained, chance: 0.3, label: 被铁链锁住了手脚, escape: 3}
       hp: 1.1
       atk: 1
       def: 1
 
   forest:
     name: 地底森林
+    light: 35                   # 自然光亮 0~100
     intro: 石阶尽头竟是一片森林：头顶不是天空，而是望不到边的岩穹，岩缝里垂下发着微光的根须，照着一棵棵在黑暗里长了不知多少年的苍白巨树。
     entry:
       name: 林边石阶
@@ -308,12 +318,14 @@ themes:
       name: 古树守卫
       description: 一棵会走路的古树，树皮上长着一张沉睡般的人脸，枝条像手臂一样垂着，每走一步地面都在颤。
       persona: 缓慢而愤怒，把闯进森林的人都当作砍树的贼，枝条抽过来又重又狠。
+      on_hit: {kind: prone, chance: 0.35, label: 被枝条抽倒在地}
       hp: 1.4
       atk: 0
       def: 1
 
   swamp:
     name: 蘑菇沼泽
+    light: 35                   # 自然光亮 0~100
     intro: 石阶一路往下，渐渐被湿滑的淤泥盖住，眼前是一片泡在黑水里的沼泽，到处长着比人还高的蘑菇，伞盖下发着幽幽的绿光。
     entry:
       name: 沼泽边缘
@@ -380,12 +392,14 @@ themes:
       name: 沼泽女巫
       description: 一个佝偻的老妇人，下半身和一株巨大的蘑菇长在了一起，手里拄着一根挂满骨头的拐杖。
       persona: 阴沉又爱笑，喜欢用甜言蜜语引人走进泥沼深处，发起怒来尖啸着召唤毒雾。
+      on_hit: {kind: poison, chance: 0.4, label: 被毒雾呛得喘不过气}
       hp: 1.0
       atk: 2
       def: 0
 
   library:
     name: 巨大图书馆
+    light: 45                   # 自然光亮 0~100
     intro: 石阶尽头是一扇敞开的铜门，门后的书架一排排延伸进黑暗，高得看不到顶，空气里满是灰尘、旧纸和墨水的味道。
     entry:
       name: 铜门前厅
@@ -450,6 +464,7 @@ themes:
       name: 馆长的幽灵
       description: 一个披着长袍的半透明老人，眼眶里是两团墨水般的黑暗，身边环绕着飞舞的书页。
       persona: 严厉又偏执，认定每个闯进来的人都是偷书贼，一边念着馆规一边用书页割人。
+      on_hit: {kind: blind, chance: 0.35, label: 被飞舞的书页遮住了视线}
       hp: 1.2
       atk: 1
       def: 1
@@ -568,6 +583,7 @@ monsters:
     name: 矿坑巨鼠
     description: 狗那么大的灰毛老鼠，尾巴光秃秃的，门牙黄得发黑。
     persona: 饿疯了，成群出没，见血就扑。
+    on_hit: {kind: bleed, chance: 0.25, label: 被啃出了血口子}
     light_averse: true
     hp: 0.6
     atk: -1
@@ -581,6 +597,7 @@ monsters:
     name: 岩甲虫
     description: 背壳像一块磨圆的石头，六条腿又粗又短，口器咔嚓作响。
     persona: 迟钝但硬，被打了也不慌，一直往前顶。
+    on_hit: {kind: prone, chance: 0.25, label: 被硬壳撞翻在地}
     hp: 0.8
     def: 1
     animal: true
@@ -594,12 +611,14 @@ monsters:
     name: 食尸鬼
     description: 皮包骨头的灰白人形，指甲又长又黑，嘴角挂着腐肉。
     persona: 贪婪，饥饿，会绕着人打转找机会扑上来。
+    on_hit: {kind: corrode, chance: 0.3, label: 被腐爪划开，伤口发黑溃烂}
     light_averse: true
     hp: 1.2
   wisp:
     name: 游魂
     description: 一团飘忽的苍白雾气，隐约能看出一张哭泣的人脸。
     persona: 哀怨，时隐时现，碰到人会带走一股寒意。
+    on_hit: {kind: blind, chance: 0.3, label: 被寒雾糊住了眼睛}
     light_averse: true
     hp: 0.6
     atk: 1
@@ -618,6 +637,7 @@ monsters:
     name: 地牢恶犬
     description: 瘦得肋骨根根分明的大黑狗，脖子上还拴着半截铁链，眼睛是浑浊的黄色。
     persona: 被饿了太久，闻到活人味就狂吠着冲上来。
+    on_hit: {kind: bleed, chance: 0.25, label: 被咬住撕开了皮肉}
     hp: 0.8
     atk: 1
     animal: true
@@ -625,6 +645,7 @@ monsters:
     name: 苍白狼
     description: 一头毛色灰白的大狼，眼睛是没有瞳孔的乳白色，靠嗅觉在黑暗里找猎物。
     persona: 成群狩猎，先绕着人转圈，找到破绽就扑上来咬腿。
+    on_hit: {kind: bleed, chance: 0.3, label: 被狼牙撕开了口子}
     hp: 0.8
     atk: 1
     animal: true
@@ -632,6 +653,7 @@ monsters:
     name: 荆棘藤
     description: 一团会自己蠕动的带刺藤蔓，藤条上开着几朵暗红的花，花心像一张张小嘴。
     persona: 不会追人，但谁靠近就用带刺的藤条抽打、缠绕。
+    on_hit: {kind: restrained, chance: 0.3, label: 被荆棘藤缠住了, escape: 2}
     hp: 1.2
     atk: -1
     def: 1
@@ -644,18 +666,21 @@ monsters:
     name: 沼泽巨蟾
     description: 一只有小牛那么大的蟾蜍，皮肤上长满发光的疙瘩，舌头又长又黏。
     persona: 懒洋洋地趴着，猎物一靠近就闪电般吐出舌头。
+    on_hit: {kind: restrained, chance: 0.25, label: 被黏舌卷住了, escape: 2}
     hp: 1.1
     animal: true
   myconid:
     name: 蘑菇人
     description: 一个矮胖的蘑菇形人影，伞盖下是一张没有五官的脸，走路时会洒下一片孢子。
     persona: 慢吞吞地围上来，用孢子熏人，怕光，在亮处会缩起伞盖。
+    on_hit: {kind: poison, chance: 0.35, label: 吸进了毒孢子}
     hp: 1.0
     light_averse: true
   bog_leech:
     name: 泥沼水蛭
     description: 一条手臂粗的黑色水蛭，一头是一圈细密的牙齿，在泥水里扭动着。
     persona: 藏在泥水里，贴上来就不松口，吸饱了才肯走。
+    on_hit: {kind: poison, chance: 0.3, label: 被水蛭注进了毒液}
     hp: 0.6
     atk: 1
     animal: true
@@ -663,6 +688,7 @@ monsters:
     name: 活化书
     description: 一本厚重的书自己飞在半空，书页开合间露出一排排纸做的尖牙。
     persona: 像鸟一样扑腾着飞过来，用书页割人，被打中就散落一地书页。
+    on_hit: {kind: bleed, chance: 0.25, label: 被锋利的书页割开了口子}
     hp: 0.6
     atk: 1
     light_averse: true
@@ -670,6 +696,7 @@ monsters:
     name: 墨影
     description: 一团人形的黑色墨迹，在地面和墙上流动，所过之处留下湿漉漉的痕迹。
     persona: 贴着墙和地板无声地滑过来，怕光，在烛光下会变淡。
+    on_hit: {kind: blind, chance: 0.35, label: 被泼了一脸墨}
     hp: 0.8
     atk: 1
     light_averse: true
@@ -677,5 +704,6 @@ monsters:
     name: 石像鬼守卫
     description: 一尊蹲在书架顶上的石像鬼，翅膀收拢，爪子抓着书架边缘，眼睛是两颗暗红的宝石。
     persona: 一动不动地守着，有人靠近书架就扑下来，石头身子又硬又沉。
+    on_hit: {kind: prone, chance: 0.2, label: 被石翼扫倒在地}
     hp: 0.8
     def: 2

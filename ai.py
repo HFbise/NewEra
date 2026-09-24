@@ -338,7 +338,8 @@ def room_context(view: RoomView) -> str:
             f"可利用地形：{features}\n"
             f"出口：{exits}\n地上：{items}\n取用处：{dispensers}\nNPC：{npcs}\n其他玩家：{players}\n背包：{inv}\n"
             f"队友：{'、'.join(view.party) or '无'}\n邀请你组队的人：{'、'.join(view.invites) or '无'}\n"
-            f"你的状态：{me}\n正在跟着：{view.following or '没有'}"
+            f"你的状态：{me}" + (f"；{engine.effects_text(view.player)}" if view.player.effects else "")
+            + f"\n正在跟着：{view.following or '没有'}"
             + (f"\n决斗：{duel_text(view)}" if duel_text(view) else "")
             + (f"\n敌人：{stealth_text(view)}" if stealth_text(view) else ""))
 
@@ -717,7 +718,10 @@ def npc_line(db, view: RoomView, text: str, results: list[ActionResult], npc: Np
             f"<player_input>\n{text}\n</player_input>"
             + (f"\n\n<important>{'他第一次来你这儿' if not memory else '他在问你这儿能干什么'}："
                "用你自己的话、按人设把“你这儿能办的事”都带到（别念清单，可以挑重点、顺口带过），"
-               "让他知道在你这儿能做什么</important>" if intro else ""))
+               "让他知道在你这儿能做什么</important>" if intro else "")
+            + ("\n\n<important>他刚送了你最想要的礼物：这一句要有特别的反应，完全按你的性格和对他的好感来："
+               "好感低就嘴硬、别扭地收下，好感越高越藏不住高兴和感动，50 以上会真情流露；不要只说谢谢</important>"
+               if any(engine.GIFT_FACT in f for r in results if r.success for f in r.facts) else ""))
     trading = any(r.success and r.action in TRADE_ACTIONS for r in results)
     rewards = [m[1] for r in results if r.success and r.action == "quest"
                for f in r.facts if (m := re.search(r"把(.+?)交给了", f))]
@@ -1044,6 +1048,7 @@ def narrate(db, view: RoomView, text: str, results: list[ActionResult],
     parts = [f"<room>\n{view.room.name}：{view.room.description}\n环境细节：{view.room.details}\n</room>",
              f"<player>角色名：{name}（只是称呼，不代表天气、环境或任何设定）；HP {view.player.hp}/{view.player.max_hp}"
              + (f"；状态：{view.player.status.describe()}" if view.player.status else "")
+             + (f"；负面效果：{engine.effects_text(view.player)}" if view.player.effects else "")
              + (f"；{stealth_text(view)}" if stealth_text(view) else "")
              + (f"；{duel_text(view)}" if duel_text(view) else "")
              + f"\n装备着：{held}\n身上带着：{carried}\n金币：{view.player.gold}（这回合买卖之后剩下的，付了多少看 facts）</player>"]

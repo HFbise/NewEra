@@ -331,6 +331,8 @@ npcs:
       inn: {price: 5}
       # 收购：什么都收，likes 里的种类（weapon armor food drink herb ore wine book misc）给价高
       buys: {likes: [food, drink, herb, wine]}
+      # 心爱的礼物（物品 props.gift 的种类）：送了好感 +10，有特别的台词
+      gift_likes: [wine]
       # 吧台上的货，价钱由 AI 按建议价浮动
       sells: [dwarf_stout, elf_mead, dragon_breath, sober_potion]
       eject_to: south
@@ -353,6 +355,7 @@ npcs:
       # 能帮人升级武器：每级伤害 +1，费用和碎掉的几率随等级涨（engine.upgrade_terms）
       upgrades: true
       buys: {likes: [weapon, armor, ore]}
+      gift_likes: [ore]
       eject_to: west
       revive_lines:
         npc: 莉娜单手把{name}拎起来靠在铁砧边，瞥了一眼：“……{by}？太弱。”又盯着那把武器皱眉：“刃口也钝了。”
@@ -367,6 +370,7 @@ npcs:
       # 货架上的东西，价钱由 AI 按建议价浮动
       sells: [rope, torch, tent, recall_crystal]
       buys: {likes: [misc, book]}
+      gift_likes: [book]
       revive_lines:
         npc: 诺艾尔从书堆后面探出头，犹豫了好一会儿，才小心翼翼地把药瓶推到{name}手边：“被、被{by}打成这样……书、书上说要先止血……”
         player: 诺艾尔抱着书缩在柜台后，声音细得快听不见：“和{by}打、打架了吗……请、请不要在店里打……会碰倒书的……”
