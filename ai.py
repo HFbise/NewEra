@@ -204,7 +204,7 @@ def _call(db, player_id: UUID, kind: str, system: str, user: str, fmt: type[Base
 class AIAction(BaseModel):
     """给 AI 的扁平格式，比嵌套 union 好填；回来再转成 PlayerAction 校验"""
     action: Literal["move", "look", "take", "drop", "use", "equip", "unequip", "attack", "talk", "give", "sell", "pay", "say",
-                    "upgrade", "respawn", "stand", "rest", "camp", "teleport", "revive", "invite", "join", "leave_party", "follow", "unfollow", "challenge", "accept_duel",
+                    "upgrade", "respawn", "stand", "rest", "camp", "teleport", "revive", "leave_party", "follow", "unfollow", "challenge", "accept_duel",
                     "decline_duel", "flee", "stunt", "struggle",
                     "maneuver", "dodge", "hide", "search", "freeform", "reject"]
     direction: Optional[str] = None
@@ -262,11 +262,9 @@ INTENT_SYSTEM = """你是文字 MUD 游戏的指令解析器。读玩家的输�
 - respawn: target 可空（想被抬去的地方名字，不说就是酒馆）。自己倒下了，选择复活、回酒馆、回城
 - say: message（说的话，保留原话），target 可空（对某个玩家说时填"其他玩家"里的名字，对大家说不填）
 - revive: target（"其他玩家"里的名字）。帮倒下的、被捆住的、被打晕的其他玩家都是 revive，不是 freeform 也不是 struggle：急救、包扎、止血、扶起、叫醒、松绑、解开绳子、割断绳子、把人拉出来。用背包里的吃的、药草、酒喂他是 use（target 填他的名字），不是 revive 也不是 stunt。struggle 只用于玩家自己摆脱自己身上的状态（倒地的是 stand）
-- invite: target（"其他玩家"里的名字）。邀请对方组队
-- join: target（"邀请你组队的人"里的名字）。接受邀请、加入对方的队伍
-- leave_party: 不用填字段。离开、退出队伍
-- follow: target（"其他玩家"里的名字）。跟着、跟随、跟上某人：之后对方走到哪就自动跟到哪，这一回合本身不移动
-- unfollow: 不用填字段。不再跟着别人
+- leave_party: 不用填字段。离开、退出、解散队伍（同时不再跟着人）
+- follow: target（"其他玩家"里的名字）。跟着、跟随、跟上某人，和某人组队、加入某人的队伍：跟着谁就是加入谁的队伍，之后对方走到哪就自动跟到哪，这一回合本身不移动
+- unfollow: 不用填字段。不再跟着别人（也就离开了队伍）
 - challenge: target（"其他玩家"里的名字）。申请决斗、约架、pvp、挑战某人、要跟他单挑
 - accept_duel: target（"向你申请决斗的人"里的名字，只有一个人时可不填）。接受决斗、应战
 - decline_duel: target（同上）。拒绝决斗、不打
@@ -339,7 +337,7 @@ def room_context(view: RoomView) -> str:
     return (f"房间：{view.room.name}\n描述：{view.room.description}\n环境：{view.room.details}\n"
             f"可利用地形：{features}\n"
             f"出口：{exits}\n地上：{items}\n取用处：{dispensers}\nNPC：{npcs}\n其他玩家：{players}\n背包：{inv}\n"
-            f"队友：{'、'.join(view.party) or '无'}\n邀请你组队的人：{'、'.join(view.invites) or '无'}\n"
+            f"队友：{'、'.join(view.party) or '无'}\n"
             f"你的状态：{me}" + (f"；{engine.effects_text(view.player)}" if view.player.effects else "")
             + f"\n正在跟着：{view.following or '没有'}"
             + (f"\n决斗：{duel_text(view)}" if duel_text(view) else "")

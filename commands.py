@@ -118,16 +118,10 @@ def _player(view: RoomView, text: str) -> Optional[str]:
     return None
 
 
-def _player_or_unsure(view: RoomView, text: str, invites: bool = False) -> str:
-    """必须是玩家名字的地方。invites=True 时也认邀请过自己的人（接受邀请时对方可能不在同一房间）"""
+def _player_or_unsure(view: RoomView, text: str) -> str:
+    """必须是玩家名字的地方"""
     if name := _player(view, text):
         return name
-    if invites:
-        text = text.strip()
-        for match in (lambda n: n == text, lambda n: text in n):
-            for name in view.invites:
-                if match(name):
-                    return name
     raise _Unsure(text)
 
 
@@ -272,18 +266,11 @@ def _parse_one(view: RoomView, t: str) -> dict:
         return {"action": "unfollow"}
     if m := re.fullmatch(r"(?:跟着|跟随|跟上|尾随|follow)\s*(.+?)(?:走)?", t, re.I):
         return {"action": "follow", "target": _player_or_unsure(view, m[1])}
-    if re.fullmatch(r"(?:离开|退出)队伍|退队|leave party", t, re.I):
+    if re.fullmatch(r"(?:离开|退出)队伍|退队|离队|解散队伍|leave party", t, re.I):
         return {"action": "leave_party"}
-    if m := (re.fullmatch(r"(?:加入|接受)\s*(.+?)\s*的?(?:队伍|邀请|队)", t)
-             or re.fullmatch(r"join\s+(.+)", t, re.I)):
-        return {"action": "join", "target": _player_or_unsure(view, m[1], invites=True)}
-    if m := re.fullmatch(r"(?:和|跟|与)\s*(.+?)\s*组队", t):
-        # 对方邀请过自己就是接受，否则是发邀请
-        name = _player_or_unsure(view, m[1], invites=True)
-        return {"action": "join" if name in view.invites else "invite", "target": name}
-    if m := (re.fullmatch(r"(?:邀请|拉)\s*(.+?)\s*(?:组队|入队|进队|加入队伍)?", t)
-             or re.fullmatch(r"invite\s+(.+)", t, re.I)):
-        return {"action": "invite", "target": _player_or_unsure(view, m[1])}
+    # 组队就是跟随："和寒风组队""加入寒风的队伍"就是跟着寒风
+    if m := (re.fullmatch(r"(?:和|跟|与)\s*(.+?)\s*组队", t) or re.fullmatch(r"加入\s*(.+?)\s*的?(?:队伍|队)", t)):
+        return {"action": "follow", "target": _player_or_unsure(view, m[1])}
 
     # 决斗（PvP）：申请、接受、拒绝、逃跑
     if re.fullmatch(r"逃跑|逃走|逃|跑路|撤退|脱战|脱身|flee", t, re.I):

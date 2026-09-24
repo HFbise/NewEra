@@ -196,7 +196,6 @@ function render(s) {
     ${s.challenges.length ? `<h2>决斗申请</h2><ul>${s.challenges.map(n => `<li data-name="接受${esc(n)}的决斗">${esc(n)}<span class="tag">向你申请决斗</span></li>`).join("")}</ul>
       <div class="sys">${esc(s.duel_rules)}。输入“接受决斗”或“拒绝决斗”</div>` : ""}
     ${s.challenging ? `<div class="sys">你向${esc(s.challenging)}申请了决斗，等对方接受</div>` : ""}
-    ${s.invites.length ? `<h2>组队邀请</h2><ul>${s.invites.map(n => `<li data-name="${esc(n)}">${esc(n)}<span class="tag">邀请你组队</span></li>`).join("")}</ul>` : ""}
     ${s.items.length ? `<h2>地上</h2><ul>${s.items.map(i => li(i.ref, i.name,
       i.quantity > 1 ? `<span class="tag">x${i.quantity}</span>` : "", i.fill, i.detail)).join("")}</ul>` : ""}
     ${foldHead("equip", "装备")}
@@ -214,8 +213,8 @@ function render(s) {
       拿 · 扔 · 装备 · 卸下 · 吃 · 喂 · 给 · 给钱（给麦琪5金币）· 买 · 卖（把药草卖给麦琪）· 升级（找莉娜）· 住店（酒馆）<br>
       打 · 躲起来 · 搜索 · 说 · 对某人说<br>
       地牢：扎营 · 回城（传送石边）· 传送到第 N 层（地窖）<br>
-      邀请组队 · 加入队伍 · 离开队伍<br>
-      跟着 · 停止跟随 · 急救 · 挣脱<br>
+      跟着某人（就是加入他的队伍）· 不跟了 / 离队（地牢里、战斗中不行）<br>
+      急救 · 给人用药（给寒风灌血药）· 挣脱<br>
       决斗某人 · 接受决斗 · 拒绝决斗 · 逃跑<br>
       其他想做的事直接写，AI 判定
     </div>

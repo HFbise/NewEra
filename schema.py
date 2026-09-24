@@ -130,24 +130,13 @@ class Revive(BaseModel):
     target: str                         # 玩家名字
 
 
-class Invite(BaseModel):
-    """邀请同房间的玩家组队"""
-    action: Literal["invite"]
-    target: str                         # 玩家名字
-
-
-class Join(BaseModel):
-    """接受邀请，加入对方的队伍"""
-    action: Literal["join"]
-    target: str                         # 发出邀请的玩家名字
-
-
 class LeaveParty(BaseModel):
+    """离开队伍（同时不再跟着人）；地牢里、战斗中不行"""
     action: Literal["leave_party"]
 
 
 class Follow(BaseModel):
-    """跟着同房间的某个玩家，对方移动时自动一起走"""
+    """跟着同房间的某个玩家，对方移动时自动一起走。跟着谁就是加入谁的队伍"""
     action: Literal["follow"]
     target: str                         # 玩家名字
 
@@ -275,7 +264,7 @@ class Reject(BaseModel):
 
 
 PlayerAction = Annotated[
-    Union[Move, Look, Take, Drop, Use, Equip, Unequip, Attack, Talk, Give, Sell, Pay, Upgrade, Say, Revive, Respawn, Stand, Rest, Camp, Teleport, Invite, Join, LeaveParty,
+    Union[Move, Look, Take, Drop, Use, Equip, Unequip, Attack, Talk, Give, Sell, Pay, Upgrade, Say, Revive, Respawn, Stand, Rest, Camp, Teleport, LeaveParty,
           Follow, Unfollow, Challenge, AcceptDuel, DeclineDuel, Flee, Stunt, Struggle, Maneuver, Dodge, Hide, Search,
           Freeform, Reject],
     Field(discriminator="action"),
@@ -532,7 +521,6 @@ class RoomView(BaseModel):
     inventory: list[ItemInstance]       # 玩家背包（含已装备）
     others: list[OtherPlayer] = []      # 同房间的其他玩家
     party: list[str] = []               # 队友名字（不含自己，不论在不在同一房间）
-    invites: list[str] = []             # 还有效的、邀请自己组队的玩家名字
     features: list[Feature] = []        # 这里还能用的可利用地形
     dispensers: list[Dispenser] = []    # 取用处
     forage: list[str] = []              # 搜索能找到的东西，带几率："药草（搜索，60%）"

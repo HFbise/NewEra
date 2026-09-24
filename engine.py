@@ -24,7 +24,7 @@ from psycopg.types.json import Jsonb
 import dungeon
 from commands import REST_TALK_RE
 from schema import (
-    ActionResult, Attack, Drop, Equip, Feature, Follow, Freeform, Give, Invite, ItemInstance, Join, LeaveParty, Look,
+    ActionResult, Attack, Drop, Equip, Feature, Follow, Freeform, Give, ItemInstance, LeaveParty, Look,
     Move, Npc, OtherPlayer, Player, PlayerAction, Reject, Revive, Room, RoomExit, RoomView, Say, Status, Struggle,
     Stunt, Take, Talk, Unfollow, Unequip, Use, dir_name, Dispenser, SLOT_CHOICES, SLOT_NAMES, Dodge, Hide, Maneuver, Search, Stealth,
     AcceptDuel, Challenge, DeclineDuel, Duel, Flee, SKILL_NAMES, Upgrade, Respawn, Stand, Rest, Pay, Camp, Teleport, Sell,
@@ -37,7 +37,6 @@ ONLINE_WINDOW = "90 seconds"            # 超过这么久没有心跳的玩家�
 AFFINITY_STEP = 5                       # 对话 AI 每次最多调整的好感度
 AFFINITY_RANGE = (-100, 100)
 PARTY_MAX = 5                           # 一支队伍最多几个人
-INVITE_WINDOW = "10 minutes"            # 组队邀请多久内有效
 DOWNED_ALLOWED = {"look", "say", "respawn"}   # 倒下的人只能看、说话（喊人来救），或者选择被抬回酒馆
 RESPAWN_ROOM = "tavern"                 # 倒下的人选择复活时默认被抬去的地方
 
@@ -367,13 +366,6 @@ def load_view(conn: Connection, player_id: UUID) -> RoomView:
             cur.execute("select name from players where party_id = %s and id <> %s order by name",
                         (player.party_id, player.id))
             party = [r["name"] for r in cur.fetchall()]
-        cur.execute(
-            f"""select p.name from party_invites i join players p on p.id = i.inviter
-                where i.invitee = %s and i.created_at > now() - interval '{INVITE_WINDOW}'
-                order by i.created_at""",
-            (player.id,),
-        )
-        invites = [r["name"] for r in cur.fetchall()]
         cur.execute("select id, key, name, max_tier, uses_left from room_features where room_id = %s and uses_left > 0 order by key",
                     (player.room_id,))
         features = [Feature(**r) for r in cur.fetchall()]
@@ -402,7 +394,6 @@ def load_view(conn: Connection, player_id: UUID) -> RoomView:
             inventory=load_items(cur, "i.player_id = %s", (player.id,)),
             others=others,
             party=party,
-            invites=invites,
             features=features,
             dispensers=load_dispensers(cur, room, player.id),
             forage=forage_labels(cur, room),
@@ -1050,20 +1041,68 @@ def do_camp(cur: Cursor, player: Player, view: RoomView, a: Camp) -> list[str]:
     return facts + [f"{player.name}恢复了 {hp - player.hp} 点 HP，当前 HP {hp}/{player.max_hp}"]
 
 
+# 组队就是跟随：跟着谁就加入谁的队伍（他没队伍就一起新建一个），不跟了就退队。
+# 地牢里、战斗中不能退队也不能停止跟随，免得把队友丢在半路；地牢按队伍分副本，不是一起进来的人碰不到面
+def _party_locked(cur: Cursor, player: Player) -> Optional[str]:
+    """现在不能离开队伍的原因，能离开是 None"""
+    if dungeon.is_dungeon(player.room_id):
+        return "在地牢里"
+    cur.execute("""select 1 from npcs n join npc_templates t on t.id = n.template_id
+                   where n.room_id = %s and n.alive and t.hostile limit 1""", (player.room_id,))
+    if cur.fetchone():
+        return "正在战斗"
+    cur.execute("select 1 from duels where accepted and %s in (challenger, target) limit 1", (player.id,))
+    if cur.fetchone():
+        return "正在决斗"
+    return None
+
+
 def do_follow(cur: Cursor, player: Player, view: RoomView, a: Follow) -> list[str]:
-    target, _ = _room_player(cur, player, a.target)
+    target, _ = _room_player(cur, player, a.target, lock=True)
     if target.following == player.id:
         raise ActionError(f"{target.name}正跟着{player.name}，不能互相跟着")
+    facts = [f"{player.name}跟上了{target.name}，以后{target.name}走到哪就跟到哪（这一回合两人都没有移动）"]
+    if not (player.party_id and player.party_id == target.party_id):
+        if player.party_id and (why := _party_locked(cur, player)):
+            raise ActionError(f"{player.name}{why}，不能丢下现在的队伍去跟{target.name}")
+        party_id = target.party_id or uuid4()
+        if target.party_id and len(_party_names(cur, party_id)) >= PARTY_MAX:
+            raise ActionError(f"{target.name}的队伍已经满了（最多 {PARTY_MAX} 人）")
+        if player.party_id:
+            _leave_party(cur, player)
+        if target.party_id is None:
+            cur.execute("update players set party_id = %s where id = %s", (party_id, target.id))
+        cur.execute("update players set party_id = %s where id = %s", (party_id, player.id))
+        facts.append(f"{player.name}加入了{target.name}的队伍，队伍成员：" + "、".join(_party_names(cur, party_id)))
     cur.execute("update players set following = %s where id = %s", (target.id, player.id))
-    return [f"{player.name}决定跟着{target.name}，以后{target.name}走到哪就跟到哪（这一回合两人都没有移动）"]
+    return facts
 
 
 def do_unfollow(cur: Cursor, player: Player, view: RoomView, a: Unfollow) -> list[str]:
-    if player.following is None:
-        raise ActionError(f"{player.name}没有在跟着谁")
-    cur.execute("update players set following = null where id = %s returning (select name from players where id = %s)",
-                (player.id, player.following))
-    return [f"{player.name}不再跟着{cur.fetchone()['name']}了"]
+    """不跟了就是退队"""
+    if player.following is None and not player.party_id:
+        raise ActionError(f"{player.name}没有在跟着谁，也不在队伍里")
+    return _quit_party(cur, player)
+
+
+def do_leave_party(cur: Cursor, player: Player, view: RoomView, a: LeaveParty) -> list[str]:
+    if not player.party_id:
+        raise ActionError(f"{player.name}没有在队伍里")
+    return _quit_party(cur, player)
+
+
+def _quit_party(cur: Cursor, player: Player) -> list[str]:
+    if why := _party_locked(cur, player):
+        raise ActionError(f"{player.name}{why}，不能丢下队伍自己走（回到地面、打完这一仗再说）")
+    facts = []
+    if player.following:
+        cur.execute("select name from players where id = %s", (player.following,))
+        facts.append(f"{player.name}不再跟着{cur.fetchone()['name']}了")
+    cur.execute("update players set following = null where id = %s", (player.id,))
+    if player.party_id:
+        _leave_party(cur, player)
+        facts.append(f"{player.name}离开了队伍")
+    return facts
 
 
 def do_look(cur: Cursor, player: Player, view: RoomView, a: Look) -> list[str]:
@@ -2581,58 +2620,14 @@ def _party_names(cur: Cursor, party_id: UUID) -> list[str]:
 
 
 def _leave_party(cur: Cursor, player: Player) -> None:
-    """退队；队伍只剩一个人就解散"""
+    """退队；跟着他的人不再跟着他（还留在队里），队伍只剩一个人就解散"""
     cur.execute("update players set party_id = null where id = %s", (player.id,))
+    cur.execute("update players set following = null where following = %s", (player.id,))
     cur.execute(
         """update players set party_id = null
            where party_id = %(p)s and (select count(*) from players where party_id = %(p)s) = 1""",
         {"p": player.party_id},
     )
-
-
-def do_invite(cur: Cursor, player: Player, view: RoomView, a: Invite) -> list[str]:
-    target, _ = _room_player(cur, player, a.target)
-    if player.party_id and player.party_id == target.party_id:
-        raise ActionError(f"{target.name}已经是{player.name}的队友了")
-    if player.party_id and len(_party_names(cur, player.party_id)) >= PARTY_MAX:
-        raise ActionError(f"队伍已经满了（最多 {PARTY_MAX} 人）")
-    cur.execute(
-        """insert into party_invites (inviter, invitee) values (%s, %s)
-           on conflict (inviter, invitee) do update set created_at = now()""",
-        (player.id, target.id),
-    )
-    return [f"{player.name}邀请{target.name}加入队伍"]
-
-
-def do_join(cur: Cursor, player: Player, view: RoomView, a: Join) -> list[str]:
-    cur.execute(
-        f"""select i.inviter from party_invites i join players p on p.id = i.inviter
-            where i.invitee = %s and p.name = %s and i.created_at > now() - interval '{INVITE_WINDOW}'""",
-        (player.id, a.target),
-    )
-    row = cur.fetchone()
-    if row is None:
-        raise ActionError(f"{a.target}没有邀请{player.name}组队，或者邀请已经过期")
-    inviter = load_player(cur, row["inviter"], lock=True)
-    if player.party_id and player.party_id == inviter.party_id:
-        raise ActionError(f"{player.name}已经在{inviter.name}的队伍里了")
-    party_id = inviter.party_id or uuid4()
-    if inviter.party_id is None:
-        cur.execute("update players set party_id = %s where id = %s", (party_id, inviter.id))
-    elif len(_party_names(cur, party_id)) >= PARTY_MAX:
-        raise ActionError(f"{inviter.name}的队伍已经满了（最多 {PARTY_MAX} 人）")
-    if player.party_id:
-        _leave_party(cur, player)
-    cur.execute("update players set party_id = %s where id = %s", (party_id, player.id))
-    cur.execute("delete from party_invites where inviter = %s and invitee = %s", (inviter.id, player.id))
-    return [f"{player.name}加入了{inviter.name}的队伍", "队伍成员：" + "、".join(_party_names(cur, party_id))]
-
-
-def do_leave_party(cur: Cursor, player: Player, view: RoomView, a: LeaveParty) -> list[str]:
-    if not player.party_id:
-        raise ActionError(f"{player.name}没有在队伍里")
-    _leave_party(cur, player)
-    return [f"{player.name}离开了队伍"]
 
 
 def do_talk(cur: Cursor, player: Player, view: RoomView, a: Talk) -> list[str]:
@@ -2959,7 +2954,7 @@ HANDLERS: dict[str, Callable[..., list[str]]] = {
     "move": do_move, "look": do_look, "take": do_take, "drop": do_drop, "use": do_use,
     "equip": do_equip, "unequip": do_unequip, "attack": do_attack, "talk": do_talk, "give": do_give, "freeform": do_freeform,
     "say": do_say, "revive": do_revive, "stunt": do_stunt, "struggle": do_struggle,
-    "follow": do_follow, "unfollow": do_unfollow, "invite": do_invite, "join": do_join, "leave_party": do_leave_party,
+    "follow": do_follow, "unfollow": do_unfollow, "leave_party": do_leave_party,
     "maneuver": do_maneuver, "dodge": do_dodge, "hide": do_hide, "search": do_search, "reject": do_reject,
     "upgrade": do_upgrade, "pay": do_pay, "sell": do_sell, "respawn": do_respawn, "stand": do_stand, "rest": do_rest, "camp": do_camp, "teleport": do_teleport, "challenge": do_challenge, "accept_duel": do_accept_duel, "decline_duel": do_decline_duel, "flee": do_flee,
 }

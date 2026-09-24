@@ -36,7 +36,7 @@ app = FastAPI()
 app.include_router(admin.router)
 
 # 这些动作的回合不调叙事 AI：facts 已经说清楚了，AI 反而容易替别的玩家编动作
-NO_NARRATION = {"say", "follow", "unfollow", "invite", "join", "leave_party", "challenge", "accept_duel", "decline_duel"}
+NO_NARRATION = {"say", "follow", "unfollow", "leave_party", "challenge", "accept_duel", "decline_duel"}
 # NPC 对话里这些结果旁人也看得到（交东西、提委托、轰人），跟在对话原文后面
 AFFINITY_BY_RULE = {"npc_give", "npc_create", "npc_sell", "upgrade", "rest", "pay", "sell", "give"}
 NPC_OUTCOMES = {"npc_give", "npc_create", "npc_sell", "quote", "quest", "npc_eject", "upgrade", "rest", "pay", "sell"}
@@ -134,7 +134,6 @@ def state(conn, view: RoomView, after: Optional[int] = None) -> dict:
         "defense_total": view.player.defense + sum(i.defense for i in view.inventory if i.equipped_slot),
         "others": others,
         "party": view.party,
-        "invites": view.invites,
         "following": view.following,
         "stealth": ai.stealth_text(view),
         "duel": view.duel and view.duel.model_dump(),
