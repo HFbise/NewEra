@@ -277,7 +277,8 @@ def stash_gold(depth: int, size: int) -> int:
 # ============ 精英词缀 ============
 # 每只精英从这里随机抽一个，名字前缀跟着变。同一只狗头人矿工，这次是迅捷的，下次是坚甲的，打法就不一样
 ELITE_AFFIXES = {
-    "swift": {"name": "迅捷的", "attacks": 2, "dmg_mult": 0.7, "hp_mult": 0.85, "note": "一轮出手两次，每下轻一点，身子也脆一点"},
+    "swift": {"name": "迅捷的", "attacks": 2, "extra_chance": 0.5, "dmg_mult": 0.7, "hp_mult": 0.75,
+              "note": "一轮常常出手两次（第二下一半几率），每下轻一点，身子也脆一点"},
     "armored": {"name": "坚甲的", "def": 3, "hp_mult": 0.75, "note": "防御高、血少一些"},
     "frenzied": {"name": "狂暴的", "frenzy": 3, "note": "血量低于一半时攻击 +3"},
     "bloodthirsty": {"name": "嗜血的", "lifesteal": 0.5, "note": "打中人就回造成伤害的一半"},

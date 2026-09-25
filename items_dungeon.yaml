@@ -818,7 +818,7 @@ items:
       gem_slot: weapon
       numeric: true
       effects:
-        - {when: hit, do: bonus, values: [0.5, 1, 1.25, 1.5]}
+        - {when: hit, do: bonus, values: [0.5, 1, 1.5, 2]}
   rockvein_stone:              # 对付工头砸地、岩甲虫
     name: 岩纹石
     description: 一块灰褐色的扁石，表面有一圈圈像年轮一样的纹路，放在哪里都稳稳当当。
@@ -834,7 +834,7 @@ items:
     props:
       gem_slot: weapon
       effects:
-        - {when: hit, do: bonus, values: [1, 1.5, 1.75, 2], vs: [undead]}
+        - {when: hit, do: bonus, values: [1, 1.5, 2.5, 3], vs: [undead]}
   frost_jade:                  # 对付守陵人的寒气、食尸鬼
     name: 寒玉
     description: 一块青白色的玉石，摸上去冰得扎手，却从来不会结霜。
@@ -860,6 +860,15 @@ items:
       numeric: true
       effects:
         - {when: passive, do: defense, values: [0.25, 0.5, 0.6, 0.75]}
+  sunder_stone:                # 城堡：无视对方的防御（锈甲守卫这类硬怪、狗头人工头的弱点）
+    name: 破甲石
+    description: 一块边缘锋利的黑色燧石，敲在铁甲上会迸出一串细小的火星。
+    type: gem
+    props:
+      gem_slot: weapon
+      numeric: true
+      effects:
+        - {when: hit, do: pierce, values: [0.5, 1, 1.5, 2]}
   staunch_stone:               # 对付恶犬、典狱长那一带的流血
     name: 止血石
     description: 一块暗红带黑斑的石头，据说古时候的军医会把它按在伤口上。
@@ -891,7 +900,7 @@ items:
     props:
       gem_slot: weapon
       effects:
-        - {when: hit, do: status, kind: poison, chances: [0.08, 0.12, 0.14, 0.16]}
+        - {when: hit, do: status, kind: poison, chances: [0.08, 0.12, 0.16, 0.2]}
   mossvein_stone:
     name: 苔纹石
     description: 一块布满青绿色纹路的石头，纹路摸上去微微发潮，像长着一层活的苔藓。
@@ -908,6 +917,14 @@ items:
       gem_slot: armor
       effects:
         - {when: passive, do: resist, kind: blind, values: [0.7, 0.5, 0.4, 0.3]}
+  keen_ink:                    # 图书馆：会心一击，几率这一下伤害翻倍（几件取最高，不叠加）
+    name: 锋墨石
+    description: 一块漆黑发亮的石头，边缘薄得像刀刃，对着光看，里面有一道细细的银线。
+    type: gem
+    props:
+      gem_slot: weapon
+      effects:
+        - {when: hit, do: crit, mult: 2, chances: [0.04, 0.06, 0.09, 0.12]}
   glowstone:                   # 光亮：跟别的随身光源一起只取最亮的
     name: 萤石
     description: 一块淡黄色的石头，在黑暗里会自己发出萤火虫一样的微光。

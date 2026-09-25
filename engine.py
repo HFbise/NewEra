@@ -2804,10 +2804,12 @@ def round_enemies(conn: Connection, room_id: str, done: dict[UUID, list[tuple[Pl
             if acted:
                 continue
             # 一轮出手几次：一般一次；组队时房间怪满了、折成血的那些多打几次（dungeon._spawn_group）
-            for _ in range(npc.template.props.get("attacks", 1)):
+            for k in range(npc.template.props.get("attacks", 1)):
                 live = [c for c in cands if c["p"].hp > 0]
                 if not live:
                     break
+                if k >= npc.template.props.get("base_attacks", 99) and not _roll(npc.template.props["extra_chance"]):
+                    continue                            # 迅捷的：多出来的那一下这回没赶上
                 c = _pick_target(cur, npc, live, hits, healers)
                 facts += _enemy_act(cur, c["p"], c["st"], npc, c["dodge"], hits.get(npc.id) == c["p"].id)
         for c in cands:
@@ -3068,12 +3070,20 @@ def do_attack(cur: Cursor, player: Player, view: RoomView, a: Attack) -> list[st
     weak = _weak_spot(cur, player, npc, melee, shooter, loaded, fired)
     if weak:
         dmg = math.ceil(dmg * WEAK_MULT)
+    # 会心一击（锋墨石）：身上几件只取几率最高的一件掷一次，不叠加
+    crits = _fire(cur, player, "hit", "crit", npc, roll=False)
+    crit = max(crits, key=lambda e: e.get("chance", 0), default=None)
+    critted = bool(crit) and _roll(crit.get("chance", 0))
+    if critted:
+        dmg = math.ceil(dmg * crit.get("mult", 2))
     facts, dead = _hurt_npc(cur, player, npc, dmg)
     if not shooter and not dead and (thorns := npc.template.props.get("thorns"))             and _roll(npc.template.props.get("thorns_chance", 1.0)):
         hurt, _ = _hurt_player(cur, player, thorns, "npc", npc.name)          # 荆棘的精英：近战砍它被扎回来
         facts += [f"{npc.name}身上的硬刺扎了回来，{player.name}受到 {thorns} 点伤害"] + hurt
     if weak:
         facts = [f"正打在{npc.name}的弱点上（{weak}），伤害 ×{WEAK_MULT:g}"] + facts
+    if critted:
+        facts = [f"会心一击！这一下伤害 ×{crit.get('mult', 2)}"] + facts
     facts += _assassinated(cur, player, view, npc, dead, not st.detected)
     facts = (guarded + [f"{player.name}{how}{npc.name}，造成 {dmg} 点伤害"]
              + _labels([e for e in fired if e["do"] in ("bonus", "pierce")]) + facts
@@ -4829,6 +4839,7 @@ def _effect_line(e: dict) -> str:
         "self_damage": f"自己掉 {v} 点血", "cheat_death": "本该倒下时留 1 点血",
         "aura": f"同房间的队友和自己{'攻击' if k == 'attack' else '防御'} +{v}",
         "defense": f"防御 +{stat_text(v)}", "light": f"光亮 +{v}（跟别的随身光源只取最亮的）",
+        "crit": f"会心一击：伤害 ×{e.get('mult', 2)}（几件只取几率最高的一件）",
         "element": f"这一下算作{ {'fire': '火'}.get(k, k) }（打在怕{ {'fire': '火'}.get(k, k) }的弱点上伤害 ×{WEAK_MULT:g}）",
     }.get(e.get("do"), e.get("do", ""))
     if e.get("do") == "bonus" and not float(v).is_integer():

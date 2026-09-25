@@ -122,6 +122,20 @@ def put_gem(cur: Cursor, gem: str, depth: int, *, room: Optional[str] = None, np
     return props["name"]
 
 
+def deep_mult(depth: int) -> float:
+    """深层（gems.drops.deep_from_floor 起）宝石掉率的倍数"""
+    d = gem_rules()["drops"]
+    return d.get("deep_mult", 1) if depth >= d.get("deep_from_floor", 999) else 1
+
+
+def gem_count(rank: str, depth: int) -> int:
+    """这只怪身上带几颗宝石：头目必带（深层两颗），别的按掉率（深层翻倍）"""
+    d = gem_rules()["drops"]
+    if rank == "boss":
+        return d.get("boss_deep", 1) if depth >= d.get("deep_from_floor", 999) else 1
+    return int(random.random() < d.get(rank, 0) * deep_mult(depth))
+
+
 def pick_gem(theme: Optional[str], common_share: float = 0.0) -> str:
     """从这个主题的宝石池抽一颗（common_share 的几率改从通用池抽）"""
     pools = gem_rules()["pools"]
@@ -342,6 +356,8 @@ def _template(cur: Cursor, depth: int, kind: str, rank: str, theme: str, share: 
     description = m["description"] + ("它比同类更壮、更凶，身上带着好几道旧伤。" if rank == "elite" else "")
     gold = [max(1, round(g / share)) for g in monster_gold(depth, rank)]
     props = {"on_death": {} if minion else {"gold": gold}, "dungeon": {"depth": depth, "rank": rank, "theme": theme}}
+    if fx.get("extra_chance"):
+        props["extra_chance"], props["base_attacks"] = fx["extra_chance"], attacks     # 迅捷的：多出来的那几下有几率落空
     attacks *= fx.get("attacks", 1)
     if attacks > 1:
         props["attacks"] = attacks
@@ -441,8 +457,9 @@ def _spawn(cur: Cursor, room: str, depth: int, kind: str, rank: str, theme: str,
     for item in _drops(kind, rank, theme, depth, stair) if loot else []:     # 身上带的东西，打死了掉在地上
         _put_item(cur, item, depth, npc=npc_id, boss=rank == "boss",
                   rarity={"boss": "rare", "elite": "uncommon"}.get(rank, "common"))
-    if loot and random.random() < gem_rules()["drops"].get(rank, 0):
-        put_gem(cur, pick_gem(theme), depth, npc=npc_id)
+    if loot:
+        for _ in range(gem_count(rank, depth)):
+            put_gem(cur, pick_gem(theme), depth, npc=npc_id)
     for _ in range(ELITE_AFFIXES.get(affix, {}).get("minions", 0)):
         spawn_minions(cur, room, depth, kind, theme, 1)             # 号令的精英：带着一只同类小怪
 
@@ -581,7 +598,7 @@ def _make_floor(cur: Cursor, run: UUID, depth: int, above: Optional[str], size: 
                     or _pick(loot_data()["pool"], depth)
                 if item:
                     _put_item(cur, item, depth, room=rid, rarity="uncommon")
-            if random.random() < gem_rules()["drops"]["treasure"]:
+            if random.random() < gem_rules()["drops"]["treasure"] * deep_mult(depth):
                 put_gem(cur, pick_gem(theme_key, 0.5), depth, room=rid)        # 宝箱房额外一颗宝石：一半本主题、一半通用
             if guarded:
                 # 有一半的宝箱房有怪守着（越深越可能是精英）

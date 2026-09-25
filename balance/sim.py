@@ -163,6 +163,8 @@ class Kit:
     gem_bonus: float = 0.0              # 武器上宝石加的伤害（小数按几率进位）
     gem_def: float = 0.0                # 护具上宝石加的防御（全身封顶）
     spent_refine: int = 0
+    gem_pierce: float = 0.0             # 破甲石
+    gem_crit: float = 0.0               # 锋墨石：会心几率（只取最高）
 
 
 def floor_gems(depth: int) -> list[tuple[str, int]]:
@@ -170,10 +172,11 @@ def floor_gems(depth: int) -> list[tuple[str, int]]:
     theme = random.choice(list(THEMES))
     pools, drops = GEMS["pools"], GEMS["drops"]
     got = []
-    rolls = [(drops["normal"], theme)] * 5 + [(drops["elite"], theme)] * 1 + [(drops["elite"] * 0.3, theme)] \
-        + [(drops["treasure"], theme if random.random() < 0.5 else "common")]
+    deep = drops.get("deep_mult", 1) if depth >= drops.get("deep_from_floor", 999) else 1
+    rolls = [(drops["normal"] * deep, theme)] * 5 + [(drops["elite"] * deep, theme)] * 1 + [(drops["elite"] * 0.3 * deep, theme)] \
+        + [(drops["treasure"] * deep, theme if random.random() < 0.5 else "common")]
     if depth % R.BOSS_EVERY == 0:
-        rolls.append((drops["boss"], theme))
+        rolls += [(drops["boss"], theme)] * (drops.get("boss_deep", 1) if deep > 1 else 1)
     for chance, pool in rolls:
         if random.random() < chance:
             gem = random.choice(pools[pool])
@@ -186,20 +189,37 @@ def gem_value(gem: str, tier: int, cat: str, do: str) -> float:
     return sum(e.get("value", 0) for e in fx if e.get("do") == do and not e.get("vs"))
 
 
-def fit_gems(bag: list[list], w_sockets: int, a_sockets: int) -> tuple[float, float]:
-    """最简单的镶法：武器孔镶加伤害最多的，护具孔镶加防御最多的（全身封顶），功能型的不算"""
-    wv = sorted((gem_value(g, t, "weapon", "bonus") for g, t in bag), reverse=True)[:w_sockets]
+def gem_chance(gem: str, tier: int, do: str) -> float:
+    fx = R.gem_effects(ITEMS[gem]["props"], tier, "weapon") if R.gem_fits(ITEMS[gem]["props"]["gem_slot"], "weapon") else []
+    return max([e.get("chance", 0) for e in fx if e.get("do") == do] or [0])
+
+
+def weapon_score(g: list) -> float:
+    """武器孔挑宝石的分数：加伤害、破甲按点算，会心按几率 × 一下大约 8 点"""
+    return gem_value(g[0], g[1], "weapon", "bonus") + gem_value(g[0], g[1], "weapon", "pierce") + 8 * gem_chance(g[0], g[1], "crit")
+
+
+def fit_gems(bag: list[list], w_sockets: int, a_sockets: int) -> tuple[float, float, float, float]:
+    """最简单的镶法：武器孔镶进攻最强的（加伤害、破甲、会心），护具孔镶加防御最多的（全身封顶），功能型的不算。
+    返回 (加伤害, 防御, 破甲, 会心几率)"""
+    wv = [g for g in sorted(bag, key=weapon_score, reverse=True)[:w_sockets] if weapon_score(g) > 0]
     av = sorted((gem_value(g, t, "armor", "defense") for g, t in bag), reverse=True)[:a_sockets]
-    return sum(v for v in wv if v > 0), min(GEMS["body_caps"]["defense"], sum(v for v in av if v > 0))
+    return (sum(gem_value(g, t, "weapon", "bonus") for g, t in wv),
+            min(GEMS["body_caps"]["defense"], sum(v for v in av if v > 0)),
+            sum(gem_value(g, t, "weapon", "pierce") for g, t in wv),
+            max([gem_chance(g, t, "crit") for g, t in wv] or [0]))
+
+
+REFINE_SHARE = 0.3                      # 回村先拿三成的钱去诺艾尔那里刷宝石，剩下的再升级（真人面对抽奖多半先刷）
 
 
 def refine_run(gold: int, bag: list[list], deepest: int) -> int:
-    """回村把钱的一半拿去诺艾尔那里刷宝石：先刷用得上的数值宝石里品质最低的，有同种的就当垫子。返回花掉的钱"""
-    budget, spent = gold // 2, 0
+    """刷宝石：先刷用得上的（进攻、加防御的）里品质最低的，有同种的就当垫子。返回花掉的钱"""
+    budget, spent = int(gold * REFINE_SHARE), 0
     rf = GEMS["refine"]
     while True:
-        useful = [g for g in bag if ITEMS[g[0]]["props"].get("numeric")
-                  and g[1] < R.refine_cap(True, deepest, rf)]
+        useful = [g for g in bag if (weapon_score(g) > 0 or gem_value(g[0], g[1], "armor", "defense") > 0)
+                  and g[1] < R.refine_cap(bool(ITEMS[g[0]]["props"].get("numeric")), deepest, rf)]
         if not useful:
             break
         g = min(useful, key=lambda x: x[1])
@@ -211,7 +231,7 @@ def refine_run(gold: int, bag: list[list], deepest: int) -> int:
         pad = min(pads, key=lambda x: x[1]) if pads else None
         if pad:
             bag.remove(pad)
-        g[1] = R.refine_roll(g[1], R.refine_cap(True, deepest, rf), rf, pad is not None)
+        g[1] = R.refine_roll(g[1], R.refine_cap(bool(ITEMS[g[0]]["props"].get("numeric")), deepest, rf), rf, pad is not None)
     return spent
 
 
@@ -280,6 +300,10 @@ def economy(quality: str, build: str, trips: int = 4, size: int = 1) -> list[Kit
         torches = 3 if build == "sword_torch" else 0
         gold -= min(gold, torches * TORCH_PRICE)
         spent = 0
+        refine_spent = 0
+        if VARIANT["gems"] and quality != "poor":
+            refine_spent = refine_run(gold, bag, trip * TRIP)
+            gold -= refine_spent
         if quality != "poor":
             weapons = upgradable_weapons(build, trip, quality)
             if len(w_plus) != len(weapons):
@@ -290,8 +314,7 @@ def economy(quality: str, build: str, trips: int = 4, size: int = 1) -> list[Kit
             gold, spent = upgrade_run(gold, weapons, armor, w_plus, a_plus, discount, oil, ore)
             spent = before - gold
             oil = 0
-        gem_bonus = gem_def = 0.0
-        refine_spent = 0
+        gem_bonus = gem_def = gem_pierce = gem_crit = 0.0
         if VARIANT["gems"] and quality != "poor":
             pieces = [n for n, _ in (melee_weapons(build, trip)[:1] if build not in ("bow", "xbow") else [])] \
                 + ([ranged_weapon(build, trip).name] if build in ("bow", "xbow") else []) \
@@ -299,11 +322,10 @@ def economy(quality: str, build: str, trips: int = 4, size: int = 1) -> list[Kit
             for n in pieces:
                 if n in SOCKET_SOURCE and n not in sockets:
                     sockets[n] = R.roll_sockets(SOCKET_SOURCE[n], GEMS)
-            refine_spent = refine_run(gold, bag, trip * TRIP)
-            gold -= refine_spent
             weapon = pieces[0] if pieces else ""
-            gem_bonus, gem_def = fit_gems(bag, sockets.get(weapon, 0), sum(sockets.get(n, 0) for n in pieces[1:]))
-        kits.append(Kit(list(w_plus), list(a_plus), potions, gold, spent, gem_bonus, gem_def, refine_spent))
+            gem_bonus, gem_def, gem_pierce, gem_crit = fit_gems(bag, sockets.get(weapon, 0),
+                                                                sum(sockets.get(n, 0) for n in pieces[1:]))
+        kits.append(Kit(list(w_plus), list(a_plus), potions, gold, spent, gem_bonus, gem_def, refine_spent, gem_pierce, gem_crit))
         for depth in range(trip * TRIP + 1, trip * TRIP + TRIP + 1):
             gold += floor_income(depth, size, build == "sword_torch")
             if VARIANT["gems"]:
@@ -358,6 +380,7 @@ class Mon:
     rank: str
     attacks: int = 1
     status: Optional[dict] = None       # {"escape": n, "attempts": n}
+    base_attacks: int = 99              # 迅捷的：超过这个数的出手按 extra_chance 掷
     held: int = 0                       # 这一场被控过几次（头目只吃一次）
     backs: int = 0
     heals: int = 0
@@ -382,6 +405,8 @@ class Hero:
     ranged: Optional[Weapon]
     guard_ranged: int = 0               # 塔盾：远程伤害 −2
     gem_bonus: float = 0.0              # 武器宝石加的伤害
+    gem_pierce: float = 0.0
+    gem_crit: float = 0.0
     block: float = 0.0                  # 盾的格挡几率（跟闪避合计最多 AVOID_CAP）
     torch_light: int = 0               # 手上点着的火把给的光（点燃 35、弱光 20）
     potions: int = 0
@@ -429,7 +454,7 @@ def spawn(depth: int, kind: str, rank: str, theme_key: str, size: int, groups: i
     fx = R.ELITE_AFFIXES.get(affix, {})
     hp *= fx.get("hp_mult", 1) * (R.SUMMON_HP if minion else 1)
     df += fx.get("def", 0)
-    for key in ("dmg_mult", "frenzy", "lifesteal", "thorns", "thorns_chance"):
+    for key in ("dmg_mult", "frenzy", "lifesteal", "thorns", "thorns_chance", "extra_chance"):
         if fx.get(key):
             props[key] = fx[key]
     if plague := fx.get("plague"):
@@ -444,12 +469,15 @@ def spawn(depth: int, kind: str, rank: str, theme_key: str, size: int, groups: i
     if boss_room:
         mult = 1 + R.BOSS_PARTY_HP * (size - 1)
         out = [Mon(name, max(2, round(hp * mult)), max(2, round(hp * mult)), atk, df, depth, props, rank,
-                   attacks=size * fx.get("attacks", 1), theme=theme_key, skills=skills)]
+                   attacks=size * fx.get("attacks", 1), theme=theme_key, skills=skills,
+                   base_attacks=size if fx.get("extra_chance") else 99)]
     else:
         copies = 1 if minion else R.party_copies(size, groups)
         mult = size / copies if not minion else 1
+        base = max(1, round(size / copies))
         out = [Mon(name, max(2, round(hp * mult)), max(2, round(hp * mult)), atk, df, depth, props, rank,
-                   attacks=max(1, round(size / copies)) * fx.get("attacks", 1), theme=theme_key, minion=minion)
+                   attacks=base * fx.get("attacks", 1), theme=theme_key, minion=minion,
+                   base_attacks=base if fx.get("extra_chance") else 99)
                for _ in range(copies)]
     for _ in range(fx.get("minions", 0)):
         out += spawn(depth, kind, "normal", theme_key, 1, 1, False, minion=True)        # 号令的：带一只同类小怪
@@ -636,7 +664,9 @@ class Fight:
             return
         bonus = shooter.first_bonus if shooter and first else 0
         pierce = shooter.pierce if shooter else 0
-        dmg = R.hurt_npc_by(power(h, shooter) + bonus + R.whole(h.gem_bonus), m.df - pierce)
+        dmg = R.hurt_npc_by(power(h, shooter) + bonus + R.whole(h.gem_bonus), m.df - pierce - R.whole(h.gem_pierce))
+        if h.gem_crit and random.random() < h.gem_crit:
+            dmg *= 2                             # 锋墨石会心一击
         if "bleed" in h.effects:
             dmg = max(1, math.floor(dmg * R.BLEED_DAMAGE))
         weak = m.props.get("weak")
@@ -714,9 +744,11 @@ class Fight:
                 continue
             if self.boss_turn(m):
                 continue
-            for _ in range(m.attacks):
+            for k in range(m.attacks):
                 if all(h.down for h in self.heroes):
                     return
+                if k >= m.base_attacks and random.random() >= m.props.get("extra_chance", 1):
+                    continue
                 self.enemy_act(m, pick_target(m, self.heroes, self.hits))
 
     def enemy_act(self, m: Mon, h: Hero) -> None:
@@ -845,7 +877,7 @@ def make_heroes(build: str, quality: str, trip: int, kit, size: int, depth: int)
                       for k, d in enumerate(armor)) + kit.gem_def
         hp = endurance_hp(depth)
         perks = {"bookmark", "tome", "flask", "drug"} if quality == "fav" else set()
-        heroes.append(Hero(hp, hp, 2, defense, ws, r, guard_ranged=guard, block=block, gem_bonus=kit.gem_bonus,
+        heroes.append(Hero(hp, hp, 2, defense, ws, r, guard_ranged=guard, block=block, gem_bonus=kit.gem_bonus, gem_pierce=kit.gem_pierce, gem_crit=kit.gem_crit,
                            potions=kit.potions, perks=perks))
     return heroes
 

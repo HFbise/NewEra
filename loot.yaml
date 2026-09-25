@@ -187,6 +187,7 @@ gems:
     5:  [60, 35, 5, 0]
     10: [30, 50, 17, 3]
     15: [10, 45, 30, 15]
+    20: [5, 35, 35, 25]
   numeric_perfect_min_floor: 15   # numeric 的宝石低于这层时，完美降成闪亮
   unsocket_fee: [10, 30, 60, 120] # 取出费用：碎裂 / 普通 / 闪亮 / 完美
   tier_price: [15, 40, 80, 200]   # 参考价
@@ -203,11 +204,14 @@ gems:
     boss: 1.0                  # 头目必掉一颗，本主题池
     treasure: 0.2              # 宝箱房额外 20% 出一颗，一半本主题、一半通用
     mining: 0.3                # 挖矿成功额外 30% 出一颗，从矿坑池或通用池抽
+    deep_from_floor: 15        # 深层多掉：从这一层起普通怪、精英、宝箱房的宝石掉率 ×deep_mult，头目掉 boss_deep 颗
+    deep_mult: 2
+    boss_deep: 2
   pools:
     mine: [bloodstone, rockvein_stone]
     graveyard: [silver_vein, frost_jade, cats_eye]
-    castle: [ironheart_stone, staunch_stone]
+    castle: [ironheart_stone, staunch_stone, sunder_stone]
     forest: [ember_stone, rootbind_stone]
     swamp: [venom_crystal, mossvein_stone]
-    library: [inkward_opal, glowstone]
-    common: [prism_shard, vigor_garnet]
+    library: [inkward_opal, glowstone, keen_ink]
+    common: [prism_shard, vigor_garnet, bloodstone]
