@@ -1,0 +1,535 @@
+# 深层主题第一批：第 16 层起进主题池（地底熔炉、水晶洞窟、静默神殿）
+# 格式跟 dungeon.yaml 一样：themes / monsters / events 三段，加载时合并（同名的以 dungeon.yaml 为准）。
+# 这几个主题用到的机制汇总在 deep_dungeon_21.yaml 文件末尾的"机制清单"。
+# 数值已经是 ×10 以后的量级。深层第一档装备：单手 95、双手 135、胸甲 40、盾 40（见 deep_items.yaml）。
+
+themes:
+
+  # ======================= 地底熔炉 =======================
+  forge:
+    name: 地底熔炉
+    light: 60                   # 熔岩照着，光亮偏高：钱掉得少一点，这是这里的代价
+    min_depth: 16               #第 16 层起才进主题池；老的六个主题 16 层以后不再出现
+    heat:                       #灼热：这一层每做一个"动身子"的动作掉血量上限的 1%（不看防御，不受最少 10 点保底，最少 1 点）
+      pct: 0.01
+      actions: [move, attack, stunt, dodge, flee, search]
+    fixed_events: {cooling_cistern: 2}     #每层固定刷两间冷却水池（泉水房）
+    intro: 石阶越往下越烫，空气里满是铁锈和硫磺的味道，远处传来一下一下沉闷的锤声，像是有什么东西几千年来一直没停过手。
+    entry:
+      name: 熔炉之门
+      light: bright
+      description: 一扇两人多高的青铜大门半开着，门缝里透出橘红色的光，热浪一阵一阵往外涌。
+      details: >-
+        门板上铸着一排排矮人的锻造纹，有些地方被烤得发黑。门槛下的石缝里淌着一线暗红的铁水，
+        早就凝成了一条弯弯曲曲的铁痕。越往里走，脚底下的石头越烫。
+    stairs:
+      name: 铁水瀑布旁的阶梯
+      light: bright
+      description: 一道铁水从高处的槽口倾泻下来，落进看不见底的深坑，旁边凿着一条窄窄的石阶往下盘。
+      details: >-
+        铁水落下的地方溅起一片火星，照得整面岩壁忽明忽暗。石阶被烤得发烫，扶手是一根根嵌进岩壁的铁环，
+        摸上去要隔着袖子。往下看，深处还有更亮的光。
+    treasure:
+      name: 王室宝库
+      light: dim
+      cover: true
+      description: 一间用整块黑石凿出来的石室，墙上一格一格的石龛里摆着落满灰的东西。
+      details: >-
+        石龛上刻着每一件东西的名字，大多已经空了。地上倒着一尊只剩半截的矮人石像，手还指着最里面那一格。
+        角落里有几只包铁的箱子，锁早就被烤化了。
+    rooms:
+      - name: 熔岩河畔的长廊
+        light: bright
+        description: 一条沿着熔岩河修的石廊，河面翻着气泡，热得让人睁不开眼。
+        details: 石廊的栏杆早就塌了大半，剩下的几截被烤得发红。河对岸是一排排空着的炉口，像一张张张开的嘴。
+      - name: 傀儡装配间
+        light: dim
+        cover: true
+        description: 一间摆满了半成品傀儡的工坊，铁架上吊着没装好的手臂和躯干。
+        details: 地上散落着铆钉和熔渣，墙上钉着一张画满傀儡图样的皮纸。有一具傀儡胸口的炉芯还微微发红，像在呼吸。
+      - name: 铁砧广场
+        light: bright
+        cover: true
+        description: 一片开阔的石地上立着几十座铁砧，每座都有半人高，上面还留着没打完的东西。
+        details: 铁砧之间的地面被锤出一个个浅坑。有几座铁砧旁边靠着锻锤，锤柄的皮条早就烂光了，锤头却一点锈都没有。
+      - name: 铸币坊
+        light: dim
+        description: 一间低矮的石室，墙边一排石模子里还嵌着没倒出来的金属圆饼。
+        details: 模子上的花纹是一顶王冠和一把锤子。地上撒着铸坏了的古币，边缘熔得歪歪扭扭，踩上去咯吱作响。
+      - name: 坍塌的风箱室
+        light: dark
+        description: 一只比房子还大的皮风箱塌在石室中央，破口里时不时往外漏出一股热风。
+        details: 风箱的木架子断成了几截，拉绳垂在地上。每隔一阵深处就传来一声长长的喘息，风箱跟着鼓一下，又瘪下去。
+      - name: 矮人的宿舍
+        light: dim
+        cover: true
+        description: 一排排凿进岩壁的石床，床上铺着早已发硬的毛毡。
+        details: 每张床头都刻着一个名字，有几张床上还摆着没带走的酒杯和烟斗。最里面那张床的墙上刻满了划痕，数到后来就乱了。
+    features:
+      - {name: 悬吊的铁水桶, max_tier: heavy}
+      - {name: 烧红的铁砧, max_tier: heavy}
+      - {name: 蒸汽阀门, max_tier: heavy}
+      - {name: 堆成山的熔渣, max_tier: light}
+      - {name: 断掉的传送链, max_tier: light}
+    traps:                      #本主题自己的陷阱描写，没写的主题用全局 traps
+      - 脚下一块铁板突然翻开，底下是一槽冒着热气的铁水
+      - 墙上的管道咔的一声，喷出一股滚烫的蒸汽
+      - 一排地砖被烧得通红，踩上去才发现鞋底在冒烟
+    monsters: [slag_golem, fire_salamander, dwarf_smith_shade, forge_wisp, bellows_worker]
+    events: [unquenched_forge, orichalcum_seam, lava_bridge]
+    eerie:
+      - 远处的锤声忽然停了，过了很久，又一下一下响了起来。
+      - 熔岩河里浮上来一个巨大的气泡，破开的时候，像是有人叹了口气。
+      - 一阵热风从背后吹过，带着一股烧焦的头发味。
+    boss:
+      name: 矮人王的铸像
+      description: 一尊三人高的青铜铸像，是一位戴着王冠的矮人，手里拄着一柄比人还高的锻锤。胸口开着一扇小小的炉门，里面的火一直没灭过。
+      persona: 它是按矮人王的样子铸的，也继承了他最后一道命令：守住熔炉，谁也不许把火带走。它不说话，只是一锤接一锤地砸，像在打一块永远打不完的铁。
+      hp: 1.3
+      atk: 10
+      def: 20
+      immune: [bleed, poison, restrained]
+      resist_element: [fire]
+      weak: water               #熔化状态时被泼泉水会淬火裂开，见 quench
+      actions: {16: 2, 31: 3}
+      stances:                  #每出手 every 次在两种状态之间切换，开场是冷却
+        every: 3
+        start: cold
+        cold: {def: 40, atk: -20, label: 铸像身上的红光一点点褪去，青铜又变得冰冷坚硬}
+        molten: {def: -20, atk: 20, label: 炉门里的火猛地窜高，铸像的表面开始发红软化，每一锤都带着铁水}
+      quench:                   #熔化状态时往它身上泼泉水（这瓶泉水用掉）
+        label: 泉水泼在烧红的青铜上，嗤的一声腾起白雾，铸像身上裂开了一道口子
+        cracked_rounds: 1       # 裂开一个敌人回合：防御归零，挨的伤害 ×1.5，跳过它的下一次出手
+        then_stance: cold
+      skills:
+        - {when: every, value: 4, do: telegraph, label: 铸像把锻锤高高举起，锤头一点点烧红（下一次出手砸向打它最狠的人）,
+           then: {do: strike, mult: 2.5, target: highest_threat}}
+        - {when: every, value: 3, do: combo, target: all, label: 它一脚踏碎熔渣槽，铁水溅了一地,
+           effects: [{kind: corrode}, {kind: prone}]}
+        - {when: hp_below, value: 0.5, do: phase, label: 铸像胸口的炉门轰然打开，热浪扑面而来,
+           env: {light: 30, heat_mult: 2}, then: {do: summon, kind: slag_golem, count: 1}}
+
+  # ======================= 水晶洞窟 =======================
+  crystal:
+    name: 水晶洞窟
+    light: 65
+    light_range: [50, 80]       #每个房间的自然光亮在这个范围里随机
+    min_depth: 16
+    glare:                      #炫光：光亮到 at 以上，每个敌人回合有 chance 几率被晃得看不清一回合；这一回合闭眼的人不会
+      at: 70
+      chance: 0.25
+    intro: 石阶两侧的岩壁开始泛光，一簇簇透明的晶体从缝里长出来，把远处的光折成一片晃眼的碎彩，脚步声在晶体之间来回弹个不停。
+    entry:
+      name: 晶石隧道
+      light: bright
+      description: 一条被晶簇包起来的隧道，四壁透亮，走在里面像走进了一只巨大的玻璃瓶。
+      details: >-
+        晶体里封着细小的气泡和几缕暗色的纹路，仔细看像是一行行字。隧道尽头的光一直在变颜色，
+        从淡蓝到浅金，再到一种说不出的白。
+    stairs:
+      name: 晶簇竖井
+      light: bright
+      description: 一口竖井的井壁长满了倒垂的晶锥，一条石阶贴着井壁往下盘，每一级都嵌着一块发光的晶片。
+      details: >-
+        越往下晶锥越粗，有的比人还高，尖端悬在石阶上方，看着随时会掉下来。井底传上来一阵低低的嗡鸣，
+        像很多只杯子被同时轻轻敲响。
+    treasure:
+      name: 晶封的密室
+      light: dim
+      cover: true
+      description: 一间被晶体整个封住的石室，敲开了一道口子才能钻进去。
+      details: >-
+        晶体里封着几只箱子和一张书桌，桌上摊着的书页被晶化得半透明。有一只箱子已经被人从晶体里凿出来了，
+        凿痕还很新。
+    rooms:
+      - name: 棱镜大厅
+        light: bright
+        cover: true
+        description: 一座穹顶全是晶体的大厅，光在里面来回折射，地上投满了彩色的光斑。
+        details: 几根晶柱从地面一直长到穹顶，粗得几个人都抱不过来。站在大厅中央，能在四面八方的晶面上看见几十个自己。
+      - name: 晶簇森林
+        light: bright
+        cover: true
+        description: 一片密密麻麻的晶簇从地上长出来，像一片透明的树林，只有几条缝隙能钻过去。
+        details: 晶簇之间挂着蛛丝一样的细晶丝，碰一下就叮叮作响。有些晶簇里封着小动物的影子，姿势还保持着逃跑的样子。
+      - name: 暗晶裂谷
+        light: dim
+        description: 一道裂谷两边长着颜色发暗的晶体，吸光，走进来一下子暗了许多。
+        details: 暗晶摸上去是温的，里面有东西在缓缓流动。裂谷底下有一条细细的地下河，水面上漂着几片晶屑。
+      - name: 低语晶洞
+        light: dim
+        description: 一个圆形的晶洞，说一句话，四面的晶壁会一句一句地把它传回来。
+        details: 回来的话有时候会变，像是晶体在自言自语。洞壁上有人刻了一行字，刻得很深：别回答它。
+      - name: 晶湖
+        light: bright
+        ground: water
+        description: 一汪清澈见底的地下湖，湖底长满了发光的晶体，水浅的地方只到小腿。
+        details: 湖水冰凉，湖底的光从下往上照，把人的影子投在洞顶上，大得吓人。湖中央有一块凸起的晶石，上面放着一只小铜盒。
+      - name: 被晶化的矿工营地
+        light: dim
+        cover: true
+        description: 一处营地整个被晶体吞了进去，帐篷、火堆、工具都成了透明的雕塑。
+        details: 有两个矿工的身影也被封在晶体里，一个在弯腰挖矿，一个抬头望着洞顶，嘴张着，像是在喊什么。
+    features:
+      - {name: 巨大的晶簇, max_tier: heavy, on_break: {light: -20}}     #打碎以后房间光亮下降
+      - {name: 悬垂的晶锥, max_tier: heavy, on_break: {light: -10}}
+      - {name: 共鸣晶柱, max_tier: heavy}
+      - {name: 晶片堆, max_tier: light}
+      - {name: 碎晶地面, max_tier: light}
+    traps:
+      - 头顶一根晶锥突然断裂，直直扎了下来
+      - 脚下的晶面裂开一道口子，底下的碎晶像刀子一样竖着
+      - 一块晶体忽然把光聚成一束，正好晃进眼睛里
+    monsters: [crystal_spider, prism_elemental, crystallized_miner, crystal_bat, resonator]
+    events: [glowing_vein, whispering_echo, mirror_hall]
+    eerie:
+      - 四周的晶体同时轻轻嗡了一声，又同时停下。
+      - 你在一块晶面上看见自己的倒影，它慢了半拍才跟着你转过头。
+      - 远处传来一声清脆的碎裂声，然后是很长的一串回响。
+    boss:
+      name: 晶母
+      description: 洞窟最深处一团巨大的晶体，形状像一个蜷缩着的女人，身上长着几簇发光的晶簇，每一簇都在随着她的呼吸一明一暗。
+      persona: 她是这片洞窟的源头，所有晶体都是从她身上长出去的。她不恨闯入者，只是想把他们也变成晶体，好好地保存起来。
+      hp: 1.2
+      atk: 10
+      def: 10
+      immune: [bleed, poison]
+      weak: pierce
+      actions: {16: 2, 31: 3}
+      nodes:                    #晶簇：每颗是一个能单独打的目标；还有晶簇在时本体防御 +60
+        count: 3
+        hp_pct: 0.08            # 每颗血量是本体上限的 8%
+        while_alive: {def: 60}
+        regrow_on_phase: true   # 转阶段时重新长满
+      skills:
+        - {when: every, value: 3, do: telegraph, label: 她身上的晶簇一齐亮起，光越聚越强（下一次出手晃瞎所有睁着眼的人）,
+           then: {do: combo, target: all, effects: [{kind: blind}], unless: eyes_closed}}
+        - {when: every, value: 4, do: telegraph, label: 洞顶的晶锥开始颤抖（下一次出手全场挨砸，躲到晶柱后面能少挨一半）,
+           then: {do: strike, mult: 1.5, target: all, cover_halves: true}}
+        - {when: hp_below, value: 0.5, do: phase, label: 她蜷得更紧了，身上的晶簇一簇簇重新长了出来,
+           env: {light: 20}, then: {do: summon, kind: crystal_spider, count: 1}}
+
+  # ======================= 静默神殿 =======================
+  silent:
+    name: 静默神殿
+    light: 25
+    min_depth: 16
+    noise:                      #声响：整层一个声响值，大声的动作会往上加；满了就引来游荡的怪
+      max: 10
+      add: {talk: 1, read: 2, break: 2, heavy_hit: 1, aoe: 2, fall: 1, flee: 1}
+      full: {summon: wanderer, reset_to: 5}   # 满了以后引来一只游荡的怪（第 21 层起一群），直接扑到你所在的房间，声响回落到 5
+    intro: 石阶尽头是一片完全没有声音的黑暗，连自己的脚步声都像被什么东西吞掉了。墙上刻着同一个符号，一只捂住嘴的手。
+    entry:
+      name: 缄口之门
+      light: dim
+      description: 一扇黑石大门，门楣上刻着一只捂住嘴的手，门边两排石龛里点着永不熄灭的长明烛。
+      details: >-
+        门槛上摆着一只铜盘，盘里堆满了小石子，每一颗都刻着一个名字，像是进去的人留下的。
+        门上用古老的字写着一行字，诺艾尔大概认得：此后只许心里说话。
+    stairs:
+      name: 无声的阶梯
+      light: dark
+      description: 一条往下的石阶，每一级都铺着厚厚的毛毡，踩上去一点声音都没有。
+      details: >-
+        阶梯两侧的墙上挂着一排排小铜铃，铃舌都被细线仔细地绑住了。有一只铃的线断了，
+        铃舌垂着，没人敢去碰它。
+    treasure:
+      name: 供奉室
+      light: dim
+      cover: true
+      description: 一间堆满供品的小石室，供品大多已经朽坏，只剩下金属和石头的东西。
+      details: >-
+        供桌上摆着一只捂着嘴的石像，石像前的香炉里还残留着一点香灰，闻着有股很淡的甜味。
+        墙角堆着几只封死的木匣。
+    rooms:
+      - name: 长明烛廊
+        light: dim
+        description: 一条长廊两侧摆满了烛台，烛火一动不动地燃着，连一丝摇晃都没有。
+        details: 烛台下面积着厚厚的蜡泪，有的已经堆得比人还高。长廊尽头有一面铜镜，照出来的人都没有嘴。
+      - name: 无声的中庭
+        light: dark
+        cover: true
+        description: 一座露天的中庭，头顶却不是天空，而是一片漆黑的岩顶，几根石柱歪歪斜斜地站着。
+        details: 中庭中央有一口干涸的水池，池底铺着一层细沙，沙上有一串很轻的脚印，绕着水池走了一圈又一圈。
+      - name: 石像大殿
+        light: dim
+        cover: true
+        description: 一座高大的殿堂，两侧站着一排排捂着嘴的石像，个个比人高出一截。
+        details: 石像的眼睛都是闭着的，但总觉得有一两尊的姿势，跟刚进来时不一样了。殿堂尽头的神座上什么都没有。
+      - name: 藏经阁
+        light: dim
+        cover: true
+        description: 一间摆满经卷的石室，经卷都用绳子捆着，绳结上封着蜡。
+        details: 蜡封上印着同一个捂嘴的符号。有一卷经掉在地上，绳子松了，摊开的那一页上只有一个字，诺艾尔说它的意思是"嘘"。
+      - name: 忏悔长廊
+        light: dark
+        description: 一条窄窄的长廊，一侧是一排小小的木格间，每一格都挂着一块帘子。
+        details: 帘子后面偶尔会传来很轻很轻的呼吸声。木格间的墙上刻满了字，每一个人都只写了一句，没有人签名。
+      - name: 钟楼底层
+        light: dark
+        description: 一座钟楼的底层，头顶是看不到尽头的黑暗，一根粗绳从黑暗里垂下来。
+        details: 绳子的末端被钉死在地上，钉子上挂着一块木牌，上面刻着一个大大的叉。绳子偶尔会自己轻轻晃一下。
+    features:
+      - {name: 悬挂的铜钟, max_tier: heavy, noise: 5}        #用它（砸、推）会一下加 5 点声响
+      - {name: 石像底座, max_tier: heavy}
+      - {name: 巨大的香炉, max_tier: heavy}
+      - {name: 烛台架, max_tier: light}
+      - {name: 长椅, max_tier: light}
+    traps:
+      - 一块地砖微微一沉，头顶一张沉重的铜网罩了下来
+      - 墙缝里突然喷出一股甜腻的香，吸一口喉咙就发紧
+      - 脚下绊到一根细线，一排铜铃哗啦啦地响了起来
+    monsters: [mute_monk, stone_guardian, echo_wraith, listener, bell_ringer]
+    events: [wishing_pool, confessional, silence_stele]
+    eerie:
+      - 你忽然意识到，自己已经很久没有听见任何声音了。
+      - 远处有一只铃铛响了一下，很轻，然后是一片更深的寂静。
+      - 身后有人在你耳边吸了一口气，回头只有一排闭着眼的石像。
+    boss:
+      name: 无舌的大祭司
+      description: 一个身披白袍的高大身影，脸上罩着一张没有嘴的银面具，手里握着一只没有铃舌的铜铃，走路时白袍下摆拖过地面，一点声音都没有。
+      persona: 他割掉了自己的舌头，好让神殿永远安静。他恨一切声音，谁在他面前出声，谁就是在亵渎。他出手的时候也不发出一点声响。
+      hp: 1.2
+      atk: 10
+      def: 10
+      immune: [silence, blind]
+      weak: bright
+      actions: {16: 2, 31: 3}
+      silence_field: true       #他在场时念书、卷轴全部无效
+      noise_heal: 0.03          #你每做一个会加声响的动作，他回血量上限的 3%
+      skills:
+        - {when: every, value: 3, do: combo, target: highest_threat, label: 他抬起没有嘴的面具看了你一眼，你喉咙一紧，眼前也跟着发黑,
+           effects: [{kind: silence}, {kind: blind}]}
+        - {when: every, value: 4, do: telegraph, label: 他把那只没有铃舌的铜铃高高举起（下一次出手，整座大殿都会响起一声听不见的钟声）,
+           then: {do: strike, mult: 1.5, target: all, cover_halves: false}}
+        - {when: hp_below, value: 0.5, do: phase, label: 他张开双臂，两侧的石像一尊尊睁开了眼睛,
+           env: {light: -10}, then: {do: summon, kind: stone_guardian, count: 1}}
+
+# ======================= 怪（合并进 monsters） =======================
+monsters:
+  # ---- 地底熔炉 ----
+  slag_golem:
+    name: 熔渣傀儡
+    description: 一具用熔渣和铁板胡乱拼起来的人形，胸口嵌着一块还在发红的炉芯，每走一步都往下掉火星。
+    persona: 没有意识，只会重复几千年前的命令：把挡路的东西搬走。被打了也不停，一直往前推。
+    hp: 1.4
+    atk: 0
+    def: 30
+    perception: -1
+    immune: [bleed, poison]
+    resist_element: [fire]      #火属性对它不算弱点，也不加伤害
+    weak: pierce
+    on_hit: {kind: prone, chance: 0.25, label: 被傀儡一把推翻在地}
+  fire_salamander:
+    name: 火蜥蜴
+    description: 一条比人还长的红皮蜥蜴，背上的鳞片像烧透的炭，爬过的地方留下一道焦痕。
+    persona: 喜欢趴在熔岩边上晒热，闻到生人的气味就昂起头，一口咬住不放。
+    hp: 0.8
+    atk: 10
+    animal: true
+    perception: 1
+    resist_element: [fire]
+    on_hit: {kind: corrode, chance: 0.3, label: 被烫得发红的牙咬穿了护甲}
+  dwarf_smith_shade:
+    name: 矮人亡魂铁匠
+    description: 一个半透明的矮壮身影，系着一条烧焦的皮围裙，手里的锻锤却是实实在在的铁。
+    persona: 还以为自己在干活，嘴里念叨着"火候、火候"。谁挡在铁砧前面，就把谁当成一块要打的铁。
+    undead: true
+    hp: 1.0
+    atk: 10
+    def: 10
+    on_hit: {kind: prone, chance: 0.2, label: 被铁锤砸得跪倒在地}
+  forge_wisp:
+    name: 炉火精
+    description: 一团飘在半空的火焰，火苗里隐约有一张咧嘴笑的脸，身后拖着一串熔渣。
+    persona: 淘气又恶毒，躲在熔岩河对岸往人身上甩熔渣，被泼水就尖叫着缩成一团。
+    hp: 0.6
+    atk: 10
+    ranged: true
+    verb: 甩出一团烧红的熔渣
+    resist_element: [fire]
+    weak: water
+    on_hit: {kind: corrode, chance: 0.2, label: 熔渣粘在护甲上烧出一个洞}
+  bellows_worker:
+    name: 风箱工
+    description: 一个佝偻的矮人亡魂，背上绑着一只破风箱，走到哪都呼哧呼哧地拉着。
+    persona: 不打人，只顾着给傀儡"回炉"：风箱一拉，傀儡身上的裂缝就又烧合了。
+    undead: true
+    hp: 0.8
+    atk: -10
+    ranged: true
+    healer: 0.25
+    verb: 拉了一下风箱，一股热风扑了过来
+
+  # ---- 水晶洞窟 ----
+  crystal_spider:
+    name: 晶甲蜘蛛
+    description: 一只有磨盘大的蜘蛛，背甲是一整块半透明的晶体，八条腿敲在晶面上叮叮作响。
+    persona: 耐心，喜欢在晶簇之间拉满晶丝，等猎物自己撞上来，再慢慢爬过去。
+    hp: 1.0
+    atk: 0
+    def: 20
+    animal: true
+    on_hit: {kind: restrained, chance: 0.25, label: 被一团黏糊糊的晶丝缠住了}
+  prism_elemental:
+    name: 棱镜元素
+    description: 一团由无数碎晶片拼成的人形，身体一直在缓缓转动，把光折成一道道彩色的射线。
+    persona: 没有情绪，只会折射，打向它的东西也常常被它原样折回去。
+    hp: 0.8
+    atk: 10
+    def: 10
+    ranged: true
+    verb: 把一束光折成利刃射了过来
+    reflect_ranged: 0.3         #远程攻击打它有 30% 几率被折回射手身上
+    on_hit: {kind: blind, chance: 0.2, label: 一道彩光直直扎进眼睛里}
+  crystallized_miner:
+    name: 晶化矿工
+    description: 一个半边身子都被晶体吞没的矿工，晶化的那只手长成了一把尖锐的晶镐，另一只手还是人的样子。
+    persona: 意识早就不在了，只剩下挖矿的动作，谁靠近就把谁当成一面矿壁来凿。
+    hp: 1.3
+    atk: -10
+    def: 30
+    perception: -1
+    immune: [bleed]
+    on_hit: {kind: restrained, chance: 0.15, label: 腿上被敲上一层晶壳，一时迈不开步}
+  crystal_bat:
+    name: 晶翼蝠
+    description: 一只翅膀薄得透明的大蝙蝠，翼膜里长着细细的晶丝，飞过的时候会发出一串尖细的哨音。
+    persona: 成对出没，靠回声找人，在最亮的地方也能准确地扑到你脸上。
+    hp: 0.6
+    atk: 10
+    animal: true
+    keen: true
+    on_hit: {kind: blind, chance: 0.25, label: 翅膀扫过眼前，晃得什么都看不清}
+  resonator:
+    name: 共鸣者
+    description: 一个身体像音叉一样细长的晶体生物，头顶分成两根尖尖的晶角，一直在轻轻地嗡鸣。
+    persona: 不打人，只会嗡鸣，让身边的同伴身上结出一层薄薄的晶甲。
+    hp: 0.8
+    atk: -10
+    ranged: true
+    verb: 嗡的一声，一圈看不见的震波荡了过来
+    shield_allies: {every: 3, absorb: 1}     #每出手 3 次给一个同伴套一层晶甲，挡掉它挨的下一次伤害
+
+  # ---- 静默神殿 ----
+  mute_monk:
+    name: 缄默修士
+    description: 一个穿着灰袍的修士，嘴被一道道麻线缝了起来，双手合十，走路没有一点声音。
+    persona: 虔诚到偏执，觉得所有声音都是罪，看见谁开口就扑上去，要把那张嘴也封起来。
+    hp: 1.0
+    atk: 0
+    on_hit: {kind: silence, chance: 0.3, label: 一只冰冷的手按在你嘴上，喉咙像被堵住了}
+  stone_guardian:
+    name: 石面守像
+    description: 一尊捂着嘴的高大石像，平时一动不动地立在那里，醒来时眼皮上的石屑簌簌往下掉。
+    persona: 睡得很沉，只有吵闹才叫得醒它；一旦醒了，就要把吵醒它的东西砸碎才肯重新睡去。
+    hp: 1.6
+    atk: 10
+    def: 40
+    perception: -1
+    immune: [bleed, poison]
+    dormant: true               #平时不动也不算敌人；所在房间的声响累计到 wake_noise 就醒
+    wake_noise: 3
+    on_hit: {kind: prone, chance: 0.3, label: 石拳砸下来，把你整个人砸倒在地}
+  echo_wraith:
+    name: 回音
+    description: 一团看不清形状的灰影，贴着墙壁游动，只有你出声的时候，它的轮廓才会亮一下。
+    persona: 它是这座神殿里所有被吞掉的声音变成的，会把你的声音学回来，再变成尖啸打在你身上。
+    hp: 0.6
+    atk: 10
+    undead: true
+    light_averse: true
+    ranged: true
+    verb: 把你刚才的声音变成一声尖啸打了回来
+    on_hit: {kind: blind, chance: 0.25, label: 尖啸在脑子里炸开，眼前一阵发白}
+  listener:
+    name: 聆听者
+    description: 一个瘦长的无眼怪物，头两侧长着一对巨大的耳朵，耳廓随着声音一张一合。
+    persona: 什么都看不见，却什么都听得见。你只要一动，它就知道你在哪；你一动不动，它就找不到你。
+    hp: 0.9
+    atk: 10
+    hearing: true               #能发现潜行的人；但这一轮没有动身子的人它发现不了
+  bell_ringer:
+    name: 敲钟人
+    description: 一个驼背的老修士，手里攥着一只小铜铃，铃舌没有绑，他却一直小心翼翼地捂着。
+    persona: 他是神殿里唯一被允许出声的人。一旦他松开手摇响铃铛，所有东西都会被惊醒。
+    hp: 0.8
+    atk: -10
+    ranged: true
+    verb: 摇了一下铜铃
+    bell: {every: 3, atk: 10, noise: 3}      #每出手 3 次摇一次铃：全场的怪攻击 +10（这一场），声响 +3
+
+# ======================= 事件房（合并进 events） =======================
+events:
+  # ---- 地底熔炉 ----
+  cooling_cistern:             # 熔炉每层固定两间，就是这个主题的泉水房
+    name: 冷却水池
+    light: dim
+    description: 一方用黑石砌成的大水池，池边立着几只矮人淬火用的长柄铁勺，池水竟然还是凉的。
+    details: 水面上浮着一层薄薄的铁锈，底下却清得见底。墙上刻着一行矮人文字，旁边有人用炭笔歪歪扭扭地译了出来："先淬火，再干活"。
+    take: {name: 水池, item: spring_water, where: 里}
+  unquenched_forge:
+    name: 未熄的锻炉
+    light: bright
+    description: 一座小锻炉里的炭火居然还没灭，旁边的铁砧上摆着一把磨得发亮的锻锤。
+    details: 炉火烧得正旺，像是有人刚离开不久。铁砧上刻着一圈矮人的锻造纹，照着纹路敲，也许能把手里的兵器再打磨一番。火星迸得很凶，手上得稳。
+    take: {name: 锻炉, service: free_upgrade, skill: sleight, difficulty: 2, fail: 火星迸进了袖口，烫得人直甩手, fail_damage: 40}
+    #service: free_upgrade：成功就给手上的主武器免费升一级（满级了改成给一份碎铁）
+  orichalcum_seam:
+    name: 奥利哈刚矿脉
+    light: bright
+    description: 一面被熔岩烤裂的岩壁里露出一条青灰色的矿脉，比上面矿坑里见过的都要粗。
+    details: 矿脉被烤得微微发红，敲下来的碎块还是烫的。岩缝里时不时喷出一股热气，挖的时候得看准时机。
+    take: {name: 矿脉, item: ore, where: 里, skill: athletics, difficulty: 2, bonus_gem: 0.5, fail: 一股热蒸汽从矿脉缝里喷了出来, fail_damage: 40}
+    #bonus_gem：成功时另有这个几率多掉一颗本主题的宝石
+  lava_bridge:
+    name: 熔岩吊桥
+    light: bright
+    description: 一条铁链吊桥横跨在熔岩河上，对岸的石台上摆着一只铜匣。
+    details: 吊桥只剩几块木板，大半是光秃秃的铁链，踩上去晃得厉害。桥下的熔岩翻着泡。铜匣上刻着和熔炉之门一样的锻造纹。
+    take: {name: 石台, item: forge_rubbing, where: 上, skill: athletics, difficulty: 2, fail: 铁链一晃，脚下踩空，被熔岩的热浪燎了一下, fail_damage: 60}
+
+  # ---- 水晶洞窟 ----
+  glowing_vein:
+    name: 发光的晶脉
+    light: bright
+    description: 一条晶脉从岩壁里斜斜地穿出来，里面嵌着几颗颜色各异的宝石，亮得像要烧起来。
+    details: 晶脉很脆，要把宝石完整地撬下来，得顺着纹路下刀。撬坏了，碎晶会像玻璃渣一样迸出来。
+    take: {name: 晶脉, item: gem, where: 里, skill: sleight, difficulty: 2, fail: 晶脉啪的一声裂开，碎晶扎进了手背, fail_damage: 30}
+    #item: gem：从本主题的宝石池里按本层品质抽一颗
+  whispering_echo:
+    name: 回声洞
+    light: dim
+    description: 一个很深的晶洞，你的脚步声在里面转了很多圈才回来，回来的时候多了一些别的声音。
+    details: 仔细听，那些多出来的声音像是有人在洞的某个角落里念书。要找到它，得分清哪一声是回声，哪一声不是。
+    take: {name: 晶洞深处, item: crystal_sealed_page, where: 里, skill: perception, difficulty: 2, fail: 循着声音摸过去，只摸到一面冰冷的晶壁}
+  mirror_hall:
+    name: 镜厅
+    light: bright
+    description: 一间四壁都是光滑晶面的石厅，每一面都照出一个你，其中一个没有跟着你动。
+    details: 那个不动的倒影慢慢从晶面里走了出来，手里拿着和你一样的武器，脸上的表情却比你冷得多。
+    take: {name: 倒影, service: mirror_duel, reward: [gem, crystal_dust]}
+    #service: mirror_duel：刷出一个"你的倒影"，攻防血是你的七成；打赢了拿一颗宝石和一份晶粉，打输只是被赶出去
+
+  # ---- 静默神殿 ----
+  wishing_pool:
+    name: 许愿池
+    light: dim
+    description: 一口圆形的石池，池底铺满了古老的钱币，池边刻着一行小字：静静地投，静静地许。
+    details: 池水平静得像一面镜子，扔进去的东西沉下去时一点水花都没有。要是投币的时候发出了声音，据说愿望就不灵了。
+    take: {name: 许愿池, service: wish, cost_gold: 10, fail_if_noise_at_least: 5}
+    #service: wish：付一枚金币的钱（按层数涨），这一层随机得到一个小祝福（攻击、闪避、回血三选一）；声响已经到 5 以上就不灵
+  confessional:
+    name: 忏悔室
+    light: dark
+    description: 一间只放得下一个人的小木格间，帘子后面有一块雕着花的木板，板后隐约有人在听。
+    details: 木板上有一个小孔，凑近了能闻到一股很淡的香。据说在这里轻声说出自己做过的事，身上的晦气就会散去。
+    take: {name: 忏悔室, service: cleanse}
+    #service: cleanse：清掉身上所有减益，回血量上限的 15%；这一层只能用一次
+  silence_stele:
+    name: 禁言碑
+    light: dim
+    description: 一块黑色的石碑上刻满了细小的文字，碑前的地上跪着一圈石像，都低着头。
+    details: 碑文说的是下面一层的路。读得懂的人会明白，但读完以后很长一段时间都说不出话来。
+    take: {name: 石碑, service: reveal_next_floor, self_status: {kind: silence, actions: 10}, skill: investigation, difficulty: 2, fail: 字太小太密，读着读着就花了眼}
+    #service: reveal_next_floor：下一层进去时整层地图都是知道的；代价是接下来 10 个动作被禁声

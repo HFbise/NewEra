@@ -1,0 +1,147 @@
+# 深层掉落：各段合并进 loot.yaml 对应的 key 下
+
+monsters:
+  # 地底熔炉
+  slag_golem:
+    - {item: dwarf_plate, chance: 0.04}
+  fire_salamander:
+    - {item: salamander_boots, chance: 0.06}
+  dwarf_smith_shade:
+    - {item: scrap_iron, chance: 0.4}
+    - {item: dwarf_hand_axe, chance: 0.04}
+  forge_wisp: []
+  bellows_worker: []
+  # 水晶洞窟
+  crystal_spider:
+    - {item: crystal_mail, chance: 0.04}
+  prism_elemental:
+    - {item: prism_shield, chance: 0.04}
+    - {item: crystal_dust, chance: 0.2}
+  crystallized_miner:
+    - {item: crystal_spear, chance: 0.04}
+    - {item: crystal_dust, chance: 0.15}
+  crystal_bat: []
+  resonator:
+    - {item: crystal_dust, chance: 0.3}
+  # 静默神殿
+  mute_monk:
+    - {item: monk_robe, chance: 0.04}
+    - {item: silence_incense, chance: 0.08}
+  stone_guardian:
+    - {item: guardian_shield, chance: 0.06}
+  echo_wraith: []
+  listener:
+    - {item: soft_sole_boots, chance: 0.05}
+  bell_ringer:
+    - {item: mute_dagger, chance: 0.04}
+  # 沙漠迷城
+  sand_scorpion:
+    - {item: desert_robe, chance: 0.04}
+  mummy:
+    - {item: scarab_amulet, chance: 0.04}
+  jackal_guard:
+    - {item: jackal_halberd, chance: 0.05}
+  sand_spirit:
+    - {item: sandwalker_boots, chance: 0.05}
+  scarab_swarm: []
+  tomb_priest:
+    - {item: mural_rubbing, chance: 0.08}
+  # 梦境回廊
+  nightmare:
+    - {item: slumber_ring, chance: 0.05}
+  mirror_self:
+    - {item: dazed_blade, chance: 0.04}
+  dream_tapir:
+    - {item: sleepwalker_shoes, chance: 0.05}
+  whisperer:
+    - {item: lucid_mirror, chance: 0.04}
+  dream_weaver: []
+  # 迷雾葬海
+  drowned_sailor:
+    - {item: cutlass, chance: 0.05}
+  fog_angler:
+    - {item: lighthouse_lantern, chance: 0.04}
+  reef_crab:
+    - {item: captain_coat, chance: 0.04}
+  fog_eel:
+    - {item: harpoon, chance: 0.05}
+  wreck_ghost:
+    - {item: ship_plaque, chance: 0.06}
+  siren: []
+  # 星界秘境
+  astral_fish:
+    - {item: stardust, chance: 0.06}
+  meteor_golem:
+    - {item: starweave_armor, chance: 0.03}
+    - {item: meteor_boots, chance: 0.03}
+  constellation_beast:
+    - {item: starfall_sword, chance: 0.03}
+  void_eye: []
+  gravity_priest:
+    - {item: gravity_shield, chance: 0.03}
+
+# 头目：二选一必掉
+bosses:
+  forge:   {pick_one: [forge_king_hammer, forge_heart]}
+  crystal: {pick_one: [mother_heart, prism_scepter], extra: [{item: crystal_dust, chance: 1.0}]}
+  silent:  {pick_one: [soundless_bell, high_priest_staff], extra: [{item: silence_incense, chance: 0.5}]}
+  desert:  {pick_one: [pharaoh_mask, pharaoh_flail], extra: [{item: mural_rubbing, chance: 0.5}]}
+  dream:   {pick_one: [crown_of_unwaking, memory_blade]}
+  fog:     {pick_one: [ferryman_oar, ferryman_lamp], extra: [{item: ship_plaque, chance: 0.5}]}
+  astral:  {pick_one: [star_astrolabe, meteor_maul], extra: [{item: stardust, chance: 1.0}]}
+
+# 第 25、50、75……层的关卡头目：二选一必掉，另一件 20% 几率一起掉；另外必掉三颗宝石
+gate_bosses:
+  upon_mountain: {pick_one: [jackal_scepter, golden_scale], other_chance: 0.2, gems: 3}
+  perseus:       {pick_one: [helm_of_hades, winged_sandals], other_chance: 0.2, gems: 3}
+
+# 宝箱房的主题池
+treasure:
+  forge:
+    - {item: dwarf_hand_axe, weight: 8}
+    - {item: dwarf_warhammer, weight: 6}
+    - {item: dwarf_bulwark, weight: 6}
+    - {item: forge_rubbing, weight: 4}
+  crystal:
+    - {item: crystal_blade, weight: 8}
+    - {item: crystal_spear, weight: 6}
+    - {item: crystal_dust, weight: 10}
+    - {item: crystal_sealed_page, weight: 4}
+  silent:
+    - {item: mute_dagger, weight: 8}
+    - {item: soft_sole_boots, weight: 6}
+    - {item: guardian_shield, weight: 6}
+    - {item: silence_incense, weight: 5}
+  desert:
+    - {item: crescent_sabre, weight: 8}
+    - {item: jackal_halberd, weight: 6}
+    - {item: desert_robe, weight: 6}
+    - {item: mural_rubbing, weight: 4}
+  dream:
+    - {item: dazed_blade, weight: 8}
+    - {item: echo_hammer, weight: 6}
+    - {item: slumber_ring, weight: 6}
+    - {item: lucid_mirror, weight: 4}
+  fog:
+    - {item: cutlass, weight: 8}
+    - {item: ship_anchor, weight: 6}
+    - {item: harpoon, weight: 6}
+    - {item: lighthouse_lantern, weight: 4}
+  astral:
+    - {item: starfall_sword, weight: 8}
+    - {item: astral_lance, weight: 6}
+    - {item: starweave_armor, weight: 6}
+    - {item: stardust, weight: 5}
+
+# 宝石池（合并进 gems.pools）
+gems:
+  pools:
+    forge:   [bloodstone, sunder_stone, ironheart_stone]    # 这里的怪不怕火，余烬石没用
+    crystal: [keen_ink, glowstone, inkward_opal, prism_shard]
+    silent:  [cats_eye, inkward_opal, frost_jade]
+    desert:  [mossvein_stone, rootbind_stone, ember_stone, staunch_stone]
+    dream:   [keen_ink, vigor_garnet, cats_eye]
+    fog:     [black_pearl, staunch_stone, rootbind_stone]
+    astral:  [bloodstone, sunder_stone, keen_ink, glowstone]
+  # 水晶洞窟是宝石主题：普通怪、精英、宝箱房的宝石掉率再 ×2（叠在 deep_mult 上）
+  theme_mult: {crystal: 2}

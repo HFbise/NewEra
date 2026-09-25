@@ -51,11 +51,30 @@ _loot: Optional[dict] = None
 LOOT_NOT_YET: set[str] = set()         # 机制还没做的物品先不掉（第三批做完以后都放出来了）
 
 
+DEEP_DUNGEON = ("deep_dungeon_16.yaml", "deep_dungeon_21.yaml")      # 深层主题（themes / monsters / events）
+DEEP_LOOT, DEEP_ITEMS = "deep_loot.yaml", "deep_items.yaml"
+# 机制接完了的深层主题才进主题池（一个一个接，接完用模拟对一下再放进来）
+DEEP_READY = {"forge"}
+
+
+def _yaml(name: str) -> dict:
+    path = os.path.join(os.path.dirname(__file__), name)
+    if not os.path.exists(path):
+        return {}
+    with open(path, encoding="utf-8") as f:
+        return yaml.safe_load(f) or {}
+
+
 def data() -> dict:
+    """dungeon.yaml，再把深层文件里主文件没有的主题、怪、事件补进来（同名的以主文件为准：改过的在主文件）"""
     global _data
     if _data is None:
-        with open(os.path.join(os.path.dirname(__file__), "dungeon.yaml"), encoding="utf-8") as f:
-            _data = yaml.safe_load(f)
+        _data = _yaml("dungeon.yaml")
+        for name in DEEP_DUNGEON:
+            for section, entries in _yaml(name).items():
+                if isinstance(entries, dict):
+                    for key, value in entries.items():
+                        _data.setdefault(section, {}).setdefault(key, value)
     return _data
 
 
@@ -66,8 +85,7 @@ def dungeon_items() -> set[str]:
     """items_dungeon.yaml 里的物品 id（地牢掉的东西；村里店里卖的不在里面）"""
     global _dungeon_items
     if _dungeon_items is None:
-        with open(os.path.join(os.path.dirname(__file__), "items_dungeon.yaml"), encoding="utf-8") as f:
-            _dungeon_items = set((yaml.safe_load(f) or {}).get("items", {}))
+        _dungeon_items = set(_yaml("items_dungeon.yaml").get("items", {})) | set(_yaml(DEEP_ITEMS).get("items", {}))
     return _dungeon_items
 
 
@@ -86,8 +104,15 @@ def loot_data() -> dict:
     """掉落表 loot.yaml：普通怪专属掉落、头目二选一、通用池、宝箱房主题池、路边小木匣、空房搜索"""
     global _loot
     if _loot is None:
-        with open(os.path.join(os.path.dirname(__file__), "loot.yaml"), encoding="utf-8") as f:
-            _loot = yaml.safe_load(f)
+        _loot = _yaml("loot.yaml")
+        deep = _yaml(DEEP_LOOT)
+        for section in ("monsters", "bosses", "treasure", "gate_bosses"):
+            for key, value in (deep.get(section) or {}).items():
+                _loot.setdefault(section, {}).setdefault(key, value)
+        for key, value in ((deep.get("gems") or {}).get("pools") or {}).items():
+            _loot["gems"]["pools"].setdefault(key, value)
+        if mult := (deep.get("gems") or {}).get("theme_mult"):
+            _loot["gems"].setdefault("theme_mult", mult)
     return _loot
 
 
@@ -563,18 +588,11 @@ def is_stone(depth: int) -> bool:
     return depth > 1 and (depth - 1) % BOSS_EVERY == 0
 
 
-DEEP_THEMES_MIN = 3                     # 深层主题（dungeon.yaml min_depth）凑够这么多个，老的六个主题 16 层以后就不再出
-DEEP_THEME_SHARE = 0.5                  # 凑够之前：深层楼层一半几率抽深层主题，一半还是老主题
-
-
 def _pick_theme(themes: dict, depth: int, recent: set) -> str:
-    """这一层的主题：到了 min_depth 的深层主题才进池；不跟上面 THEME_GAP 层重复"""
-    deep = [k for k, t in themes.items() if t.get("min_depth") and t["min_depth"] <= depth]
-    old = [k for k, t in themes.items() if not t.get("min_depth")]
-    if deep and (len(deep) >= DEEP_THEMES_MIN or random.random() < DEEP_THEME_SHARE):
-        pool = deep
-    else:
-        pool = old
+    """这一层的主题：过了起始层（min_depth）的主题全部一起随机（老主题深层也照样出，深层不至于只剩几种主题）；
+    深层主题要机制接完（DEEP_READY）才进池；不跟上面 THEME_GAP 层重复。每 25 层的关卡层另算（关卡头目带着自己的主题）"""
+    pool = [k for k, t in themes.items()
+            if not t.get("min_depth") or (t["min_depth"] <= depth and k in DEEP_READY)]
     return random.choice([k for k in pool if k not in recent] or pool)
 
 

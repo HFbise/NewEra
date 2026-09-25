@@ -1,0 +1,601 @@
+# 深层物品：seed 时跟 items_dungeon.yaml 一起合并（同名的以 items_dungeon.yaml 为准）
+# tier 1（第 16 层起：地底熔炉、水晶洞窟、静默神殿）：单手 95、双手 135、胸甲 40、盾 40
+# tier 2（第 21 层起：沙漠迷城、梦境回廊、迷雾葬海；第 25 层关卡头目）：单手 130、双手 180、胸甲 55、盾 55
+# tier 3（第 26 层起：星界秘境）：单手 175、双手 245、胸甲 75、盾 75
+#props.tier：掉落时孔数按稀有度再高一档；莉娜的"深层锻造"解锁以后升级上限更高
+# 头目掉落比同档高一截。效果写法沿用 effects（when / do）。
+
+items:
+
+  # ---------- 现有物品的补丁 ----------
+  spring_water:                # world.yaml 里现有的泉水，props 加 quench
+    props: {price: 8, kind: drink, quench: 4}    #在灼热的楼层喝下，接下来 4 个动作不掉血
+
+  # ======================= 礼物、材料 =======================
+  forge_rubbing:
+    name: 矮人锻造纹拓片
+    description: 一张从铜匣上拓下来的厚皮纸，上面是一圈圈复杂的锻造纹，纹路的走向跟莉娜铁匠铺墙上那几道一模一样。
+    type: misc
+    props: {price: 30, gift: ore, gift_value: 10, unlock: lina_deep_forge}   #第一次送给莉娜时解锁深层锻造
+  crystal_dust:
+    name: 晶粉
+    description: 一小袋闪着微光的晶体粉末，捏一撮撒在宝石上，宝石会像喝了水一样亮起来。
+    type: misc
+    stackable: true
+    props: {price: 20, refine_catalyst: 1.5}      #找诺艾尔刷品质时当垫子：这次升档几率 ×1.5（任何宝石都能用）
+  crystal_sealed_page:
+    name: 晶封的书页
+    description: 一页被封在薄晶片里的古书，字迹清清楚楚，只是晶片太硬，谁也拆不开，只能隔着晶体读。
+    type: misc
+    props: {price: 30, gift: book, gift_value: 10}
+  silence_incense:
+    name: 静默香
+    description: 一小截灰白色的线香，点着以后几乎没有烟，只有一股很淡的甜味，闻着让人想闭上嘴。
+    type: misc
+    props: {price: 25, gift: wine, gift_value: 10}     # 麦琪会笑着收下："一句话不说还能活？这倒稀奇"
+  mural_rubbing:
+    name: 壁画拓片
+    description: 一张拓着象形文字和图画的粗纸，画的是胡狼头的神站在山顶上，为死者称量心脏。
+    type: misc
+    props: {price: 30, gift: book, gift_value: 10, lore: upon_mountain}   #诺艾尔每收一张，就多讲出一段"在其山岳之上者"的来历
+  ship_plaque:
+    name: 刻名字的船牌
+    description: 一块被海水泡得发白的木牌，上面刻着一个船名，字迹已经模糊，只能认出最后一个字是"号"。
+    type: misc
+    props: {price: 20, gift: wine, gift_value: 10, lore: maggie_past}     # 麦琪看见它会沉默很久
+  stardust:
+    name: 星尘
+    description: 一只小玻璃瓶里装着一撮会自己发光的细沙，晃一晃，瓶子里就像下了一场很小的流星雨。
+    type: misc
+    props: {price: 60, gift: any, gift_value: 15}      #gift: any：三个人都喜欢，好感加得比普通礼物多
+
+  # ======================= 地底熔炉（tier 1） =======================
+  dwarf_hand_axe:
+    name: 矮人手斧
+    description: 一把斧刃宽得像铲子的短柄斧，斧背铸着一个小小的王冠，拿在手里沉甸甸的。
+    type: weapon
+    damage: 95
+    props: {price: 180, tier: 1}
+  dwarf_warhammer:
+    name: 矮人战锤
+    description: 一柄双手长锤，锤头一面平一面尖，尖的那面专门用来凿穿铠甲。
+    type: weapon
+    damage: 135
+    props:
+      price: 260
+      tier: 1
+      two_handed: true
+      effects:
+        - {when: hit, do: pierce, value: 10}
+  dwarf_plate:
+    name: 矮人板甲
+    description: 一整套用黑铁锻打的胸甲，铆钉排得整整齐齐，内衬是还没烂的厚毛毡。
+    type: armor
+    slot: chest
+    defense: 40
+    props: {price: 200, tier: 1}
+  dwarf_bulwark:
+    name: 矮人壁盾
+    description: 一面方形的铁盾，边缘包着一圈铜，盾面上铸着一座熔炉的图案。
+    type: armor
+    slot: hand
+    defense: 40
+    props: {price: 200, tier: 1, block: 0.15}
+  salamander_boots:
+    name: 火蜥蜴皮靴
+    description: 用火蜥蜴的红鳞皮缝的靴子，鞋底厚实，踩在烧红的石头上也不觉得烫。
+    type: armor
+    slot: feet
+    defense: 20
+    props:
+      price: 120
+      tier: 1
+      effects:
+        - {when: passive, do: heat_resist, value: 0.5}     #灼热掉的血 ×0.5
+  forge_king_hammer:           # 头目掉落
+    name: 矮人王的锻锤
+    description: 铸像手里那柄比人还高的锻锤，锤头上的锻造纹还在隐隐发红。
+    type: weapon
+    damage: 150
+    props:
+      price: 400
+      tier: 1
+      two_handed: true
+      effects:
+        - {when: hit, do: pierce, value: 20}
+        - {when: hit, do: status, kind: prone, chance: 0.2, label: 锻锤砸得地面一震，对方站不稳了}
+  forge_heart:                 # 头目掉落
+    name: 熔炉之心
+    description: 从铸像胸口炉门里掏出来的一块炉芯，用铁链穿着，戴在胸前暖烘烘的，从来不会凉。
+    type: armor
+    slot: neck
+    defense: 20
+    props:
+      price: 350
+      tier: 1
+      effects:
+        - {when: passive, do: max_hp, value: 60}
+        - {when: passive, do: heat_resist, value: 0}
+
+  # ======================= 水晶洞窟（tier 1） =======================
+  crystal_blade:
+    name: 晶刃
+    description: 一把整块水晶磨成的细剑，剑身透亮，挥动时会把光折成一道道彩色的弧线。
+    type: weapon
+    damage: 95
+    props:
+      price: 190
+      tier: 1
+      effects:
+        - {when: hit, do: status, kind: blind, chance: 0.1, label: 剑身的反光晃进了对方眼里}
+  crystal_spear:
+    name: 晶簇长枪
+    description: 一根木杆上嵌着一簇尖锐的晶体当枪头，晶尖锋利得能扎穿石头。
+    type: weapon
+    damage: 135
+    props:
+      price: 260
+      tier: 1
+      two_handed: true
+      effects:
+        - {when: hit, do: pierce, value: 10}
+  prism_shield:
+    name: 棱镜盾
+    description: 一面嵌满晶片的圆盾，盾面把光折得乱七八糟，射过来的箭常常被折到别处去。
+    type: armor
+    slot: hand
+    defense: 40
+    props:
+      price: 210
+      tier: 1
+      block: 0.1
+      effects:
+        - {when: hurt, do: reflect_ranged, chance: 0.2}    #挨远程攻击时 20% 几率折回射手身上
+  crystal_mail:
+    name: 晶鳞甲
+    description: 一件用薄晶片一片片缀起来的鳞甲，走动时叮叮作响，在光下闪得人睁不开眼。
+    type: armor
+    slot: chest
+    defense: 40
+    props:
+      price: 210
+      tier: 1
+      effects:
+        - {when: passive, do: resist, kind: blind, value: 0.5}
+  mother_heart:                # 头目掉落
+    name: 晶母之心
+    description: 晶母胸口那一团最亮的晶体，戴在身上，四周的光好像都绕着你走。
+    type: armor
+    slot: neck
+    defense: 20
+    props:
+      price: 350
+      tier: 1
+      effects:
+        - {when: passive, do: max_hp, value: 60}
+        - {when: passive, do: glare_immune}                #不受炫光影响
+  prism_scepter:               # 头目掉落
+    name: 棱光权杖
+    description: 一根顶端嵌着三棱晶体的短杖，晶体里的光一直在转，找准角度能把光聚成一根针。
+    type: weapon
+    damage: 110
+    props:
+      price: 380
+      tier: 1
+      effects:
+        - {when: hit, do: crit, mult: 2, chance: 0.1}
+
+  # ======================= 静默神殿（tier 1） =======================
+  mute_dagger:
+    name: 缄默者的短刀
+    description: 一把刀刃极薄的短刀，刀柄上缠着一截麻线，拔出来的时候没有一点声音。
+    type: weapon
+    damage: 90
+    props:
+      price: 190
+      tier: 1
+      effects:
+        - {when: fight, do: bonus, value: 40, label: 刀无声无息地扎了进去}
+  monk_robe:
+    name: 修士长袍
+    description: 一件厚实的灰袍，领口缝着一圈麻线，穿上以后连呼吸都变轻了。
+    type: armor
+    slot: chest
+    defense: 30
+    props:
+      price: 180
+      tier: 1
+      effects:
+        - {when: passive, do: resist, kind: silence, value: 0}
+        - {when: passive, do: skill, kind: stealth, value: 1}
+  soft_sole_boots:
+    name: 软底靴
+    description: 一双鞋底缝着厚毛毡的软靴，踩在石头上像踩在棉花上。
+    type: armor
+    slot: feet
+    defense: 20
+    props:
+      price: 150
+      tier: 1
+      effects:
+        - {when: passive, do: noise_mult, value: 0.5}      #你的动作加的声响减半
+        - {when: passive, do: skill, kind: stealth, value: 1}
+  guardian_shield:
+    name: 守像石盾
+    description: 从一尊石面守像手里撬下来的石盾，沉得要用两只手才举得起来，但一只手就够用了。
+    type: armor
+    slot: hand
+    defense: 45
+    props: {price: 220, tier: 1, block: 0.15}
+  soundless_bell:              # 头目掉落
+    name: 无舌铜铃
+    description: 大祭司手里那只没有铃舌的铜铃，挂在身上，四周的声音好像都被它吸了进去。
+    type: armor
+    slot: neck
+    defense: 20
+    props:
+      price: 340
+      tier: 1
+      effects:
+        - {when: passive, do: resist, kind: silence, value: 0}
+        - {when: passive, do: noise_max_add, value: 5}     #静默神殿的声响上限 +5
+  high_priest_staff:           # 头目掉落
+    name: 大祭司的权杖
+    description: 一根白银包头的长杖，杖头雕着一只捂住嘴的手，被它指着的人会一下子说不出话。
+    type: weapon
+    damage: 145
+    props:
+      price: 380
+      tier: 1
+      two_handed: true
+      effects:
+        - {when: hit, do: status, kind: silence, chance: 0.2, label: 杖头的手捂住了对方的嘴}
+
+  # ======================= 沙漠迷城（tier 2） =======================
+  crescent_sabre:
+    name: 弯月刀
+    description: 一把刀身弯得像新月的长刀，刀背上刻着一行象形文字，砍下去的时候带着风沙的声音。
+    type: weapon
+    damage: 130
+    props: {price: 300, tier: 2}
+  jackal_halberd:
+    name: 胡狼长戟
+    description: 胡狼卫手里的长戟，戟头带着倒钩，戟杆上缠着褪色的金线。
+    type: weapon
+    damage: 180
+    props:
+      price: 420
+      tier: 2
+      two_handed: true
+      effects:
+        - {when: hit, do: status, kind: bleed, chance: 0.2, label: 倒钩撕开了一道口子}
+  desert_robe:
+    name: 沙漠长袍
+    description: 一件宽大的亚麻长袍，里面缝着几层薄铜片，挡得住刀，也挡得住毒虫。
+    type: armor
+    slot: chest
+    defense: 55
+    props:
+      price: 320
+      tier: 2
+      effects:
+        - {when: passive, do: resist, kind: poison, value: 0.5}
+  scarab_amulet:
+    name: 圣甲虫护符
+    description: 一只用青金石雕成的圣甲虫，背上刻着一圈祷词，据说能让伤口自己合拢。
+    type: armor
+    slot: neck
+    defense: 20
+    props:
+      price: 260
+      tier: 2
+      effects:
+        - {when: passive, do: resist, kind: bleed, value: 0.5}
+  sandwalker_boots:
+    name: 踏沙靴
+    description: 一双鞋底又宽又平的皮靴，踩在流沙上像踩在木板上一样稳。
+    type: armor
+    slot: feet
+    defense: 30
+    props:
+      price: 240
+      tier: 2
+      effects:
+        - {when: passive, do: sand_immune}                 #不受流沙影响
+  pharaoh_mask:                # 头目掉落
+    name: 法老的金面具
+    description: 一张打得极薄的金面具，面具上没有五官，戴上以后却什么都看得清清楚楚。
+    type: armor
+    slot: head
+    defense: 45
+    props:
+      price: 520
+      tier: 2
+      effects:
+        - {when: passive, do: resist, kind: wrapped, value: 0}
+        - {when: passive, do: resist, kind: blind, value: 0.5}
+  pharaoh_flail:               # 头目掉落
+    name: 法老的连枷
+    description: 一柄金柄的双头连枷，链子末端是两只黄金胡狼头，甩起来像两只扑咬的猎犬。
+    type: weapon
+    damage: 190
+    props:
+      price: 560
+      tier: 2
+      two_handed: true
+      effects:
+        - {when: hit, do: status, kind: wrapped, chance: 0.15, label: 金链子缠住了对方的手}
+
+  # ======================= 梦境回廊（tier 2） =======================
+  dazed_blade:
+    name: 恍惚之刃
+    description: 一把刀身时而清晰时而模糊的长剑，你永远说不准它下一次会砍得有多深。
+    type: weapon
+    damage: 120
+    props:
+      price: 300
+      tier: 2
+      effects:
+        - {when: hit, do: bonus, value: 60, chance: 0.4}
+  echo_hammer:
+    name: 回响之锤
+    description: 一柄锤头像钟一样中空的大锤，砸下去的声音会在四周来回响好几遍。
+    type: weapon
+    damage: 180
+    props:
+      price: 420
+      tier: 2
+      two_handed: true
+      effects:
+        - {when: attack, do: splash, value: 20, label: 锤声的回响震到了周围所有的敌人}
+  slumber_ring:
+    name: 安眠之戒
+    description: 一枚刻着闭眼图案的银戒指，戴上以后睡得很好，醒着的时候也不容易被吓住。
+    type: armor
+    slot: ring
+    props:
+      price: 240
+      tier: 2
+      effects:
+        - {when: passive, do: resist, kind: stun, value: 0.5}
+  sleepwalker_shoes:
+    name: 梦游者的拖鞋
+    description: 一双软绵绵的布拖鞋，穿上以后不管走到哪里，脚下总是稳稳的，好像知道路。
+    type: armor
+    slot: feet
+    defense: 30
+    props:
+      price: 240
+      tier: 2
+      effects:
+        - {when: passive, do: dislocate_immune}            #不受错位影响，距离不会被打乱
+  lucid_mirror:
+    name: 清醒之镜
+    description: 一面巴掌大的小镜子，用链子挂在胸前，照一下就能分清什么是梦、什么是真的。
+    type: armor
+    slot: neck
+    defense: 20
+    props:
+      price: 260
+      tier: 2
+      effects:
+        - {when: hurt, do: resist_once, kind: stun, once: per_fight}    #每场第一次被打晕、石化时无效
+  crown_of_unwaking:           # 头目掉落
+    name: 未醒之冠
+    description: 永不醒来的人头上那顶用梦织成的冠冕，轻得像没有重量，戴上以后总觉得自己在做一个很长的梦。
+    type: armor
+    slot: head
+    defense: 40
+    props:
+      price: 520
+      tier: 2
+      effects:
+        - {when: hurt, do: cheat_death, once: per_floor, label: 你猛地惊醒，发现刚才那一下只是一场梦}
+  memory_blade:                # 头目掉落
+    name: 记忆之刃
+    description: 一把刀身上浮着一行行淡淡字迹的长剑，每砍中一次，就会记住对方的一点东西。
+    type: weapon
+    damage: 145
+    props:
+      price: 540
+      tier: 2
+      effects:
+        - {when: hit, do: bonus_pct, value: 0.2, if: {same_target: true}}   #连续打同一个目标时伤害 +20%
+
+  # ======================= 迷雾葬海（tier 2） =======================
+  cutlass:
+    name: 水手弯刀
+    description: 一把刀身宽短的弯刀，护手是一圈黄铜，刀刃上还留着几个缺口，像是砍过缆绳也砍过人。
+    type: weapon
+    damage: 130
+    props:
+      price: 300
+      tier: 2
+      effects:
+        - {when: hit, do: status, kind: bleed, chance: 0.2, label: 弯刀拉开了一道长长的口子}
+  harpoon:
+    name: 鱼叉
+    description: 一根带倒钩的长鱼叉，尾巴上拴着一截粗绳，扔出去还能拽回来。
+    type: weapon
+    damage: 120
+    props: {price: 280, tier: 2, throw: heavy, tether: true}   #tether：掷出去以后下一个动作自动拽回来，不用走过去捡
+  ship_anchor:
+    name: 船锚
+    description: 一只生了锈的铁船锚，拴着一截粗铁链，抡起来能把人砸进地里。
+    type: weapon
+    damage: 190
+    props:
+      price: 440
+      tier: 2
+      two_handed: true
+      effects:
+        - {when: hit, do: status, kind: prone, chance: 0.2, label: 船锚砸得对方整个人趴在了地上}
+  lighthouse_lantern:
+    name: 灯塔提灯
+    description: 从灯塔里拆下来的一盏小油灯，灯罩是厚玻璃做的，光能穿透最浓的雾。
+    type: weapon
+    damage: 20
+    props: {price: 260, tier: 2, light: 40, fog_ignore: true}  #在浓雾里光亮照常算，不减半
+  captain_coat:
+    name: 船长外套
+    description: 一件双排扣的厚呢外套，领子上缝着褪色的金线，口袋里还有一只停了的怀表。
+    type: armor
+    slot: chest
+    defense: 55
+    props:
+      price: 320
+      tier: 2
+      effects:
+        - {when: passive, do: resist, kind: restrained, value: 0.5}
+  black_pearl:                 # 新宝石
+    name: 黑珍珠
+    description: 一颗乌黑发亮的珍珠，对着光看，里面有一片小小的雾在缓缓流动。
+    type: gem
+    props:
+      gem_slot: trinket
+      effects:
+        - {when: passive, do: skill, kind: perception, values: [1, 1, 2, 2]}
+  ferryman_oar:                # 头目掉落
+    name: 渡魂者的船桨
+    description: 一支黑木船桨，桨叶上刻着一圈看不懂的数字，据说是每一位渡过河的人付的钱。
+    type: weapon
+    damage: 200
+    props:
+      price: 560
+      tier: 2
+      two_handed: true
+      effects:
+        - {when: hit, do: knockback, chance: 0.3}          #把对方打退一步
+  ferryman_lamp:               # 头目掉落
+    name: 渡魂者的绿灯
+    description: 船头那盏幽绿色的灯，提在手里，雾会自己往两边让开。
+    type: armor
+    slot: neck
+    defense: 20
+    props:
+      price: 500
+      tier: 2
+      light: 20
+      effects:
+        - {when: passive, do: fog_immune}                  #不受浓雾影响
+
+  # ======================= 星界秘境（tier 3） =======================
+  starfall_sword:
+    name: 星陨剑
+    description: 一把用陨铁打成的长剑，剑身里嵌着细小的星点，在暗处会自己发光。
+    type: weapon
+    damage: 175
+    props: {price: 480, tier: 3, light: 10}
+  astral_lance:
+    name: 星辉长枪
+    description: 一根由星光凝成的长枪，握在手里没有重量，刺出去却能扎穿石台。
+    type: weapon
+    damage: 245
+    props:
+      price: 680
+      tier: 3
+      two_handed: true
+      effects:
+        - {when: hit, do: pierce, value: 20}
+  starweave_armor:
+    name: 星纹甲
+    description: 一件织着星图的软甲，摸上去像丝绸，刀砍上去却只擦出一串星屑。
+    type: armor
+    slot: chest
+    defense: 75
+    props: {price: 520, tier: 3}
+  gravity_shield:
+    name: 引力之盾
+    description: 一面圆盾，盾心嵌着一块沉重的黑石，举着它的时候，整个人都像被钉在了地上。
+    type: armor
+    slot: hand
+    defense: 75
+    props:
+      price: 540
+      tier: 3
+      block: 0.15
+      effects:
+        - {when: passive, do: resist, kind: prone, value: 0.5}
+  meteor_boots:
+    name: 流星之靴
+    description: 一双鞋跟嵌着星核碎片的靴子，脚底总有一股往下拉的力，怎么推都推不倒。
+    type: armor
+    slot: feet
+    defense: 40
+    props:
+      price: 420
+      tier: 3
+      effects:
+        - {when: passive, do: void_immune}                 #不会坠入虚空
+  star_astrolabe:              # 头目掉落
+    name: 星官的星盘
+    description: 一只黄铜星盘，几个圆环还在自己转动，转到某个位置时，四周的星光会停下来不再明灭。
+    type: armor
+    slot: neck
+    defense: 30
+    props:
+      price: 800
+      tier: 3
+      effects:
+        - {when: passive, do: star_cycle_immune}           #星光周期对你不起作用，光亮按基础值算
+        - {when: passive, do: max_hp, value: 60}
+  meteor_maul:                 # 头目掉落
+    name: 陨星之锤
+    description: 一柄锤头是整块陨石的大锤，挥动的时候会拖出一条燃烧的尾巴。
+    type: weapon
+    damage: 260
+    props:
+      price: 880
+      tier: 3
+      two_handed: true
+      effects:
+        - {when: hit, do: pierce, value: 20}
+        - {when: hit, do: status, kind: prone, chance: 0.25, label: 陨石砸下来，对方被砸得趴在地上}
+
+  # ======================= 第 25 层关卡头目的掉落（tier 2） =======================
+  jackal_scepter:              # 在其山岳之上者
+    name: 胡狼权杖
+    description: 一根黑檀木权杖，顶端是一只金色的胡狼头，被它敲中的人会觉得心里沉了一下。
+    type: weapon
+    damage: 190
+    props:
+      price: 700
+      tier: 2
+      two_handed: true
+      effects:
+        - {when: hit, do: add_sin, value: 1}               #打中时对方罪 +1（决斗里有用）
+        - {when: hit, do: bonus_pct, per_sin: 0.1}         # 对方每层罪，你打它 +10%
+  golden_scale:                # 在其山岳之上者
+    name: 黄金天平
+    description: 一架巴掌大的黄金天平，一端放着一根羽毛，另一端空着，却总是轻轻地往下沉。
+    type: armor
+    slot: neck
+    defense: 20
+    props:
+      price: 700
+      tier: 2
+      effects:
+        - {when: hurt, do: cheat_death, once: per_fight, cleanse: true, label: 天平猛地一晃，羽毛那一端沉了下去}
+  helm_of_hades:               # 英仙座
+    name: 冥王之盔
+    description: 一顶灰色的青铜头盔，戴上以后你的影子会淡得几乎看不见。
+    type: armor
+    slot: head
+    defense: 45
+    props:
+      price: 700
+      tier: 2
+      effects:
+        - {when: hurt, do: miss_next, once: per_fight}     #每场一次，敌人对你的下一次攻击落空
+  winged_sandals:              # 英仙座
+    name: 赫尔墨斯飞鞋
+    description: 一双生着白色小翼的凉鞋，穿上以后脚尖总是离地一点点。
+    type: armor
+    slot: feet
+    defense: 30
+    props:
+      price: 700
+      tier: 2
+      effects:
+        - {when: hurt, do: dodge, chance: 0.15}            # 跟格挡合计仍封顶 30%
+        - {when: passive, do: flee_always}                 #逃跑必定成功

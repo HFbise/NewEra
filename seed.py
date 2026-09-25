@@ -23,12 +23,19 @@ DEFAULT_RESPAWN = 300                   # 物品被拿走后默认多少秒重�
 EXTRA_ITEMS = "items_dungeon.yaml"      # 地牢物品单独放一个文件，跟 world.yaml 的 items 合在一起入库
 
 
+DEEP_ITEMS = "deep_items.yaml"          # 深层物品：主文件没有的才补进来（泉水这种已有的以主文件为准）
+
+
 def _all_items(world) -> dict:
     items = dict(world["items"])
-    path = os.path.join(os.path.dirname(os.path.abspath(__file__)), EXTRA_ITEMS)
-    if os.path.exists(path):
-        with open(path, encoding="utf-8") as f:
-            items.update((yaml.safe_load(f) or {}).get("items", {}))
+    here = os.path.dirname(os.path.abspath(__file__))
+    for name, override in ((EXTRA_ITEMS, True), (DEEP_ITEMS, False)):
+        path = os.path.join(here, name)
+        if os.path.exists(path):
+            with open(path, encoding="utf-8") as f:
+                for key, value in ((yaml.safe_load(f) or {}).get("items") or {}).items():
+                    if override or key not in items:
+                        items[key] = value
     return items
 
 
