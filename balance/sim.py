@@ -464,6 +464,8 @@ def spawn(depth: int, kind: str, rank: str, theme_key: str, size: int, groups: i
                                "immune", "weak") if m.get(k)}
     if m.get("pack"):
         props["pack"] = kind
+    if boss_room:
+        props["keen"] = True                # 楼梯间守卫、头目都警觉：偷袭不了、绕不过去
     if rank == "elite" and affix is None:
         affix = random.choice(list(R.ELITE_AFFIXES))
     elif rank != "elite":

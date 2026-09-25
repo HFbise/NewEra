@@ -1169,9 +1169,12 @@ def decide_give(db, view: RoomView, text: str, npc: Npc, giveable: list[ItemInst
     out, usage = _call(db, view.player.id, "give", GIVE_SYSTEM, user, GiveDecision, 448, check)
     if not out or not (out.give or out.create or out.sell):
         return None, usage
+    count = out.count
+    if out.sell and (m := re.search(r"(\d+|[一二两三四五六七八九十百]+)\s*(?:个|瓶|件|份|捆|杯|支|根|块|把|张|罐|包|盏|袋)", text)):
+        count = commands.cn_number(m[1]) or count          # 原话里写了几件就按几件（AI 把"30 个"读成过 3），上限照旧
     return Trade(give_id=give_refs[out.give].id if out.give else None, made=out.create,
                  sell_id=sell_refs[out.sell]["id"] if out.sell else None, price=out.price,
-                 count=max(1, min(engine.SELL_MAX_COUNT, out.count)) if out.sell and out.sell.startswith("s") else 1), usage
+                 count=max(1, min(engine.SELL_MAX_COUNT, count)) if out.sell and out.sell.startswith("s") else 1), usage
 
 
 # ============ 地牢房间：AI 按主题写（后台，失败就用模板）============

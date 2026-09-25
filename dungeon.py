@@ -363,7 +363,8 @@ def parse_room(room_id: str) -> tuple[UUID, int]:
 # 每种怪再按 dungeon.yaml 的倍率、加减调整。精英血 ×1.8 攻 +1，头目血 ×2 攻 +1 防 +1
 
 def _template(cur: Cursor, depth: int, kind: str, rank: str, theme: str, share: int = 1, hp_mult: float = 1.0,
-              minion: bool = False, attacks: int = 1, affix: Optional[str] = None, leader: bool = False) -> str:
+              minion: bool = False, attacks: int = 1, affix: Optional[str] = None, leader: bool = False,
+              stair: bool = False) -> str:
     """这一层这种怪的 NPC 模板，没有就建。share：钱分给几只（组队多刷的同一群）；hp_mult：血的倍数；
     minion：头目叫来的、精英带着的小怪，不掉钱也不掉东西；attacks：战斗回合里一轮出手几次（房间满了折成血的，出手也跟着多）；
     affix：精英的词缀（rules.ELITE_AFFIXES）"""
@@ -371,7 +372,8 @@ def _template(cur: Cursor, depth: int, kind: str, rank: str, theme: str, share: 
     tid = (f"dg_{theme + '_' if rank == 'boss' else ''}{kind}_{depth}" + ("" if rank == "normal" else f"_{rank}")
            + (f"_{affix}" if affix else "")
            + (f"_g{share}" if share > 1 else "") + (f"_h{round(hp_mult * 10)}" if hp_mult != 1 else "")
-           + ("_m" if minion else "") + (f"_a{attacks}" if attacks > 1 else "") + ("_lead" if leader else ""))
+           + ("_m" if minion else "") + (f"_a{attacks}" if attacks > 1 else "") + ("_lead" if leader else "")
+           + ("_st" if stair and rank != "boss" else ""))
     m = data()["themes"][theme]["boss"] if rank == "boss" else data()["monsters"][kind]
     hp, atk, df = monster_stats(depth, m, rank)
     fx = ELITE_AFFIXES.get(affix, {}) if rank == "elite" else {}
@@ -417,8 +419,8 @@ def _template(cur: Cursor, depth: int, kind: str, rank: str, theme: str, share: 
     for key in ("healer", "verb", "guard_allies"):   # 治疗的比例、出手的说法（"甩出一颗石子"）、盾卫护同伴的几率
         if m.get(key):
             props[key] = m[key]
-    if rank == "boss" or fx.get("keen"):
-        props["keen"] = True                    # 头目、警觉的精英：一进门就发现人，偷袭不了
+    if rank == "boss" or fx.get("keen") or stair:
+        props["keen"] = True                    # 头目、警觉的精英、楼梯间守卫：一进门就发现人，偷袭不了、绕不过去（每层至少真打一场）
     if m.get("on_hit"):
         props["on_hit"] = m["on_hit"]           # 打中时几率附带的效果（engine._on_hit）
     if plague := fx.get("plague"):
@@ -502,7 +504,7 @@ def spawn_minions(cur: Cursor, room: str, depth: int, kind: str, theme: str, cou
 def _spawn(cur: Cursor, room: str, depth: int, kind: str, rank: str, theme: str, share: int = 1, hp_mult: float = 1.0,
            minion: bool = False, loot: bool = True, attacks: int = 1, stair: bool = False, affix: Optional[str] = None,
            leader: bool = False) -> None:
-    tid = _template(cur, depth, kind, rank, theme, share, hp_mult, minion, attacks, affix, leader)
+    tid = _template(cur, depth, kind, rank, theme, share, hp_mult, minion, attacks, affix, leader, stair)
     cur.execute("insert into npcs (template_id, room_id, hp) select id, %s, max_hp from npc_templates where id = %s"
                 " returning id", (room, tid))
     npc_id = cur.fetchone()["id"]

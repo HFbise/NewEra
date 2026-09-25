@@ -62,6 +62,7 @@ PRONE_HIT_BONUS = 0.20                  # 打倒在地上的目标，近战命�
 # 敌人发现玩家：进门时几率 DETECT_START，之后玩家每发一条消息掷一次骰，没被发现就涨 DETECT_STEP（躲着不涨）。
 # 被发现了，在场能动的敌人每轮都打他一下（玩家每做 ENEMY_EVERY 个动作敌人行动一次，见 execute_all）
 DETECT_START = 0.05
+DETECT_PER_FOE = 0.02                   # 一屋子怪比一只难溜过去：每多一只，每条消息被发现的几率多涨这么多
 DETECT_STEP = 0.10
 DETECT_STEP_MIN = 0.02                  # 隐匿每级让每次上涨少 1%，最少涨这么多
 
@@ -987,6 +988,7 @@ def do_move(cur: Cursor, player: Player, view: RoomView, a: Move) -> list[str]:
         facts += _upgrade_nudge(cur, player, npc)       # 走进铁匠铺：莉娜看不下去没升过的武器
         facts += _bow_nudge(cur, player, npc)           # 拿着弓进酒馆：麦琪提一句找人挡在前面
         facts += _armor_nudge(cur, player, npc) + _gem_nudge(cur, player, npc) + _potion_nudge(cur, player, npc)
+        facts += _news(cur, player, npc)                # 上线后第一次进酒馆：麦琪八卦最近的更新
     if room.props.get("rest"):
         facts.append(REST_TEXT)
     return facts + _beast_hint(cur, to) + stride
@@ -2577,6 +2579,20 @@ def _sharpness(enemies: list[Npc]) -> float:
     return PERCEPTION_DETECT[max([_perception(n) for n in enemies] or [0])]
 
 
+def _keen_line(npc: Npc, who: str) -> str:
+    """警觉的怪在场、藏不住：按它为什么警觉换说法（以前一律"鼻子灵"，骷髅也鼻子灵很出戏）"""
+    p = npc.template.props
+    if p.get("dungeon", {}).get("rank") == "boss":
+        return f"{npc.name}早就察觉到{who}了，藏不住"
+    if p.get("animal"):
+        return f"鼻子灵的{npc.name}一直追着{who}的气味，藏不住"
+    if "gargoyle" in npc.template.id:
+        return f"{npc.name}一动不动地盯着{who}，藏不住"
+    if p.get("undead"):
+        return f"{npc.name}空洞的眼眶一直对着{who}，藏不住"
+    return f"{npc.name}的眼睛一直跟着{who}，藏不住"
+
+
 HIDE_SEEN, HIDE_CLOSE = 3, 4              # 战斗中躲藏的难度下限：已被发现 / 有怪贴身
 HIDDEN_HIT = 0.5                        # 躲起来那一轮，贴身又早发现了他的怪摸黑乱挥，命中减半
 
@@ -2586,7 +2602,7 @@ def do_hide(cur: Cursor, player: Player, view: RoomView, a: Hide) -> list[str]:
     st = _stealth(player)
     foes = [n for n in _enemies(cur, player.room_id) if n.status is None]
     if keen := next((n for n in foes if n.template.props.get("keen")), None):
-        raise ActionError(f"鼻子灵的{keen.name}一直盯着{player.name}，藏不住")
+        raise ActionError(_keen_line(keen, player.name))
     env = _room_env(cur, player.room_id)
     easier = bool(env.get("cover")) + (_light(cur, player.room_id, env) < LIGHT_DARK)
     # 最敏锐的那只怪说了算（迟钝 -1、敏锐 +1）；手里拿着点着的火把 +1
@@ -2712,7 +2728,8 @@ def enemy_turn(conn: Connection, player_id: UUID, actions: list[PlayerAction],
                 facts.append(f"{'、'.join(n.name for n in enemies)}发现了{player.name}")
             elif not st.hidden:
                 # 隐匿越高，被发现的几率涨得越慢
-                step = max(DETECT_STEP_MIN, DETECT_STEP - 0.01 * skill_level(player.skills.get("stealth", 0)))
+                step = max(DETECT_STEP_MIN, DETECT_STEP - 0.01 * skill_level(player.skills.get("stealth", 0))) \
+                    + DETECT_PER_FOE * (len(enemies) - 1)
                 st.chance = round(min(1.0, st.chance + step), 2)
         # 闪避：察觉越高躲得越好
         dodge_bonus = _dodge_bonus(player) if dodge else 0.0
@@ -2952,7 +2969,8 @@ def round_enemies(conn: Connection, room_id: str, done: dict[UUID, list[tuple[Pl
                     st.detected, st.hidden = True, False
                     facts.append(f"{'、'.join(n.name for n in enemies)}发现了{p.name}")
                 elif not st.hidden:
-                    step = max(DETECT_STEP_MIN, DETECT_STEP - 0.01 * skill_level(p.skills.get("stealth", 0)))
+                    step = max(DETECT_STEP_MIN, DETECT_STEP - 0.01 * skill_level(p.skills.get("stealth", 0))) \
+                        + DETECT_PER_FOE * (len(enemies) - 1)
                     st.chance = round(min(1.0, st.chance + step), 2)
             bonus = _dodge_bonus(p) if dodge else 0.0
             if _room_env(cur, room_id).get("ground") == "water" and not gear_has(cur, p, "wade"):
@@ -3802,6 +3820,29 @@ def _nudge_mark(cur: Cursor, player: Player, key: str) -> None:
     deepest = _deepest(cur, player)
     cur.execute("update players set flags = flags || jsonb_build_object(%s::text, %s::int) where id = %s", (key, deepest, player.id))
     player.flags[key] = deepest
+
+
+# 更新告示：改了玩法就往 NEWS 前面加一条（版本号、麦琪的八卦、更新说明），玩家上线后第一次进酒馆听到最新那条
+# （不然玩家只觉得"被热补丁削弱了"）。看过的版本记在 players.flags._news
+NEWS = [
+    ("2026-09-25", "听说地牢里的东西最近变机灵了……",
+     "躲起来时贴在身边、早发现你的怪还会摸黑乱挥；被发现过就偷袭不了，警觉的怪面前藏不住；"
+     "中毒、流血按那一下打出的伤害算，防御也挡得住了，再中只多挂一回合；"
+     "挣脱、爬起来以后这一轮不会马上又被同样的招控住；狗和狼一个房间最多两只，领头的一倒剩下的就跑；"
+     "楼梯间的守卫都很警觉，绕不过去；升级失败不再掉级，连着失败越来越容易成；莉娜能把用不上的地牢装备拆成碎铁"),
+]
+NEWS_SEEN = "_news"
+
+
+def _news(cur: Cursor, player: Player, npc: Npc) -> list[str]:
+    """麦琪在酒馆里八卦最近的更新（每个版本每人一次）"""
+    if not npc.template.props.get("inn") or not NEWS or player.flags.get(NEWS_SEEN) == NEWS[0][0]:
+        return []
+    version, gossip, notes = NEWS[0]
+    player.flags[NEWS_SEEN] = version
+    cur.execute("update players set flags = flags || jsonb_build_object(%s::text, %s::text) where id = %s",
+                (NEWS_SEEN, version, player.id))
+    return [f"{npc.name}一边擦杯子一边压低声音：“{gossip}”", f"（更新告示：{notes}）"]
 
 
 ARMOR_NUDGE, GEM_NUDGE, POTION_NUDGE = "_armor_nudge", "_gem_nudge", "_potion_nudge"
