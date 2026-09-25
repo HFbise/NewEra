@@ -19,6 +19,7 @@ SMOKE_ROUNDS = 2                        # 烟能撑几轮（敌人动几次）
 ENEMY_RANGED_HIT = {0: 0.5, 1: 0.75, 2: 0.85, 3: 0.85, 4: 0.75}
 RANGED_COVER = 0.15
 RANGED_BACKS = 2                        # 远程怪一场最多往后跳两次，再贴上去它就"背后撞上了石壁"，跳不开了
+RELOAD_BACKS = 2                        # 只给模拟试用：装填时被贴身顺势退一步（试过没用，近战怪当轮就跟上来，没上线）
 HEALER_BELOW = 0.6
 HEALER_CHANCE = 0.5                     # 有同伴要治时一半几率治疗（另一半照常出手）。治疗量按本层普通怪的血量 × props.healer，不看治的是谁
 HEALER_MAX = 3                          # 每只一场最多治三次，"先杀她"和"耗光她"都是办法
@@ -189,6 +190,14 @@ def clamp_price(stats: dict, price: int, markup: float = 1.0) -> int:
 # 防具又便宜得离谱）；稀有的东西可以在物品 props.upgrade_mult 里给个倍数。
 # 用奥利哈刚：失败不掉级、矿石不用掉，成功那次才用掉。淬火油必成、不收钱
 UPGRADE_STEP = {"damage": 1, "defense": 0.5}
+RANGED_UPGRADE_STEP = 1.5               # 远程武器每级伤害 +1.5：射一发要搭一次装填，不补的话深层跟不上近战
+
+
+def upgrade_step(stat: str, ranged: bool) -> float:
+    """升一级加多少：武器 +1（远程 +1.5），防具 +0.5"""
+    return RANGED_UPGRADE_STEP if ranged and stat == "damage" else UPGRADE_STEP[stat]
+
+
 UPGRADE_COST = (12.5, 1.6)              # 升到第 N 级：12.5 × 1.6^N，+1 要 20、+3 要 51、+5 要 131、+8 要 537、+10 要 1374
 UPGRADE_BREAK_STEP = 0.10
 UPGRADE_BREAK_MAX = 0.90

@@ -46,7 +46,11 @@ FORAGE_CHANCE = 0.5                     # 空房搜到药草的几率
 ROUND_CAP = 60                          # 一场打这么多轮还没完就算僵住（记下来）
 ORE_PER_FLOOR = 0.5                     # 每层大约能弄到的奥利哈刚（事件房、掉落），回城都砸在武器上
 # 对照用的开关（命令行改）：怪打人的伤害倍数（真人比模拟难约 1.5 倍）、远程武器每级加多少
-VARIANT = {"dmg": 1.0, "ranged_step": 1.0}
+VARIANT = {"dmg": 1.0, "ranged_step": R.RANGED_UPGRADE_STEP, "reload_back": 1, "reload_melee_only": False}
+PREP_BELOW = 0.7                        # 进头目（楼梯间）之前血量低于这个比例：先扎营（这层还没扎过），再喝药
+# 远程打法从拿得到那把弓的那一段开始算：猎弓地牢第 4 层起才可能掉（不常见），算第 2 趟（6 层）起；
+# 绞盘重弩第 7–9 层起才掉，算第 3 趟（11 层）起。手弩莉娜店里就有，第 1 层起
+START_TRIP = {"bow": 1, "xbow": 2}
 
 
 # ============ 装备：按"走到这一段实际拿得到的"拼，数字是模板的基础值，升级另算 ============
@@ -68,7 +72,7 @@ SHIELD = [("木盾", 2, 0), ("塔盾", 3, 2), ("塔盾", 3, 2), ("塔盾", 3, 2)
 @dataclass
 class Weapon:
     name: str
-    damage: int
+    damage: float
     ranged: bool = False
     steady: bool = False
     reload_steps: int = 1
@@ -82,7 +86,7 @@ def melee_weapons(build: str, trip: int) -> list[tuple[str, int]]:
     sword = ("闪亮的短剑", 6) if trip == 0 else ("精钢短剑", 7)
     if build == "dual":
         return [sword, ("铁斧", 5) if trip == 0 else ("闪亮的短剑", 6) if trip == 1 else ("精钢短剑", 7)]
-    if build in ("sword_shield", "sword_torch", "sling_sword", "mcb_sword"):
+    if build in ("sword_shield", "sword_torch", "sling_sword", "mcb_sword", "hxb_sword"):
         return [sword]
     return []
 
@@ -97,11 +101,13 @@ def ranged_weapon(build: str, trip: int) -> Optional[Weapon]:
         return Weapon("投石索", 6, True)
     if build == "mcb_sword":
         return Weapon("麦琪的轻弩", ITEMS["maggie_crossbow"]["damage"], True, steady=True)
+    if build == "hxb_sword":
+        return Weapon("手弩", ITEMS["hand_crossbow"]["damage"], True)
     return None
 
 
 BUILDS = {"dual": "双持", "sword_shield": "剑盾", "sword_torch": "剑+火把", "bow": "猎弓", "xbow": "绞盘重弩",
-          "sling_sword": "投石索配剑", "mcb_sword": "麦琪的弩配剑"}
+          "sling_sword": "投石索配剑", "mcb_sword": "麦琪的弩配剑", "hxb_sword": "手弩配剑"}
 QUALITY = {"poor": "装备差", "normal": "正常", "fav": "好感全满"}
 
 
@@ -236,6 +242,10 @@ def upgradable_weapons(build: str, trip: int, quality: str) -> list[int]:
     if build in ("bow", "xbow"):
         return [r.damage]
     ws = melee_weapons(build, trip)
+    if build in ("hxb_sword", "mcb_sword"):
+        if quality == "fav":
+            ws = [("无铭", blade_damage(trip * TRIP))]
+        return [r.damage, ws[0][1]]
     if quality == "fav" and ws:
         ws = [("无铭", blade_damage(trip * TRIP))] + ws[1:]
     return [d for _, d in ws][:2 if build == "dual" else 1]
@@ -292,6 +302,7 @@ class Hero:
     loaded: bool = True
     wound: int = 0
     reloaded_free: bool = False
+    backs: int = 0                      # 这场装填时退了几步
     struck: bool = False
     down: bool = False
     # 统计
@@ -306,7 +317,7 @@ class Hero:
 def power(h: Hero, shooter: Optional[Weapon]) -> int:
     base = h.atk + (shooter.damage if shooter else sum(d if k == 0 else int(d * R.OFFHAND_SHARE)
                                                          for k, (_, d) in enumerate(h.melee)))
-    return round(base * (1 + R.CHEER_ATTACK / 100 if h.cheer else 1))
+    return int(base * (1 + R.CHEER_ATTACK / 100 if h.cheer else 1) + 0.5)
 
 
 def hero_def(h: Hero) -> int:
@@ -352,7 +363,7 @@ class Fight:
         self.hits: dict = {}
         self.rounds = 0
         for h in heroes:
-            h.struck, h.reloaded_free = False, False
+            h.struck, h.reloaded_free, h.backs = False, False, 0
 
     def light(self) -> int:
         return min(100, self.base_light + max([h.torch_light for h in self.heroes if not h.down] or [0]))
@@ -471,7 +482,14 @@ class Fight:
             shooter = h.ranged if h.ranged and (d > 0 or not h.melee or h.ranged.steady) else None
             if shooter and not h.loaded:
                 if not h.melee or d > 0:
-                    h.wound += 1                   # 装填（绞盘重弩要摇两次）
+                    # 装填（绞盘重弩要摇两次）；被贴身就边退一步边装（一场最多 RELOAD_BACKS 步）
+                    close = [x for x in self.alive() if self.dist[(id(h), id(x))] == 0
+                             and not (VARIANT["reload_melee_only"] and x.props.get("ranged"))]
+                    if close and h.backs < R.RELOAD_BACKS:
+                        h.backs += 1
+                        for x in close:
+                            self.dist[(id(h), id(x))] = VARIANT["reload_back"]
+                    h.wound += 1
                     if h.wound >= shooter.reload_steps:
                         h.loaded, h.wound = True, 0
                     continue
@@ -613,7 +631,10 @@ def make_heroes(build: str, quality: str, trip: int, kit: Kit, size: int, depth:
         r = ranged_weapon(build, trip)
         wp = kit.weapon_plus
         if build in ("bow", "xbow"):
-            r.damage += round((wp[0] if wp else 0) * VARIANT["ranged_step"])
+            r.damage += (wp[0] if wp else 0) * VARIANT["ranged_step"]
+        elif build in ("hxb_sword", "mcb_sword"):
+            r.damage += (wp[0] if wp else 0) * VARIANT["ranged_step"]
+            ws = [(n, d + (wp[1] if len(wp) > 1 else 0)) for n, d in ws]
         else:
             ws = [(n, d + (wp[k] if k < len(wp) else 0)) for k, (n, d) in enumerate(ws)]
         armor = [d for _, d in ARMOR[quality][trip]]
@@ -679,6 +700,19 @@ def run_trip(build: str, quality: str, trip: int, kit: Kit, size: int, stats: di
         for kind, groups, cover in floor_rooms(depth, theme_key):
             if all(h.down for h in heroes):
                 break
+            if kind == "stairs":
+                # 楼梯间守着头目或精英：血量低于七成先整备，这层还没扎营就扎营，再不够就喝药
+                if not camped and any(not h.down and h.hp < h.max_hp * PREP_BELOW for h in heroes):
+                    camped = True
+                    ok = random.random() < R.skill_chance(SURVIVAL_LEVEL, 1 + depth // 3)
+                    share = (R.CAMP_BASE + (R.CAMP_SURVIVAL if ok else 0)) * R.CAMP_EMPTY
+                    for h in heroes:
+                        if not h.down:
+                            h.hp = min(h.max_hp, h.hp + round(h.max_hp * share))
+                for h in heroes:
+                    while not h.down and h.hp < h.max_hp * PREP_BELOW and (h.potions or h.herbs):
+                        prep = Fight([h], [], 50, False, depth)
+                        prep.drink(h)
             mons = []
             for monster, rank in groups:
                 mons += spawn(depth, monster, rank, theme_key, size, len(groups), kind == "stairs")
@@ -757,9 +791,12 @@ def main() -> None:
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--out", default="balance/result.md")
     ap.add_argument("--dmg", type=float, default=1.0, help="怪打人的伤害倍数（对照版用 1.5）")
-    ap.add_argument("--ranged-step", type=float, default=1.0, help="远程武器每级加多少伤害")
+    ap.add_argument("--ranged-step", type=float, default=R.RANGED_UPGRADE_STEP, help="远程武器每级加多少伤害")
+    ap.add_argument("--reload-back", type=int, default=1, help="装填时被贴身往后退几步")
+    ap.add_argument("--reload-melee-only", action="store_true", help="只从近战怪身边退开（远程怪隔一格反而更准）")
     args = ap.parse_args()
-    VARIANT.update(dmg=args.dmg, ranged_step=args.ranged_step)
+    VARIANT.update(dmg=args.dmg, ranged_step=args.ranged_step, reload_back=args.reload_back,
+                   reload_melee_only=args.reload_melee_only)
     out = [f"# 模拟结果（怪伤害 ×{args.dmg:g}，远程每级 +{args.ranged_step:g}，每种组合每趟 {args.trips} 次，种子 {args.seed}）\n"]
 
     # ---- 经济 ----
@@ -784,7 +821,8 @@ def main() -> None:
     # ---- 一趟一趟走 ----
     combos = []
     for q in ("poor", "normal", "fav"):
-        for b in ("dual", "sword_shield", "sword_torch", "bow", "xbow", "sling_sword") + (("mcb_sword",) if q == "fav" else ()):
+        for b in ("dual", "sword_shield", "sword_torch", "bow", "xbow", "hxb_sword", "sling_sword") \
+                + (("mcb_sword",) if q == "fav" else ()):
             for size in (1, 2):
                 combos.append((q, b, size))
     table, room_log = {}, {}
@@ -792,13 +830,15 @@ def main() -> None:
         random.seed(f"{args.seed}-{q}-{b}-{size}")
         stats: dict[int, FloorStat] = {}
         eco = [economy(q, b) for _ in range(30)]
-        for t in range(4):
+        for t in range(START_TRIP.get(b, 0), 4):
             for n in range(args.trips):
                 run_trip(b, q, t, eco[n % len(eco)][t], size, stats,
                          room_log if (q, b, size) == ("normal", "sword_shield", 1) else None)
         table[(q, b, size)] = stats
 
-    def seg(stats: dict, t: int) -> float:
+    def seg(stats: dict, t: int) -> Optional[float]:
+        if t * TRIP + 1 not in stats:
+            return None                          # 这一段还拿不到这把弓
         surv = 1.0
         for d in range(t * TRIP + 1, t * TRIP + TRIP + 1):
             s = stats.get(d)
@@ -811,7 +851,8 @@ def main() -> None:
     out.append("| 装备 | 打法 | 人数 | 1–5 | 6–10 | 11–15 | 16–20 |")
     out.append("|---|---|---|---|---|---|---|")
     for (q, b, size), stats in table.items():
-        out.append(f"| {QUALITY[q]} | {BUILDS[b]} | {size} | " + " | ".join(pct(seg(stats, t)) for t in range(4)) + " |")
+        out.append(f"| {QUALITY[q]} | {BUILDS[b]} | {size} | "
+                   + " | ".join("-" if (v := seg(stats, t)) is None else pct(v) for t in range(4)) + " |")
     out.append("")
 
     def per_floor(title: str, fn, qs=("normal",)) -> None:
@@ -866,9 +907,20 @@ def main() -> None:
         t = (depth - 1) // TRIP
         mcb = fight_test("mcb_sword", "fav", t, depth, [("kobold", "elite")], "mine")
         sw = fight_test("sword_shield", "fav", t, depth, [("kobold", "elite")], "mine")
-        xb = fight_test("xbow", "normal", t, depth, [("kobold", "elite")], "mine")
-        out.append(f"| 精英狗头人：麦琪的弩配剑、剑盾（都是好感全满）；绞盘重弩（正常） | {depth} | "
-                   f"重弩 {pct(xb[0])}、{xb[2]:.1f} 轮 | 弩剑 {pct(mcb[0])}、{mcb[2]:.1f} 轮；剑盾 {pct(sw[0])}、{sw[2]:.1f} 轮 |")
+        rb = "xbow" if depth >= 11 else "bow" if depth >= 6 else "hxb_sword"
+        xb = fight_test(rb, "normal", t, depth, [("kobold", "elite")], "mine")
+        out.append(f"| 精英狗头人：{BUILDS[rb]}（正常）；麦琪的弩配剑、剑盾（都是好感全满） | {depth} | "
+                   f"{BUILDS[rb]} {pct(xb[0])}、{xb[2]:.1f} 轮 | 弩剑 {pct(mcb[0])}、{mcb[2]:.1f} 轮；剑盾 {pct(sw[0])}、{sw[2]:.1f} 轮 |")
+    out.append("")
+    out.append("### 六个主题的头目（正常装备、剑盾、单人，满血不喝血药）：挨的伤害 / 团灭率\n")
+    out.append("| 头目 | 第 5 层 | 第 10 层 | 第 15 层 |")
+    out.append("|---|---|---|---|")
+    for key, th in THEMES.items():
+        cells = []
+        for depth in (5, 10, 15):
+            a, w, _ = fight_test("sword_shield", "normal", (depth - 1) // TRIP, depth, [("boss", "boss")], key, n=300)
+            cells.append(f"{pct(a)} / {pct(w)}")
+        out.append(f"| {th['boss']['name']}（{key}） | " + " | ".join(cells) + " |")
     out.append("")
 
     # ---- 校准：装备差、剑盾单人的前 5 层，对照玩家A、玩家B 的真实记录 ----

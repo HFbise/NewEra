@@ -2905,8 +2905,8 @@ def _how(player: Player, melee: list[ItemInstance], shooter: Optional[ItemInstan
     cheer = 1 + (_effect(player, "cheer").value / 100 if _effect(player, "cheer") else 0)
     if shooter:
         verb = f"从{shooter.name}里抽出一把掷向" if _prop(shooter, "thrown") else f"端起{shooter.name}射向"
-        return verb, round((player.attack + shooter.damage) * cheer)
-    return f"用{_wielding(melee)}攻击", round((player.attack + weapon_damage(melee)) * cheer)
+        return verb, int((player.attack + shooter.damage) * cheer + 0.5)
+    return f"用{_wielding(melee)}攻击", int((player.attack + weapon_damage(melee)) * cheer + 0.5)
 
 
 def _hit_base(shooter: Optional[ItemInstance], d: int) -> float:
@@ -3533,6 +3533,11 @@ def upgradable(items: list[ItemInstance]) -> list[ItemInstance]:
     return [i for i in items if upgrade_stat(i)]
 
 
+def _step(item: ItemInstance, stat: str) -> float:
+    """这件升一级加多少（远程武器伤害 +1.5）"""
+    return upgrade_step(stat, bool(_prop(item, "ranged") or _prop(item, "loads")))
+
+
 def upgrade_terms(item: ItemInstance) -> tuple[int, int, float]:
     """(升到几级, 费用, 失败的几率)：费用只看升到第几级（rules.upgrade_cost），稀有的东西乘 props.upgrade_mult"""
     level = item.props.get("plus", 0) + 1
@@ -3544,7 +3549,7 @@ def _upgrade_text(item: ItemInstance, price: Optional[int] = None) -> str:
     cost = price if price is not None else cost
     stat = upgrade_stat(item)
     now = getattr(item, stat)
-    return (f"升到 +{level}（{STAT_WORDS[stat]} {stat_text(now)} → {stat_text(now + UPGRADE_STEP[stat])}）要 {cost} 金币，有 {round(risk * 100)}% 的可能失败"
+    return (f"升到 +{level}（{STAT_WORDS[stat]} {stat_text(now)} → {stat_text(now + _step(item, stat))}）要 {cost} 金币，有 {round(risk * 100)}% 的可能失败"
             + ("，失败会退一级" if level > 1 else "，失败了钱白花"))
 
 
@@ -3599,9 +3604,9 @@ def do_upgrade(cur: Cursor, player: Player, view: RoomView, a: Upgrade) -> list[
         _consume(cur, oil)
         name = re.sub(r" \+\d+$", "", item.name) + f" +{level}"
         cur.execute("update item_instances set props = props || %s where id = %s",
-                    (Jsonb({"plus": level, stat: now + UPGRADE_STEP[stat], "name": name}), item.id))
+                    (Jsonb({"plus": level, stat: now + _step(item, stat), "name": name}), item.id))
         return [f"{player.name}递上莉娜的淬火油，{npc.name}把{item.name}烧红了往油里一浸，滋的一声冒起白烟",
-                f"升级成功：{item.name}变成了{name}，{STAT_WORDS[stat]} {stat_text(now + UPGRADE_STEP[stat])}（淬火油用掉了，没收钱）"]
+                f"升级成功：{item.name}变成了{name}，{STAT_WORDS[stat]} {stat_text(now + _step(item, stat))}（淬火油用掉了，没收钱）"]
     if cost > player.gold:
         raise ActionError(f"{npc.name}看了看{player.name}的{item.name}：{terms}。{player.name}身上只有 {player.gold} 金币，不够")
     if a.ore is None and ore is not None and level > 1 and key not in offers:
@@ -3628,12 +3633,12 @@ def do_upgrade(cur: Cursor, player: Player, view: RoomView, a: Upgrade) -> list[
             return facts + [f"淬火的时候火候没掌握好，{item.name}没升上去，好在也没伤着"]
         name = base + (f" +{down}" if down else "")
         cur.execute("update item_instances set props = props || %s where id = %s",
-                    (Jsonb({"plus": down, stat: now - UPGRADE_STEP[stat], "name": name}), item.id))
-        return facts + [f"淬火的时候崩了一块，{item.name}退回了{name}，{STAT_WORDS[stat]} {stat_text(now - UPGRADE_STEP[stat])}"]
+                    (Jsonb({"plus": down, stat: now - _step(item, stat), "name": name}), item.id))
+        return facts + [f"淬火的时候崩了一块，{item.name}退回了{name}，{STAT_WORDS[stat]} {stat_text(now - _step(item, stat))}"]
     name = base + f" +{level}"
     cur.execute("update item_instances set props = props || %s where id = %s",
-                (Jsonb({"plus": level, stat: now + UPGRADE_STEP[stat], "name": name}), item.id))
-    return facts + [f"升级成功：{item.name}变成了{name}，{STAT_WORDS[stat]} {stat_text(now + UPGRADE_STEP[stat])}"]
+                (Jsonb({"plus": level, stat: now + _step(item, stat), "name": name}), item.id))
+    return facts + [f"升级成功：{item.name}变成了{name}，{STAT_WORDS[stat]} {stat_text(now + _step(item, stat))}"]
 
 
 # ============ 莉娜的回礼：传承锻造、刷新词条、专属武器 ============
@@ -3680,18 +3685,18 @@ def do_transfer(cur: Cursor, player: Player, view: RoomView, a: Transfer) -> lis
     price, probe = 0, dst.model_copy(deep=True)
     for lv in range(now + 1, have + 1):            # 按接过去那件一级一级升上去的费用算
         price += upgrade_terms(probe)[1]
-        probe.props = {**probe.props, "plus": lv, stat: getattr(probe, stat) + UPGRADE_STEP[stat]}
+        probe.props = {**probe.props, "plus": lv, stat: getattr(probe, stat) + _step(probe, stat)}
     price = max(UPGRADE_MIN_COST, round(price * TRANSFER_SHARE))
     patron = _pay(cur, player, price, npc)
     gain = have - now
     base_src, base_dst = re.sub(r" \+\d+$", "", src.name), re.sub(r" \+\d+$", "", dst.name)
     cur.execute("update item_instances set props = props || %s where id = %s",
-                (Jsonb({"plus": 0, stat: getattr(src, stat) - have * UPGRADE_STEP[stat], "name": base_src}), src.id))
+                (Jsonb({"plus": 0, stat: getattr(src, stat) - have * _step(src, stat), "name": base_src}), src.id))
     cur.execute("update item_instances set props = props || %s where id = %s",
-                (Jsonb({"plus": have, stat: getattr(dst, stat) + gain * UPGRADE_STEP[stat], "name": f"{base_dst} +{have}"}), dst.id))
+                (Jsonb({"plus": have, stat: getattr(dst, stat) + gain * _step(dst, stat), "name": f"{base_dst} +{have}"}), dst.id))
     return [f"{player.name}付了 {price} 金币，{npc.name}把{src.name}和{dst.name}一起放进炉火，锤了一整个下午",
             f"{src.name}上的锻纹褪了下去，变回了{base_src}；{base_dst}接过了这份锻打，变成了{base_dst} +{have}，"
-            f"{STAT_WORDS[stat]} {stat_text(getattr(dst, stat) + gain * UPGRADE_STEP[stat])}"] + patron
+            f"{STAT_WORDS[stat]} {stat_text(getattr(dst, stat) + gain * _step(dst, stat))}"] + patron
 
 
 def do_reroll(cur: Cursor, player: Player, view: RoomView, a: Reroll) -> list[str]:
@@ -4493,7 +4498,7 @@ def item_detail(item: ItemInstance, curse_sense: bool = False) -> str:
     lines = [head + "）"]
     stats = []
     if item.damage:
-        stats.append(f"伤害 {item.damage}")
+        stats.append(f"伤害 {stat_text(item.damage)}")
     if item.defense:
         stats.append(f"防御 {stat_text(item.defense)}")
     if item.heal:
