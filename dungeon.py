@@ -54,7 +54,7 @@ LOOT_NOT_YET: set[str] = set()         # 机制还没做的物品先不掉（第
 DEEP_DUNGEON = ("deep_dungeon_16.yaml", "deep_dungeon_21.yaml")      # 深层主题（themes / monsters / events）
 DEEP_LOOT, DEEP_ITEMS = "deep_loot.yaml", "deep_items.yaml"
 # 机制接完了的深层主题才进主题池（一个一个接，接完用模拟对一下再放进来）
-DEEP_READY = {"forge", "crystal", "silent", "desert", "dream", "fog"}
+DEEP_READY = {"forge", "crystal", "silent", "desert", "dream", "fog", "astral"}
 
 
 def _yaml(name: str) -> dict:
@@ -160,10 +160,10 @@ def gem_props(cur: Cursor, gem: str, tier: int) -> dict:
 
 
 def put_gem(cur: Cursor, gem: str, depth: int, *, room: Optional[str] = None, npc: Optional[UUID] = None,
-            player: Optional[UUID] = None) -> str:
-    """掉一颗宝石（品质按层数抽），返回名字"""
+            player: Optional[UUID] = None, min_tier: int = 1) -> str:
+    """掉一颗宝石（品质按层数抽，至少 min_tier：流星坠落点至少闪亮），返回名字"""
     cur.execute("select props from item_templates where id = %s", (gem,))
-    tier = gem_tier(depth, gem_rules(), bool(cur.fetchone()["props"].get("numeric")))
+    tier = max(min_tier, gem_tier(depth, gem_rules(), bool(cur.fetchone()["props"].get("numeric"))))
     props = gem_props(cur, gem, tier)
     cur.execute("insert into item_instances (template_id, room_id, npc_id, player_id, props) values (%s, %s, %s, %s, %s)",
                 (gem, room, npc, player, Jsonb(props)))
@@ -450,7 +450,7 @@ def _template(cur: Cursor, depth: int, kind: str, rank: str, theme: str, share: 
             props[key] = m[key]
     for key in ("healer", "verb", "guard_allies", "reflect_ranged", "shield_allies", "dormant", "wake_noise", "hearing",
                 "bell", "silence_field", "noise_heal", "swarm", "native", "mirror_attack", "revive_once", "memories",
-                "lure", "ambush", "fare"):   # 治疗、出手的说法、护同伴、折回远程、套盾
+                "lure", "ambush", "fare", "dark_evasion", "only_dark", "pull"):   # 治疗、出手的说法、护同伴、折回远程、套盾
         if m.get(key):
             props[key] = m[key]
     if rank == "boss" or fx.get("keen") or stair:
@@ -759,7 +759,9 @@ def _make_floor(cur: Cursor, run: UUID, depth: int, above: Optional[str], size: 
                  "env": {"light": max(0, min(100, light)), "ground": text.get("ground", "normal"),
                          "cover": bool(text.get("cover")),
                          **({"heat": theme["heat"]["pct"]} if theme.get("heat") else {}),
-                         **({"glare": theme["glare"]} if theme.get("glare") else {})}}
+                         **({"glare": theme["glare"]} if theme.get("glare") else {}),
+                         **({"edge": True} if text.get("edge") else {}),
+                         **({"shift": theme["star_cycle"]["swing"]} if theme.get("star_cycle") else {})}}
         if kind == "entry" and is_stone(depth):
             props["stone"] = True
         if kind == "empty":

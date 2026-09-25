@@ -423,6 +423,7 @@ class Mon:
     rung: int = 0                       # 敲钟人摇铃加的攻击
     memory: int = 0                     # 永不醒来的人换过几段记忆
     lured: bool = False                 # 雾中渔灯：第一下打在灯上
+    pull_acts: int = 0
     ambushed: bool = False              # 雾鳗：每场第一口 ×1.5
     fare_acts: int = 0
     fare_due: bool = False
@@ -480,6 +481,12 @@ def power(h: Hero, shooter: Optional[Weapon]) -> int:
     return int(base * (1 + R.CHEER_ATTACK / 100 if h.cheer else 1) + 0.5)
 
 
+def edge_of(theme: dict) -> bool:
+    """这间房是不是在虚空边上：按主题房间里 edge 的比例抽"""
+    rooms = theme.get("rooms", [])
+    return random.random() < sum(1 for r in rooms if r.get("edge")) / max(1, len(rooms))
+
+
 def sand_of(theme: dict) -> Optional[dict]:
     """这间房是不是流沙：按主题房间里 ground: sand 的比例抽"""
     rooms = theme.get("rooms", [])
@@ -512,7 +519,7 @@ def spawn(depth: int, kind: str, rank: str, theme_key: str, size: int, groups: i
     props = {k: m[k] for k in ("animal", "light_averse", "undead", "keen", "ranged", "healer", "on_hit", "guard_allies",
                                "immune", "weak", "stances", "resist_element", "reflect_ranged", "shield_allies", "nodes",
                                "dormant", "bell", "silence_field", "swarm", "mirror_attack", "revive_once", "memories",
-                               "lure", "ambush", "fare")
+                               "lure", "ambush", "fare", "dark_evasion", "only_dark", "pull")
              if m.get(k)}
     if m.get("hearing"):
         props["keen"] = True                # 聆听者：偷袭要动身子，它听得见
@@ -667,6 +674,9 @@ class Fight:
         return False
 
     fog: Optional[dict] = None          # 浓雾（迷雾葬海）
+    star: Optional[dict] = None         # 星光周期（星界秘境）
+    period: int = 0
+    edge: Optional[dict] = None         # 虚空边缘的房间（theme.void）
     shift: int = 0                      # 梦境的光亮浮动、星光明暗（engine env.shift）
     jitter: int = 0
     dislocate: int = 0
@@ -733,7 +743,7 @@ class Fight:
 
     def target(self, h: Hero) -> Mon:
         """先打治疗的，再打远程的，再打血少的"""
-        live = self.alive()
+        live = [m for m in self.alive() if not (m.props.get("only_dark") and not self.dark())] or self.alive()
         if VARIANT["focus_boss"] and any(m.minion for m in live) and (lead := [m for m in live if m.rank in ("boss", "elite")]):
             return min(lead, key=lambda m: m.hp)     # 知道"主子一死帮手就跑"的人：先打头目
         return min(live, key=lambda m: (not m.props.get("healer"), not m.props.get("ranged"), m.hp))
@@ -838,6 +848,8 @@ class Fight:
         else:
             base = R.MELEE_HIT.get(d, 0)
         chance = R.light_hit(self.light(), base) * (R.BLIND_HIT if "blind" in h.effects else 1)
+        if (ev := m.props.get("dark_evasion")) and self.dark():
+            chance *= 1 - ev
         chance -= R.POISON_HIT if "poison" in h.effects else 0
         first = not h.struck
         h.struck = True
@@ -926,7 +938,7 @@ class Fight:
                 return True                     # 被打断了
             self.skill_effect(m, m.skills[pend["i"]]["then"], targets)
             return True
-        i = R.due_skill(m.skills, m.hp / m.max_hp, acts, m.used, m.phased)
+        i = R.due_skill(m.skills, m.hp / m.max_hp, acts, m.used, m.phased, self.dark())
         if i is None:
             return False
         sk = m.skills[i]
@@ -999,6 +1011,8 @@ class Fight:
                 self.base_light = max(0, min(100, self.base_light + sk["env"]["light"]))
             if "heat_mult" in (sk.get("env") or {}):
                 self.heat_mult = sk["env"]["heat_mult"]
+            if "star_cycle_period" in (sk.get("env") or {}):
+                self.period = sk["env"]["star_cycle_period"]
             if "fog_start_distance" in (sk.get("env") or {}):
                 for key in self.dist:
                     self.dist[key] = min(self.dist[key], sk["env"]["fog_start_distance"])
@@ -1011,8 +1025,23 @@ class Fight:
             if then := sk.get("then"):
                 self.skill_effect(m, then, targets)
 
+    def dark(self) -> bool:
+        return bool(self.star) and self.shift < 0
+
+    def void_fall(self, h: Hero, add: int = 0) -> None:
+        """虚空边缘：被撞倒、推到边上，运动没过就坠下去（掉血量上限的 15%，回到旁边的房间重新走过来：这一轮白费，距离回到 2）"""
+        if not self.edge or h.down or random.random() < VOID_KEEP - 0.15 * add:
+            return
+        self.hurt_hero(h, max(R.SCALE, round(h.max_hp * self.edge.get("fall_damage_pct", 0.15))))
+        h.status = None
+        for key in self.dist:
+            if key[0] == id(h):
+                self.dist[key] = 2
+
     def room_turn(self) -> None:
         self.turns += 1
+        if self.star:
+            self.shift = self.star.get("swing", 35) * (1 if (self.turns // (self.period or self.star.get("period", 4))) % 2 == 0 else -1)
         if self.jitter:
             self.shift = random.randint(-self.jitter, self.jitter)
         if self.dislocate and self.turns % self.dislocate == 0:
@@ -1021,7 +1050,7 @@ class Fight:
 
     def enemies_turn(self) -> None:
         for m in self.alive():
-            if m.props.get("inert"):
+            if m.props.get("inert") or (m.props.get("only_dark") and not self.dark()):
                 continue
             if m.status:
                 if m.status.get("freed") or m.rank == "boss":      # 刚挣开的这轮来不及还手；头目只困一轮
@@ -1054,6 +1083,16 @@ class Fight:
 
     def enemy_act(self, m: Mon, h: Hero, mult: float = 1.0) -> None:
         props = m.props
+        if pull := props.get("pull"):
+            m.pull_acts += 1
+            if m.pull_acts % pull.get("every", 3) == 0:
+                if self.edge:
+                    self.void_fall(h)
+                else:
+                    for key in self.dist:
+                        if key[0] == id(h):
+                            self.dist[key] = min(2, self.dist[key] + 1)
+                return
         if (share := props.get("revive_once")) and not self.revived:
             dead = [x for x in self.mons if x.hp <= 0 and not x.minion and x is not m]
             if dead:
@@ -1151,6 +1190,8 @@ class Fight:
             k = "incapacitated" if kind == "stun" else kind
             if not h.status and h.guard != k:
                 h.status = {"kind": k, "escape": hit.get("escape", 2), "attempts": 0}
+                if k == "prone":
+                    self.void_fall(h, hit.get("void_difficulty", 0))
             return
         full = hit.get("turns") or R.EFFECT_TURNS[kind]
         if kind in h.effects:
@@ -1199,6 +1240,7 @@ def stealth_level(depth: int) -> int:
 
 
 DORMANT_SLEEPS = 0.5                    # 静默神殿：一场仗里沉睡的石像一直没被吵醒的几率
+VOID_KEEP = 0.55                        # 虚空边缘被撞倒时稳住的几率（运动对难度 2 + 层数/10，深层角色大约五五开）
 HEAT_WALK, HEAT_QUENCH = 10, 8          # 灼热的一层战斗外大约几个动作、两瓶泉水压住几个
 SNEAK_LETHAL = 0.7                      # 偷袭时 AI 判成致命的比例（其余按重伤）
 SNEAK_PAST = 0.85                       # 潜行打法溜过一个房间的几率 = SNEAK_PAST ^ (1 + 群数)：一群 72%、两群 61%、三群 52%
@@ -1341,6 +1383,9 @@ def run_trip(build: str, quality: str, trip: int, kit: Kit, size: int, stats: di
             fight.heat = THEMES[theme_key].get("heat", {}).get("pct", 0)
             fight.glare = THEMES[theme_key].get("glare")
             fight.set_fog(THEMES[theme_key].get("fog"))
+            fight.star = THEMES[theme_key].get("star_cycle")
+            fight.shift = fight.star.get("swing", 35) if fight.star else 0
+            fight.edge = THEMES[theme_key].get("void") if kind != "stairs" and edge_of(THEMES[theme_key]) else None
             fight.jitter = THEMES[theme_key].get("light_jitter", 0)
             fight.dislocate = (THEMES[theme_key].get("dislocate") or {}).get("every", 0)
             fight.sand = sand_of(THEMES[theme_key]) if kind != "stairs" else None
@@ -1408,6 +1453,9 @@ def fight_test(build: str, quality: str, trip: int, depth: int, groups: list[tup
         f.heat = THEMES[theme].get("heat", {}).get("pct", 0)
         f.glare = THEMES[theme].get("glare")
         f.set_fog(THEMES[theme].get("fog"))
+        f.star = THEMES[theme].get("star_cycle")
+        f.shift = f.star.get("swing", 35) if f.star else 0
+        f.edge = THEMES[theme].get("void") if not boss and edge_of(THEMES[theme]) else None
         f.jitter = THEMES[theme].get("light_jitter", 0)
         f.dislocate = (THEMES[theme].get("dislocate") or {}).get("every", 0)
         f.sand = sand_of(THEMES[theme]) if not boss else None

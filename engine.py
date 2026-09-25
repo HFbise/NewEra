@@ -13,6 +13,7 @@ import math
 import random
 import re
 from collections import defaultdict
+from types import SimpleNamespace
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
@@ -1485,6 +1486,9 @@ def _take_from(cur: Cursor, player: Player, view: RoomView, d: Dispenser) -> lis
             cur.execute("""insert into dispenser_log (player_id, room_id, key, fails) values (%s, %s, %s, 1)
                            on conflict (player_id, room_id, key) do update set fails = dispenser_log.fails + 1""",
                         (player.id, d.room, f"{d.key}#fails"))
+            if d.fail == "void_fall":
+                return [f"{player.name}助跑一下跳向{d.container}"] + facts + ["差了一点点，脚尖擦着石台边滑了下去"] \
+                    + _void_fall(cur, player, force=True)
             facts = [f"{player.name}想从{d.container}{d.where}取{d.item_name}"] + facts + [d.fail or "没能成功"]
             if d.fail_damage:
                 hurt, _ = _hurt_player(cur, player, d.fail_damage, "other", d.container)
@@ -1515,7 +1519,7 @@ def _take_from(cur: Cursor, player: Player, view: RoomView, d: Dispenser) -> lis
                 _give_bless(cur, player, stat, pct, {"atk_pct": f"清醒梦（攻击 +{pct}%）", "hit_pct": f"读懂的星图（命中 +{pct}%）",
                                                       "dodge": f"祝福（对方命中 -{pct}%）"}[stat])
         if b.get("reveal") == "star_cycle":
-            cur.execute("update players set flags = flags || '{\"_star_chart\": true}' where id = %s", (player.id,))
+            _give_bless(cur, player, "star_chart", 0, "读懂的星图（知道星光什么时候变）")
         return facts + [f"{player.name}{d.extra.get('done') or '心里一下子亮堂了'}：{'、'.join(e.label for e in player.effects if e.kind == 'bless')}，出了这一层就散"]
     if d.service == "shortcut":
         f = dungeon.floor_info(cur, player.room_id)
@@ -1544,7 +1548,8 @@ def _take_from(cur: Cursor, player: Player, view: RoomView, d: Dispenser) -> lis
         return facts + [f"{player.name}一把抓起石台上的钱袋（{coins} 金币）：沙子流完之前得走出这间屋子"]
     if d.item == "gem":
         f = dungeon.floor_info(cur, player.room_id)
-        gem = dungeon.put_gem(cur, dungeon.pick_gem(f["theme"]), f["depth"], player=player.id)
+        gem = dungeon.put_gem(cur, dungeon.pick_gem(f["theme"]), f["depth"], player=player.id,
+                              min_tier=int(d.extra.get("gem_min_tier", 1)))
         return facts + [f"{player.name}从{d.container}{d.where}撬下来一颗{gem}"]
     _give_player_new(cur, player, d.item)
     facts = facts + [f"{player.name}从{d.container}{d.where}拿了一件{d.item_name}"]
@@ -2581,6 +2586,48 @@ FOG_SPOT = 0.75                         # 浓雾里怪发现人的几率倍数�
 FOG_FAR = 0.5                           # 浓雾里远程打"几步开外"的命中倍数（theme.fog.ranged_far_mult）
 
 
+def _star_dark(cur: Cursor, room_id: str) -> bool:
+    """星界秘境的星光这会儿是暗的"""
+    env = _room_env(cur, room_id)
+    return bool(dungeon.is_dungeon(room_id) and int(env.get("shift", 0)) < 0
+                and dungeon.data()["themes"][dungeon.floor_info(cur, room_id)["theme"]].get("star_cycle"))
+
+
+def _away(cur: Cursor, npc: Npc) -> bool:
+    """只在星光暗时出现的怪（虚空之眼 only_dark）：亮的时候不在场上"""
+    return bool(npc.template.props.get("only_dark")) and not _star_dark(cur, npc.room_id)
+
+
+def _void_fall(cur: Cursor, player: Player, add: int = 0, force: bool = False) -> list[str]:
+    """虚空边缘（env.edge，theme.void）：被撞倒、推到边上时过一次运动，失败就坠入虚空：掉血量上限的 fall_damage_pct，
+    被传回旁边一间不在边上的房间（这场仗等于重新进来）。星辰之靴这类不会掉"""
+    env = _room_env(cur, player.room_id)
+    if player.hp <= 0 or not env.get("edge") or not dungeon.is_dungeon(player.room_id) or gear_has(cur, player, "void_immune"):
+        return []
+    run, depth = dungeon.parse_room(player.room_id)
+    void = dungeon.data()["themes"][dungeon.floor_info(cur, player.room_id)["theme"]].get("void") or {}
+    facts = []
+    if not force:
+        ok, facts = _check(cur, player, SimpleNamespace(trained=[]), void.get("check", "athletics"),
+                           int(void.get("base_difficulty", 2)) + depth // 10 + add)
+        if ok:
+            return facts + [f"{player.name}在石台边上晃了两下，稳住了"]
+    dmg = max(SCALE, round(player.max_hp * void.get("fall_damage_pct", 0.15)))
+    cur.execute("""select e.to_room from room_exits e join rooms r on r.id = e.to_room
+                   where e.room_id = %s and e.direction in ('north', 'south', 'east', 'west')
+                   order by coalesce((r.props->'env'->>'edge')::boolean, false), random() limit 1""", (player.room_id,))
+    row = cur.fetchone()
+    hurt, _ = _hurt_player(cur, player, dmg, "other", "虚空")
+    facts += [f"{player.name}脚下一空，坠进了星海里，掉了 {dmg} 点血"] + hurt
+    if row and player.hp > 0:
+        cur.execute("update players set room_id = %s, status = null, stealth = %s where id = %s",
+                    (row["to_room"], Jsonb(Stealth(room=row["to_room"], chance=DETECT_START).model_dump()), player.id))
+        dungeon.mark_seen(cur, row["to_room"])
+        cur.execute("select name from rooms where id = %s", (row["to_room"],))
+        facts.append(f"一阵失重过后，{player.name}摔在了{cur.fetchone()['name']}（要回去得重新走过去）")
+    return facts
+
+
 def _fog(cur: Cursor, room_id: str, player: Optional[Player] = None) -> Optional[dict]:
     """这个房间有没有浓雾（迷雾葬海 theme.fog）：灯塔点亮了（整层 fog_clear）、雾笛吹散了（env.fog_off）、
     带着不怕雾的东西的人不算"""
@@ -2662,7 +2709,7 @@ def _on_hit(cur: Cursor, player: Player, npc: Npc, base: Optional[int] = None) -
         _save_stealth(cur, player, st)
         return [_on_you(player.name, hit.get("label", "被迷住了，往后退了一步")) + "（离怪都远了一格）"]
     return _inflict(cur, player, hit["kind"], hit.get("label", ""), depth, npc.name, hit.get("escape", 2), hit.get("turns"),
-                   hit.get("value_mult", 1.0), base)
+                   hit.get("value_mult", 1.0), base, void_add=int(hit.get("void_difficulty", 0)))
 
 
 def _on_you(name: str, label: str) -> str:
@@ -2687,7 +2734,7 @@ def _you_of(cur: Cursor, npc: Npc, s: dict, targets: list) -> str:
 
 def _inflict(cur: Cursor, player: Player, kind: str, label: str, depth: int, source: str, escape: int = 2,
              turns: Optional[int] = None, value_mult: float = 1.0, base: Optional[float] = None,
-             heal_mult: Optional[float] = None) -> list[str]:
+             heal_mult: Optional[float] = None, void_add: int = 0) -> list[str]:
     """给玩家上一个效果：怪打中时附带的（_on_hit），决斗里对手装备触发的（_pvp_hit_extras）。
     base：挂上它的那一下打出的伤害（中毒、流血按它的比例跳，rules.dot_value）"""
     if kind == "dispel":
@@ -2713,7 +2760,8 @@ def _inflict(cur: Cursor, player: Player, kind: str, label: str, depth: int, sou
         player.status = st
         return [_on_you(player.name, label) + ("，得先挣脱（火一碰就能烧断）" if wrapped else "，得先挣脱" if kind == "restrained"
                                             else "，得先爬起来" if kind == "prone"
-                                            else "，失去战斗能力")] + (_noise(cur, player, "fall") if kind == "prone" else [])
+                                            else "，失去战斗能力")] \
+            + (_noise(cur, player, "fall") + _void_fall(cur, player, void_add) if kind == "prone" else [])
     label = label or EFFECT_NAMES[kind]
     # 中毒、流血按那一下的伤害算（value_mult：这只怪的毒、血口子轻一点）；腐蚀、看不清照旧
     value = dot_value(kind, base, depth, value_mult) if kind != "wound" else round(100 * (0.5 if heal_mult is None else heal_mult))
@@ -2846,6 +2894,8 @@ def _light(cur: Cursor, room_id: str, env: Optional[dict] = None, player: Option
             mult = 1.0 if cur.fetchone() else fog.get("torch_mult", 0.5)        # 灯塔的提灯在雾里照常亮
             torch, lamp = round(torch * mult), round(lamp * mult)
         level += torch + lamp
+    if player and env and env.get("shift") and gear_has(cur, player, "star_cycle_immune"):
+        level -= int(env["shift"])              # 不受星光明暗（梦境浮动）影响，按房间本来的光亮算
     if env and (scroll := env.get("scroll")):
         cur.execute("select 1 from players where id = %s and room_id = %s", (scroll["by"], room_id))
         if cur.fetchone():
@@ -3122,6 +3172,18 @@ def _room_turn(cur: Cursor, room_id: str) -> list[str]:
     facts, upd = [], {}
     if j := theme.get("light_jitter"):
         upd["shift"] = random.randint(-j, j)
+    if cyc := theme.get("star_cycle"):
+        n = int(env.get("turns", 0)) + 1
+        upd["turns"] = n
+        period = int(env.get("period") or cyc.get("period", 4))
+        bright = (n // period) % 2 == 0
+        upd["shift"] = cyc.get("swing", 35) * (1 if bright else -1)
+        if bright != (int(env.get("shift", 0)) >= 0):
+            facts.append(f"头顶那颗魔星{'亮了起来，星光洒满石台' if bright else '暗了下去，四周一下子黑了'}（光亮 {_light(cur, room_id, env | upd)}）")
+        left = period - n % period
+        for p in load_players_in(cur, room_id):
+            if any(e.kind == "bless" and e.stat == "star_chart" for e in p.effects):
+                facts.append(f"（{p.name}对着星图数了数：星光还有 {left} 个回合变{'暗' if bright else '亮'}）")
     if int(env.get("fog_off", 0)) > 0:
         upd["fog_off"] = int(env["fog_off"]) - 1
         if upd["fog_off"] == 0:
@@ -3306,7 +3368,7 @@ def enemy_turn(conn: Connection, player_id: UUID, actions: list[PlayerAction],
             dodge_bonus /= 2                    # 积水泥泞，躲不利索（沼泽高筒靴不怕）
         if st.detected:
             pinned = any(a.action in ("attack", "stunt") and r.success for a, r in done)    # 贴身砍中了：远程的怪跳不开
-            for npc in [n for n in enemies if not n.template.props.get("inert")]:
+            for npc in [n for n in enemies if not n.template.props.get("inert") and not _away(cur, n)]:
                 # 挨打那一下刚摆脱状态的，这回合来不及还手
                 if any(f.startswith(f"{npc.name}摆脱了") for r in results for f in r.facts):
                     continue
@@ -3559,7 +3621,7 @@ def round_enemies(conn: Connection, room_id: str, done: dict[UUID, list[tuple[Pl
                 cands.append(entry | {"hit": HIDDEN_HIT, "close": {n.id for n in enemies if _distance(st, n) == 0}})
             else:
                 _save_stealth(cur, p, st)
-        for npc in [n for n in enemies if not n.template.props.get("inert")]:
+        for npc in [n for n in enemies if not n.template.props.get("inert") and not _away(cur, n)]:
             if any(f.startswith(f"{npc.name}摆脱了") for f in freed):
                 continue                                # 挨打那一下刚摆脱状态的，这一轮来不及还手
             # 头目：该放技能就放（放技能就是这一次出手；判罪标完照样打）
@@ -3700,7 +3762,7 @@ def _boss_turn(cur: Cursor, npc: Npc, targets: list[Player], dodging: Optional[s
             return regen_facts + [f"{npc.name}挨了这一下重的，聚起来的招一下子散了（打断了）"], True
         _tally_merge(cur, npc, upd)
         return regen_facts + _skill_effect(cur, npc, s["then"], targets, depth, theme, dodging), True
-    i = due_skill(skills, npc.hp / npc.template.max_hp, acts, used, bool(t.get("phased")))
+    i = due_skill(skills, npc.hp / npc.template.max_hp, acts, used, bool(t.get("phased")), _star_dark(cur, npc.room_id))
     if i is None:
         _tally_merge(cur, npc, upd)
         return regen_facts, False
@@ -3826,6 +3888,9 @@ def _skill_effect(cur: Cursor, npc: Npc, s: dict, targets: list[Player], depth: 
             if env.get("ground"):
                 new["ground"] = env["ground"]
                 facts.append({"sand": "（脚下变成了流沙：挪一步都难，站着不动会往下陷）"}.get(env["ground"], "（脚下变成了积水，行动不便）"))
+            if "star_cycle_period" in env:
+                new["period"] = env["star_cycle_period"]
+                facts.append(f"（魔星明灭快了一倍：每 {env['star_cycle_period']} 个回合换一次）")
             if "fog_start_distance" in env:
                 new["fog_start"] = env["fog_start_distance"]
                 for p in load_players_in(cur, npc.room_id):
@@ -3903,6 +3968,15 @@ def _enemy_act(cur: Cursor, player: Player, st: Stealth, npc: Npc, dodge: float,
                hit: float = 1.0, dmg: float = 1.0) -> list[str]:
     """hit：命中倍数（躲起来那一轮贴身的怪摸黑乱挥是 HIDDEN_HIT）；dmg：伤害倍数（深层头目第二下）"""
     props = npc.template.props
+    if (pull := props.get("pull")) and _count(cur, npc, "pull_acts") % pull.get("every", 3) == 0:
+        facts = [f"{npc.name}手一挥，一股看不见的力把{player.name}往外推了出去"]
+        if _room_env(cur, player.room_id).get("edge"):
+            return facts + _void_fall(cur, player)
+        st = _stealth(player)
+        for n in _enemies(cur, player.room_id):
+            _set_distance(st, n, _distance(st, n) + 1)
+        _save_stealth(cur, player, st)
+        return facts + [f"（{player.name}被推开了一格）"]
     if (share := props.get("revive_once")) and not _tally(cur, npc, "revived"):
         cur.execute("""select n.id, t.name, t.max_hp from npcs n join npc_templates t on t.id = n.template_id
                        where n.room_id = %s and not n.alive and t.hostile and n.died_at > now() - interval '10 minutes'
@@ -3955,13 +4029,13 @@ def _enemy_act(cur: Cursor, player: Player, st: Stealth, npc: Npc, dodge: float,
         chance *= _shot_smoke(cur, room, True)
         if d >= 2 and _fog(cur, room):
             chance *= FOG_FAR                   # 浓雾里隔着几步开外射不准
-        return pinned_note + _npc_strike(cur, player, npc, props.get("verb") or "放了一箭", max(0.0, chance) * hit, dmg)
+        return pinned_note + _npc_strike(cur, player, npc, (props.get("verb") or "放了一箭").replace("你", player.name), max(0.0, chance) * hit, dmg)
     facts = []
     if d > 0:
         d = _set_distance(st, npc, d - ENEMY_STEP)
         facts.append(f"{npc.name}逼近过来，离{player.name} {distance_word(d)}")
     if d in MELEE_HIT:
-        facts += _npc_strike(cur, player, npc, props.get("verb") or "扑上来攻击", max(0.0, MELEE_HIT[d] - dodge) * hit, dmg)
+        facts += _npc_strike(cur, player, npc, (props.get("verb") or "扑上来攻击").replace("你", player.name), max(0.0, MELEE_HIT[d] - dodge) * hit, dmg)
     return facts
 
 
@@ -4020,6 +4094,8 @@ def do_attack(cur: Cursor, player: Player, view: RoomView, a: Attack) -> list[st
                 + spent + _duel_over(cur, down))
 
     npc = _room_npc(cur, view, player, a.target)
+    if _away(cur, npc):
+        raise ActionError(f"{npc.name}随着星光一起不见了，等暗下来它才会出现")
     if not npc.combatable:
         raise ActionError(f"{npc.name}不是能打的对象")
     d = _distance(_stealth(player), npc) if npc.template.hostile else 0
@@ -4034,6 +4110,8 @@ def do_attack(cur: Cursor, player: Player, view: RoomView, a: Attack) -> list[st
         if gear_has(cur, player, "darkvision") and not _effect(player, "blind"):
             light = max(light, LIGHT_FULL)      # 石像鬼之眼：暗处命中不打折
         fogged = FOG_FAR if shooter and d >= 2 and _fog(cur, player.room_id, player) else 1.0
+        if (ev := npc.template.props.get("dark_evasion")) and _star_dark(cur, player.room_id):
+            fogged *= 1 - ev                    # 星光暗时星座兽几乎看不见
         chance = fogged * light_hit(light, _hit_base(shooter, d) - _cover(cur, player.room_id, shooter)) \
             * _shot_smoke(cur, player.room_id, shooter) * _blind(player)
         if not _roll(max(0.0, chance - _drunk(player) - _poisoned(player) + _prone_bonus(npc, d))):
@@ -4336,6 +4414,8 @@ def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]
 
     if a.target in view.refs:
         target = _room_npc(cur, view, player, a.target)
+        if _away(cur, target):
+            raise ActionError(f"{target.name}随着星光一起不见了，等暗下来它才会出现")
         if not target.combatable:
             raise ActionError(f"{target.name}不是能打的对象")
         if exit_:
