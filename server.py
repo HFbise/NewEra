@@ -148,7 +148,8 @@ def state(conn, view: RoomView, after: Optional[int] = None) -> dict:
                    for d in view.dispensers],
         # 装备栏按固定顺序列全部格子，空的 item 为 null；背包只列没装备的
         "equipment": [{"slot": slot, "label": label,
-                       "item": next(({"ref": by_id[i.id], "name": i.name, "detail": engine.item_detail(i, sense)}
+                       "item": next(({"ref": by_id[i.id], "name": i.name, "detail": engine.item_detail(i, sense),
+                                      "holes": max(0, i.props.get("sockets", 0) - len(i.props.get("gems") or []))}
                                      for i in view.inventory
                                      if i.equipped_slot == slot), None)} for slot, label in SLOT_NAMES.items()],
         "inventory": [{"ref": by_id[i.id], "name": i.name, "quantity": i.quantity, "detail": engine.item_detail(i, sense)}

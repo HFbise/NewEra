@@ -303,16 +303,20 @@ function openPlayer(id) {
 let evBefore = null;                // 翻页：这一页最后一条的 id；第一页时为空，自动刷新
 let evFilter = { player: "", room: "" };
 
+// 战斗回合：combat 是这一轮的结算（每人出手的结果、敌人的行动，下面列每人的原话和解析），combat_story 是 AI 给全队写的这一轮叙事
+const KIND_WORDS = { combat: "战斗回合结算", combat_story: "战斗回合叙事" };
+
 function renderEvent(e) {
   const m = e.meta || {};
   return `<div class="ev">
-    <div class="meta">#${e.id} · ${time(e.created_at)} · ${esc(e.player || "系统")} @ ${esc(e.room_name)} · ${esc(e.kind)}
+    <div class="meta">#${e.id} · ${time(e.created_at)} · ${esc(e.player || (e.meta && e.meta.names ? e.meta.names.join("、") : "系统"))} @ ${esc(e.room_name)} · ${esc(KIND_WORDS[e.kind] || e.kind)}
       ${m.source ? ` · ${m.source === "ai" ? "AI 解析" : "规则解析"}` : ""}</div>
     ${e.input ? `<div class="input">&gt; ${esc(e.input)}</div>` : ""}
     ${m.actions && m.actions.length ? `<pre>${esc(m.actions.map(a => JSON.stringify(a)).join("\n"))}</pre>` : ""}
     ${(e.facts || []).map(f => `<div class="fact">${esc(f)}</div>`).join("")}
     ${e.narrative ? `<div>${esc(e.narrative)}</div>` : ""}
-    ${e.observer ? `<div class="other">旁人：${esc(e.observer)}</div>` : ""}
+    ${e.observer && e.kind === "combat_story" ? `<div>AI 回合叙事（全队共用）：${esc(e.observer)}</div>`
+      : e.observer && e.kind !== "combat" ? `<div class="other">旁人：${esc(e.observer)}</div>` : ""}
     ${(m.notes || []).map(n => `<div class="warn">${esc(n)}</div>`).join("")}
     ${(m.players || []).map(p => `<div class="meta">${esc(p.name)} · ${p.source === "ai" ? "AI 解析" : "规则解析"}</div>
       <div class="input">&gt; ${esc(p.input)}</div>

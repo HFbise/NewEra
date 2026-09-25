@@ -228,7 +228,7 @@ class AIAction(BaseModel):
     action: Literal["move", "look", "take", "drop", "use", "equip", "unequip", "attack", "talk", "give", "sell", "pay", "say",
                     "upgrade", "respawn", "stand", "rest", "camp", "teleport", "revive", "uncurse", "leave_party", "kick", "follow", "unfollow", "challenge", "accept_duel",
                     "decline_duel", "flee", "stunt", "struggle",
-                    "maneuver", "dodge", "tame", "reload", "refill", "transfer", "reroll", "rename", "write", "socket", "unsocket", "refine", "donate", "take_donated", "hide", "search", "freeform", "reject"]
+                    "maneuver", "dodge", "tame", "reload", "refill", "transfer", "reroll", "rename", "write", "socket", "unsocket", "refine", "donate", "take_donated", "dismantle", "hide", "search", "freeform", "reject"]
     direction: Optional[str] = None
     item: Optional[str] = None
     target: Optional[str] = None
@@ -254,6 +254,7 @@ class AIAction(BaseModel):
     ammo: Optional[str] = None           # reload：装上的特殊弹药
     name: Optional[str] = None           # rename：新名字
     ore: Optional[bool] = None           # upgrade：用不用奥利哈刚
+    scrap: Optional[int] = None          # upgrade：垫几份碎铁
     oil: Optional[bool] = None           # upgrade：用莉娜的淬火油
     quote: Optional[bool] = None         # upgrade：只问价
     gem: Optional[str] = None            # socket：宝石 ref；unsocket：宝石名字
@@ -283,7 +284,7 @@ INTENT_SYSTEM = """你是文字 MUD 游戏的指令解析器。读玩家的输�
 - talk: target（NPC 的 ref），message（玩家说的话，保留原话）。找 NPC 买东西、问价、砍价、点菜、要东西都是 talk
 - give: item（背包物品的 ref），target（NPC 的 ref；给其他玩家时填"其他玩家"里的名字）。给、递、交、送、塞到他手里是 give：东西到了对方手上，吃不吃是他的事。喂他吃、塞进他嘴里（强行的也算）、给他灌下去是 use 不是 give
 - uncurse: target（会解咒的 NPC 的 ref），item（被诅咒的装备 ref，没说就不填）。找人解除装备上的诅咒
-- upgrade: item（背包里武器、防具的 ref，没说哪件就不填），target（会升级武器的铁匠 NPC 的 ref），ore（说用奥利哈刚、矿石填 true，说不用填 false，没提不填），oil（说用淬火油填 true），quote（只问升级要多少钱填 true）。找铁匠升级、强化、重新锻打自己的武器，说了就直接动手；铁匠问用不用矿石时回的"用""不用"也是 upgrade
+- upgrade: item（背包里武器、防具的 ref，没说哪件就不填），target（会升级武器的铁匠 NPC 的 ref），ore（说用奥利哈刚、矿石填 true，说不用填 false，没提不填），scrap（说垫几份碎铁就填几，只说垫碎铁填 1），oil（说用淬火油填 true），quote（只问升级要多少钱填 true）。找铁匠升级、强化、重新锻打自己的武器，说了就直接动手；铁匠问用不用矿石时回的"用""不用"也是 upgrade
 - sell: item（背包物品的 ref），target（NPC 的 ref）。把自己的东西卖给 NPC 换钱（"把药草卖给麦琪""这个你收不收，卖你了"）。只是问收不收、值多少钱是 talk
 - pay: target（NPC 的 ref；给其他玩家时填名字），amount（金币数，整数）。给钱、付钱、塞钱、打赏都是 pay，金币不是背包物品，不要用 give
 - teleport: floor（第几层，整数）。在地窖里说传送到第几层就填层数；在地牢的传送石边上回城、摸传送石回地面就不填 floor
@@ -323,6 +324,7 @@ INTENT_SYSTEM = """你是文字 MUD 游戏的指令解析器。读玩家的输�
 - write: item（纸条 ref），message（要写的字，照玩家原话）。在纸条上写字、留言
 - socket: item（装备 ref），gem（背包里宝石的 ref），target（铁匠的 ref）。找铁匠把宝石镶到装备上
 - unsocket: item（装备 ref），gem（要取的宝石名字，只有一颗可不填），target（铁匠的 ref）。找铁匠把装备上的宝石取下来
+- dismantle: item（背包里装备的 ref），target（铁匠的 ref）。找铁匠把用不上的地牢装备拆成碎铁
 - donate: item（背包里武器或护具的 ref），target（武器桶的 ref）。把用不上的装备放进武器桶留给新人（强化清零，宝石退回）。
   "放进武器桶""塞进桶里""X 放进去"（在有武器桶的地方）都是 donate，不是 drop（drop 是扔在地上）
 - take_donated: name（桶里那件东西的名字），target（武器桶的 ref）。从武器桶里拿别人放的装备（不是桶本来就有的锈剑，那个用 take）
@@ -753,8 +755,10 @@ def npc_services(npc: Npc, sells: Optional[list[dict]] = None) -> list[str]:
     if p.get("uncurse"):
         out.append("解除装备上的诅咒（戴上就卸不下来的那种，按那件东西的参考价收钱）")
     if p.get("upgrades"):
-        out.append("帮人升级武器和防具（武器更锋利、防具更结实），最多 +10，级数越高越容易失败，失败会退一级（不会碎）；"
-                   "带奥利哈刚矿石来锻进去，失败了也不掉级，矿石成功了才用掉")
+        out.append("帮人升级武器和防具（武器更锋利、防具更结实），最多 +10，级数越高越难成，失败不掉级、钱照收；"
+                   "同一级连着失败，火候越摸越清楚，下一次更容易成；带奥利哈刚矿石来锻进去这一次成功率翻倍（矿石用掉）；"
+                   "碎铁每份让成功率高一点，一次最多垫四份")
+        out.append("把用不上的地牢装备拆成碎铁（普通的 1 份、精良 2 份、稀有和头目的 3 份，升过级的多给；镶的宝石还给客人）")
         out.append("把宝石镶到带孔的装备上（只有地牢里掉的装备才带孔，镶不收钱）；把镶上去的宝石取下来（宝石还给客人，"
                    "按品质收钱：碎的 10、普通 30、完美 80 金币；被诅咒的装备得先解咒）")
     return out

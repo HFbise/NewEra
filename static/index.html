@@ -254,7 +254,8 @@ function render(s) {
       i.quantity > 1 ? `<span class="tag">x${i.quantity}</span>` : "", i.fill, i.detail)).join("")}</ul>` : ""}
     ${foldHead("equip", "装备")}
     <ul class="equip fold-body">${s.equipment.map(e => e.item
-      ? `<li data-name="卸下${esc(e.item.name)}" data-detail="${esc(e.item.detail || "")}"><span class="tag slot">${e.label}</span>${esc(e.item.name)}</li>`
+      ? `<li data-name="卸下${esc(e.item.name)}" data-detail="${esc(e.item.detail || "")}"><span class="tag slot">${e.label}</span>${esc(e.item.name)}${
+          e.item.holes ? `<span class="tag">空孔 ×${e.item.holes}</span>` : ""}</li>`
       : `<li class="empty"><span class="tag slot">${e.label}</span>—</li>`).join("")}</ul>
     ${foldHead("skills", "技能")}
     <ul class="equip fold-body">${s.skills.map(k => `<li class="empty">${k.name} ${k.level}<span class="tag">${k.have}/${k.need}</span></li>`).join("")}</ul>

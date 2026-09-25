@@ -29,7 +29,7 @@ from schema import (
     ActionResult, Attack, Drop, Equip, Feature, Follow, Freeform, Give, ItemInstance, LeaveParty, Kick, Look,
     Move, Npc, OtherPlayer, Player, PlayerAction, Reject, Revive, Room, RoomExit, RoomView, Say, Status, Struggle,
     Stunt, Take, Talk, Unfollow, Unequip, Use, dir_name, Dispenser, SLOT_CHOICES, SLOT_NAMES, Dodge, Hide, Maneuver, Search, Stealth, Tame,
-    Uncurse, Reload, Refill, Transfer, Reroll, Rename, Write, Socket, Unsocket, Refine, Donate, TakeDonated,
+    Uncurse, Reload, Refill, Transfer, Reroll, Rename, Write, Socket, Unsocket, Refine, Donate, TakeDonated, Dismantle,
     AcceptDuel, Challenge, DeclineDuel, Duel, Flee, SKILL_NAMES, Upgrade, Respawn, Stand, Rest, Pay, Camp, Teleport, Sell,
     Effect,
 )
@@ -986,6 +986,7 @@ def do_move(cur: Cursor, player: Player, view: RoomView, a: Move) -> list[str]:
     for npc in load_npcs(cur, "n.room_id = %s and n.alive", (to,)):
         facts += _upgrade_nudge(cur, player, npc)       # 走进铁匠铺：莉娜看不下去没升过的武器
         facts += _bow_nudge(cur, player, npc)           # 拿着弓进酒馆：麦琪提一句找人挡在前面
+        facts += _armor_nudge(cur, player, npc) + _gem_nudge(cur, player, npc) + _potion_nudge(cur, player, npc)
     if room.props.get("rest"):
         facts.append(REST_TEXT)
     return facts + _beast_hint(cur, to) + stride
@@ -1795,6 +1796,14 @@ def _feed(cur: Cursor, player: Player, item: ItemInstance, name: str) -> list[st
         raise ActionError(f"{item.name}有毒，{player.name}和{target.name}没有在决斗，不能拿它害人")
     _consume(cur, item)
     return [_use_other(player, target, item)] + _eat_effect(cur, target, item, player)
+
+
+def _consume_n(cur: Cursor, item: ItemInstance, n: int) -> None:
+    """一次用掉 n 个（叠着的减 n，不够或刚好就删掉）"""
+    if item.quantity > n:
+        cur.execute("update item_instances set quantity = quantity - %s where id = %s", (n, item.id))
+    else:
+        cur.execute("delete from item_instances where id = %s", (item.id,))
 
 
 def _consume(cur: Cursor, item: ItemInstance) -> None:
@@ -3705,20 +3714,84 @@ def _bow_nudge(cur: Cursor, player: Player, npc: Npc) -> list[str]:
             f"最好找个皮厚的挡在前面（拿远程武器的，跟近战的人组队最稳）"]
 
 
+NUDGE_AGAIN = 5                         # 提醒过以后，最深层数每再深这么多、条件还满足，就再提一次（"忘了"的人也能再听到）
+
+
+def _deepest(cur: Cursor, player: Player) -> int:
+    cur.execute("select deepest_floor from players where id = %s", (player.id,))
+    return cur.fetchone()["deepest_floor"]
+
+
+def _nudge_due(cur: Cursor, player: Player, key: str) -> bool:
+    """这条提醒现在该不该说：没提过，或者上次提的时候最深层数比现在浅 NUDGE_AGAIN 层以上（flags 里记着上次的层数；
+    以前记的 true 当作第 0 层）"""
+    last = player.flags.get(key)
+    return last is None or last is False or _deepest(cur, player) >= int(last) + NUDGE_AGAIN
+
+
+def _nudge_mark(cur: Cursor, player: Player, key: str) -> None:
+    deepest = _deepest(cur, player)
+    cur.execute("update players set flags = flags || jsonb_build_object(%s::text, %s::int) where id = %s", (key, deepest, player.id))
+    player.flags[key] = deepest
+
+
+ARMOR_NUDGE, GEM_NUDGE, POTION_NUDGE = "_armor_nudge", "_gem_nudge", "_potion_nudge"
+ARMOR_NUDGE_GOLD, POTION_NUDGE_DEPTH = 100, 8
+
+
+def _armor_nudge(cur: Cursor, player: Player, npc: Npc) -> list[str]:
+    """身上的防具一件都没升过、兜里有 100 金以上：莉娜提防具"""
+    if not npc.template.props.get("upgrades") or player.gold < ARMOR_NUDGE_GOLD or dungeon.is_dungeon(player.room_id):
+        return []
+    worn = [i for i in _worn(cur, player) if i.template.type == "armor" and i.defense > 0]
+    if not worn or any(i.props.get("plus") for i in worn) or not _nudge_due(cur, player, ARMOR_NUDGE):
+        return []
+    _nudge_mark(cur, player, ARMOR_NUDGE)
+    return [f"{npc.name}敲了敲{player.name}身上的{worn[0].name}：“光磨刀不补甲，下面的怪可不跟你讲道理。”"
+            f"（防具也能升级：说「升级{worn[0].name}」，+1 要 {upgrade_terms(worn[0])[1]} 金币）"]
+
+
+def _gem_nudge(cur: Cursor, player: Player, npc: Npc) -> list[str]:
+    """背包里有宝石、身上的装备有空孔：莉娜说孔空着也是空着"""
+    if not npc.template.props.get("upgrades") or dungeon.is_dungeon(player.room_id):
+        return []
+    cur.execute("""select exists (select 1 from item_instances i join item_templates t on t.id = i.template_id
+                                  where i.player_id = %(p)s and t.type = 'gem') as gem,
+                          (select coalesce(i.props->>'name', t.name) from item_instances i join item_templates t on t.id = i.template_id
+                           where i.player_id = %(p)s and coalesce((i.props->>'sockets')::int, 0)
+                                 > coalesce(jsonb_array_length(i.props->'gems'), 0) limit 1) as holed""", {"p": player.id})
+    r = cur.fetchone()
+    if not (r["gem"] and r["holed"]) or not _nudge_due(cur, player, GEM_NUDGE):
+        return []
+    _nudge_mark(cur, player, GEM_NUDGE)
+    return [f"{npc.name}瞄了一眼{player.name}的{r['holed']}：“孔空着也是空着。宝石揣在兜里又不会自己长上去。”"
+            f"（镶宝石免费：说「把某某宝石镶到{r['holed']}上」）"]
+
+
+def _potion_nudge(cur: Cursor, player: Player, npc: Npc) -> list[str]:
+    """到过第 8 层以下、身上一瓶血药都没有：麦琪提一句"""
+    if not npc.template.props.get("inn") or dungeon.is_dungeon(player.room_id):
+        return []
+    cur.execute("select 1 from item_instances where player_id = %s and template_id = 'blood_potion' limit 1", (player.id,))
+    if cur.fetchone() or _deepest(cur, player) < POTION_NUDGE_DEPTH or not _nudge_due(cur, player, POTION_NUDGE):
+        return []
+    _nudge_mark(cur, player, POTION_NUDGE)
+    return [f"{npc.name}上下打量了{player.name}一圈，撇撇嘴：“又空着手往下跑？连瓶血药都不带，等着我去捡你啊？”"
+            "（杂货铺的诺艾尔卖血药，倒下的队友也能灌）"]
+
+
 def _upgrade_nudge(cur: Cursor, player: Player, npc: Npc) -> list[str]:
-    """带着钱回村、下过第 3 层、手上的武器还没升过：铁匠第一次见到时主动提一句（每人一次）。
+    """带着钱回村、下过第 3 层、手上的武器还没升过：铁匠见到时主动提一句（之后每深 5 层还没升就再提）。
     不然新人不知道能升级，第 6 层撞墙也不知道为什么"""
-    if (not npc.template.props.get("upgrades") or player.flags.get(UPGRADE_NUDGE) or player.gold < NUDGE_GOLD
+    if (not npc.template.props.get("upgrades") or player.gold < NUDGE_GOLD
             or dungeon.is_dungeon(player.room_id)):
         return []
-    cur.execute("select deepest_floor from players where id = %s", (player.id,))
-    if cur.fetchone()["deepest_floor"] < NUDGE_DEPTH:
+    if _deepest(cur, player) < NUDGE_DEPTH or not _nudge_due(cur, player, UPGRADE_NUDGE):
         return []
     weapon = next((w for w in _weapons(cur, player) if not w.props.get("plus") and not _prop(w, "lights")), None)
     if weapon is None:
         return []
-    cur.execute("update players set flags = flags || jsonb_build_object(%s::text, true) where id = %s", (UPGRADE_NUDGE, player.id))
-    player.flags[UPGRADE_NUDGE] = True
+    _nudge_mark(cur, player, UPGRADE_NUDGE)
     return [f"{npc.name}瞥见{player.name}手上那把没回过炉的{weapon.name}，皱起了眉头，像是看不下去"
             f"（她能帮你升级：说「升级{weapon.name}」，+1 要 {upgrade_terms(weapon)[1]} 金币）"]
 
@@ -3933,9 +4006,11 @@ def do_give(cur: Cursor, player: Player, view: RoomView, a: Give) -> list[str]:
 # 铁匠升级武器：每级伤害 +1，名字后面标 +N。升到第 N 级有 N × UPGRADE_BREAK_STEP 的几率失败（最多 UPGRADE_BREAK_MAX），
 # 失败不会碎，而是退一级（+3 升 +4 失败变 +2，+0 失败还是 +0），钱照收。
 # 等级不封顶。费用是升级后和升级前建议价的差（至少 UPGRADE_MIN_COST），跟着伤害指数涨。
-# 用奥利哈刚（UPGRADE_ORE）：钱照付、照样掷骰，但失败不掉级、矿石也不用掉，成功那次才用掉，一块矿保证一级。
+# 失败不掉级、钱照收；同一级连续失败有保底（rules.upgrade_chance）。
+# 奥利哈刚（UPGRADE_ORE）：这一次成功率翻倍，用掉；碎铁（SCRAP，莉娜拆装备得来）每份 +5%，一次最多四份。
 # 莉娜的淬火油（UPGRADE_OIL，好感 40 的回礼）：这一次必定成功，不收钱。等级上限 UPGRADE_MAX
 UPGRADE_ORE = "ore"
+SCRAP = "scrap_iron"
 UPGRADE_OIL = "lina_oil"
 
 
@@ -3961,18 +4036,27 @@ def _step(item: ItemInstance, stat: str) -> float:
 
 
 def upgrade_terms(item: ItemInstance) -> tuple[int, int, float]:
-    """(升到几级, 费用, 失败的几率)：费用只看升到第几级（rules.upgrade_cost），稀有的东西乘 props.upgrade_mult"""
+    """(升到几级, 费用, 这次什么都不垫的失败几率，算上保底)：费用只看升到第几级（rules.upgrade_cost），稀有的东西乘 props.upgrade_mult"""
     level = item.props.get("plus", 0) + 1
-    return (level,) + upgrade_cost(level, float(_prop(item, "upgrade_mult") or 1))
+    cost, _ = upgrade_cost(level, float(_prop(item, "upgrade_mult") or 1))
+    return level, cost, 1 - upgrade_chance(level, _upgrade_pity(item, level))
 
 
-def _upgrade_text(item: ItemInstance, price: Optional[int] = None) -> str:
+def _upgrade_pity(item: ItemInstance, level: int) -> int:
+    """这件在这一级已经连续失败了几次（props.upgrade_fails = {"level", "n"}）"""
+    f = item.props.get("upgrade_fails") or {}
+    return f.get("n", 0) if f.get("level") == level else 0
+
+
+def _upgrade_text(item: ItemInstance, price: Optional[int] = None, chance: Optional[float] = None) -> str:
     level, cost, risk = upgrade_terms(item)
     cost = price if price is not None else cost
+    chance = 1 - risk if chance is None else chance
     stat = upgrade_stat(item)
     now = getattr(item, stat)
-    return (f"升到 +{level}（{STAT_WORDS[stat]} {stat_text(now)} → {stat_text(now + _step(item, stat))}）要 {cost} 金币，有 {round(risk * 100)}% 的可能失败"
-            + ("，失败会退一级" if level > 1 else "，失败了钱白花"))
+    pity = _upgrade_pity(item, level)
+    return (f"升到 +{level}（{STAT_WORDS[stat]} {stat_text(now)} → {stat_text(now + _step(item, stat))}）要 {cost} 金币，"
+            f"成功率 {round(chance * 100)}%，失败不掉级、钱照收" + (f"（这一级失败过 {pity} 次，火候摸清楚了些）" if pity else ""))
 
 
 def do_upgrade(cur: Cursor, player: Player, view: RoomView, a: Upgrade) -> list[str]:
@@ -4014,11 +4098,17 @@ def do_upgrade(cur: Cursor, player: Player, view: RoomView, a: Upgrade) -> list[
     if "discount" in perks(cur, player.id, npc.template.id):
         cost = max(1, round(cost * UPGRADE_DISCOUNT))
     key = f"upgrade:{item.id}"
-    terms = _upgrade_text(item, cost)
     ore = next((i for i in view.inventory if i.template.id == UPGRADE_ORE), None)
     oil = next((i for i in view.inventory if i.template.id == UPGRADE_OIL), None)
+    scrap = next((i for i in view.inventory if i.template.id == SCRAP), None)
     if a.ore and ore is None:
         raise ActionError(f"{player.name}身上没有奥利哈刚矿石")
+    if a.scrap and scrap is None:
+        raise ActionError(f"{player.name}身上没有碎铁（找{npc.name}拆解用不上的地牢装备得来）")
+    use_scrap = min(a.scrap, UPGRADE_SCRAP_MAX, scrap.quantity if scrap else 0)
+    pity = _upgrade_pity(item, level)
+    chance = upgrade_chance(level, pity, bool(a.ore), use_scrap)
+    terms = _upgrade_text(item, cost, chance)
     if a.oil:
         # 莉娜的淬火油：必定成功，不收钱
         if oil is None:
@@ -4031,34 +4121,34 @@ def do_upgrade(cur: Cursor, player: Player, view: RoomView, a: Upgrade) -> list[
                 f"升级成功：{item.name}变成了{name}，{STAT_WORDS[stat]} {stat_text(now + _step(item, stat))}（淬火油用掉了，没收钱）"]
     if cost > player.gold:
         raise ActionError(f"{npc.name}看了看{player.name}的{item.name}：{terms}。{player.name}身上只有 {player.gold} 金币，不够")
-    if a.ore is None and ore is not None and level > 1 and key not in offers:
-        # 这次失败会退级，兜里又有矿石：先问一句用不用，回"用""不用"才动手
+    if a.ore is None and not a.scrap and (ore is not None or scrap is not None) and chance < 1 and key not in offers:
+        # 兜里有矿石、碎铁又没说用不用：先问一句，回"用""不用"（或者"垫两份碎铁"）才动手
         _put_offer(cur, player.id, npc, key, cost)
         return [f"{npc.name}看了看{player.name}的{item.name}：{terms}",
-                f"{npc.name}瞥见{player.name}带着奥利哈刚矿石：锻进去的话失败也不会掉级，矿石成功了才用掉（钱照付）"
+                f"{npc.name}瞥见{player.name}带着"
+                + "、".join(([f"奥利哈刚矿石（锻进去这次成功率翻倍到 {round(upgrade_chance(level, pity, True) * 100)}%，矿石用掉）"] if ore else [])
+                            + ([f"{scrap.quantity} 份碎铁（每份 +{round(UPGRADE_SCRAP * 100)}%，一次最多垫 {UPGRADE_SCRAP_MAX} 份）"] if scrap else []))
                 + (f"；还有莉娜的淬火油，用了必定成功、不收钱（说「用淬火油」）" if oil else ""),
-                f"{player.name}说「用」或者「不用」，{npc.name}就动手"]
+                f"{player.name}说「用矿石」「垫两份碎铁」或者「不用」，{npc.name}就动手"]
     patron = _pay(cur, player, cost, npc)
     cur.execute("update player_npc_relations set offers = offers - %s where player_id = %s and npc_template = %s",
                 (key, player.id, npc.template.id))
     facts = [f"{player.name}付了 {cost} 金币，{npc.name}把{item.name}放进炉火里重新锻打（{terms}）"] + patron
     base = re.sub(r" \+\d+$", "", item.name)
-    if a.ore and _roll(risk):
-        # 有矿石护着：失败不掉级，矿石也没化开，下次还能用
-        return facts + [f"{npc.name}骂了一句：火候不对，再来。奥利哈刚没化开，{item.name}也没掉级（矿石还在，钱没退）"]
     if a.ore:
         _consume(cur, ore)
         facts.append(f"{player.name}递上的奥利哈刚矿石化进了铁水里")
-    elif _roll(risk):
-        down = max(0, level - 2)            # 现在是 level-1，失败退一级
-        if down == level - 1:
-            return facts + [f"淬火的时候火候没掌握好，{item.name}没升上去，好在也没伤着"]
-        name = base + (f" +{down}" if down else "")
+    if use_scrap:
+        _consume_n(cur, scrap, use_scrap)
+        facts.append(f"{npc.name}往炉子里添了 {use_scrap} 份碎铁")
+    if not _roll(chance):
+        # 失败不掉级，钱照收；这一级连续失败的次数记在装备上，下一次成功率 +UPGRADE_PITY
         cur.execute("update item_instances set props = props || %s where id = %s",
-                    (Jsonb({"plus": down, stat: now - _step(item, stat), "name": name}), item.id))
-        return facts + [f"淬火的时候崩了一块，{item.name}退回了{name}，{STAT_WORDS[stat]} {stat_text(now - _step(item, stat))}"]
+                    (Jsonb({"upgrade_fails": {"level": level, "n": pity + 1}}), item.id))
+        return facts + [f"淬火的时候火候没掌握好，{item.name}没升上去，好在也没伤着（钱照收）",
+                        f"{npc.name}盯着炉火琢磨了一会儿：这把的火候摸清楚一点了（下次成功率 +{round(UPGRADE_PITY * 100)}%）"]
     name = base + f" +{level}"
-    cur.execute("update item_instances set props = props || %s where id = %s",
+    cur.execute("update item_instances set props = (props - 'upgrade_fails') || %s where id = %s",
                 (Jsonb({"plus": level, stat: now + _step(item, stat), "name": name}), item.id))
     return facts + [f"升级成功：{item.name}变成了{name}，{STAT_WORDS[stat]} {stat_text(now + _step(item, stat))}"]
 
@@ -4294,6 +4384,42 @@ def do_donate(cur: Cursor, player: Player, view: RoomView, a: Donate) -> list[st
     return [f"{player.name}把{item.template.name}放进了{box.container}，留给缺家伙的人"] + facts
 
 
+SCRAP_BY_RARITY = {"common": 1, "uncommon": 2, "rare": 3}
+
+
+def _not_material(cur: Cursor, item: ItemInstance, what: str) -> None:
+    """诅咒装备、礼物（NPC 回礼、送 NPC 的）、委托物品、钥匙：不能捐、不能拆"""
+    if _prop(item, "cursed"):
+        raise ActionError(f"{item.name}被诅咒了，{what}不了（先找诺艾尔解咒）")
+    if _precious(cur, item) or _prop(item, "gift") or item.template.id in _gift_templates(cur):
+        raise ActionError(f"{item.name}是别人的心意或者要交的东西，{what}不了")
+
+
+def do_dismantle(cur: Cursor, player: Player, view: RoomView, a: Dismantle) -> list[str]:
+    """莉娜拆解用不上的地牢装备：出碎铁（垫升级用），镶的宝石退回背包"""
+    npc = _smith(cur, view, player, a.target, "拆解")
+    item = _inv_item(cur, view, player, a.item)
+    if item.template.id not in dungeon.dungeon_items() or not gem_category(item.template.type, item.template.slot):
+        raise ActionError(f"{npc.name}只拆地牢里带出来的武器、护具、饰品，{item.name}拆不出好铁")
+    if item.equipped_slot:
+        raise ActionError(f"{item.name}还装备在身上，先卸下来")
+    if _prop(item, "donated"):
+        raise ActionError(f"{item.name}是酒馆武器桶里别人留给新人的，{npc.name}不拆")
+    _not_material(cur, item, "拆")
+    n = SCRAP_BY_RARITY[dungeon.item_rarity(item.template.id, item.props)] + item.props.get("plus", 0) // 2
+    facts = [f"{npc.name}把{item.name}拆开，挑出了 {n} 份碎铁（升级时垫上，每份成功率 +{round(UPGRADE_SCRAP * 100)}%）"]
+    for g in item.props.get("gems") or []:
+        cur.execute("insert into item_instances (template_id, player_id, props) values (%s, %s, %s)",
+                    (g["id"], player.id, Jsonb(dungeon.gem_props(cur, g["id"], g["tier"]))))
+        facts.append(f"镶在上面的{g['name']}撬下来，还给了{player.name}")
+    cur.execute("delete from item_instances where id = %s", (item.id,))
+    cur.execute("""update item_instances set quantity = quantity + %s
+                   where player_id = %s and template_id = %s and equipped_slot is null returning id""", (n, player.id, SCRAP))
+    if not cur.fetchone():
+        cur.execute("insert into item_instances (template_id, player_id, quantity) values (%s, %s, %s)", (SCRAP, player.id, n))
+    return facts
+
+
 def do_take_donated(cur: Cursor, player: Player, view: RoomView, a: TakeDonated) -> list[str]:
     box = _donation_box(view, a.target)
     want = a.name.strip()
@@ -4471,7 +4597,7 @@ HANDLERS: dict[str, Callable[..., list[str]]] = {
     "say": do_say, "revive": do_revive, "stunt": do_stunt, "struggle": do_struggle,
     "follow": do_follow, "unfollow": do_unfollow, "leave_party": do_leave_party, "kick": do_kick,
     "maneuver": do_maneuver, "dodge": do_dodge, "tame": do_tame, "uncurse": do_uncurse, "reload": do_reload, "refill": do_refill,
-    "transfer": do_transfer, "reroll": do_reroll, "rename": do_rename, "write": do_write, "socket": do_socket, "unsocket": do_unsocket, "refine": do_refine, "donate": do_donate, "take_donated": do_take_donated, "hide": do_hide, "search": do_search, "reject": do_reject,
+    "transfer": do_transfer, "reroll": do_reroll, "rename": do_rename, "write": do_write, "socket": do_socket, "unsocket": do_unsocket, "refine": do_refine, "donate": do_donate, "take_donated": do_take_donated, "dismantle": do_dismantle, "hide": do_hide, "search": do_search, "reject": do_reject,
     "upgrade": do_upgrade, "pay": do_pay, "sell": do_sell, "respawn": do_respawn, "stand": do_stand, "rest": do_rest, "camp": do_camp, "teleport": do_teleport, "challenge": do_challenge, "accept_duel": do_accept_duel, "decline_duel": do_decline_duel, "flee": do_flee,
 }
 

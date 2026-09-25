@@ -83,6 +83,13 @@ class Rename(BaseModel):
     name: str
 
 
+class Dismantle(BaseModel):
+    """找铁匠拆解用不上的地牢装备（武器、护具、饰品）换碎铁：普通 1 份、精良 2 份、稀有和头目 3 份，每升过两级多 1 份；镶的宝石退回"""
+    action: Literal["dismantle"]
+    item: str                           # 背包里装备的 ref
+    target: str                         # 铁匠 NPC 的 ref
+
+
 class Donate(BaseModel):
     """把用不上的武器、护具放进酒馆武器桶这类地方留给新人：强化清零，镶的宝石退回自己背包"""
     action: Literal["donate"]
@@ -156,11 +163,12 @@ class Give(BaseModel):
 
 class Upgrade(BaseModel):
     """找铁匠升级武器：说了哪把就直接动手（钱不够才只报价）。没说哪把、身上又不止一把，铁匠列出每把的价钱问升哪把。
-    身上有奥利哈刚、这次失败会退级时，铁匠先问要不要用矿石（用了必定成功）"""
+    身上有奥利哈刚或碎铁、又没说用不用时，铁匠先问一句（矿石这次成功率翻倍，碎铁每份 +5%）"""
     action: Literal["upgrade"]
     item: Optional[str] = None          # 背包里武器的 ref；不填就是没说哪把
     target: str                         # 铁匠 NPC 的 ref
-    ore: Optional[bool] = None          # 用不用奥利哈刚（失败不掉级，成功那次才用掉）：True 用，False 不用，None 没说
+    ore: Optional[bool] = None          # 用不用奥利哈刚（这一次成功率翻倍，用掉）：True 用，False 不用，None 没说
+    scrap: int = 0                      # 垫几份碎铁（每份 +5%，最多 4 份）
     oil: bool = False                   # 用莉娜的淬火油（必定成功、不收钱）
     quote: bool = False                 # 只问升级要多少钱，不动手
 
@@ -369,7 +377,7 @@ class Reject(BaseModel):
 
 PlayerAction = Annotated[
     Union[Move, Look, Take, Drop, Use, Equip, Unequip, Attack, Talk, Give, Sell, Pay, Upgrade, Say, Revive, Respawn, Stand, Rest, Camp, Teleport, LeaveParty, Kick,
-          Follow, Unfollow, Challenge, AcceptDuel, DeclineDuel, Flee, Stunt, Struggle, Maneuver, Dodge, Tame, Uncurse, Reload, Refill, Transfer, Reroll, Rename, Write, Socket, Unsocket, Refine, Donate, TakeDonated, Hide, Search,
+          Follow, Unfollow, Challenge, AcceptDuel, DeclineDuel, Flee, Stunt, Struggle, Maneuver, Dodge, Tame, Uncurse, Reload, Refill, Transfer, Reroll, Rename, Write, Socket, Unsocket, Refine, Donate, TakeDonated, Dismantle, Hide, Search,
           Freeform, Reject],
     Field(discriminator="action"),
 ]

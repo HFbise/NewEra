@@ -244,20 +244,10 @@ def refine_run(gold: int, bag: list[list], deepest: int) -> int:
 
 def upgrade_run(gold: int, weapons: list[int], armor: list[int], w_plus: list[int], a_plus: list[int],
                 discount: float, oil: int, ore: list[int]) -> tuple[int, int]:
-    """先拿矿石砸主武器（有矿就一直付钱直到成功：失败不掉级、矿石不用掉，成功才用掉一块），
-    剩下的钱一半花在武器、一半花在防具上，按引擎的费用和失败率掷骰（失败退一级、钱照收）。
-    每样按"最便宜的一次"先升；失败率超过 60% 的不再碰。返回 (剩下的钱, 花掉的钱)"""
+    """engine.do_upgrade 的规则：失败不掉级、钱照收，同一级连续失败每次 +UPGRADE_PITY（保底），矿石这一次成功率翻倍、用掉。
+    钱一半花在武器、一半花在防具上，每样按"最便宜的一次"先升；有矿石就垫在主武器上。返回 (剩下的钱, 花掉的钱)"""
     spent = 0
-    while ore[0] > 0 and w_plus and w_plus[0] < R.UPGRADE_MAX:
-        cost, risk = R.upgrade_cost(w_plus[0] + 1)
-        cost = round(cost * discount)
-        if cost > gold - spent:
-            break
-        spent += cost
-        if random.random() >= risk:
-            w_plus[0] += 1
-            ore[0] -= 1
-    gold, ore_spent, spent = gold - spent, spent, 0
+    fails: dict = {}
     for pool, base, plus in (("w", weapons, w_plus), ("a", armor, a_plus)):
         budget = gold // 2 if pool == "w" else gold - spent
         while True:
@@ -266,14 +256,12 @@ def upgrade_run(gold: int, weapons: list[int], armor: list[int], w_plus: list[in
                 lvl = plus[k] + 1
                 if lvl > R.UPGRADE_MAX:
                     continue
-                cost, risk = R.upgrade_cost(lvl)
-                if risk > 0.6:
-                    continue
-                opts.append((round(cost * discount), risk, k))
+                cost, _ = R.upgrade_cost(lvl)
+                opts.append((round(cost * discount), k, lvl))
             if not opts:
                 break
-            cost, risk, k = min(opts)
-            if oil > 0:                  # 淬火油：必成、不收钱，先用在最贵的武器上
+            cost, k, lvl = min(opts)
+            if oil > 0:                  # 淬火油：必成、不收钱
                 oil -= 1
                 plus[k] += 1
                 continue
@@ -281,12 +269,15 @@ def upgrade_run(gold: int, weapons: list[int], armor: list[int], w_plus: list[in
                 break
             budget -= cost
             spent += cost
-            if random.random() < risk:
-                plus[k] = max(0, plus[k] - 1)
-            else:
+            use_ore = pool == "w" and k == 0 and ore[0] > 0
+            if use_ore:
+                ore[0] -= 1
+            f = fails.get((pool, k, lvl), 0)
+            if random.random() < R.upgrade_chance(lvl, f, use_ore):
                 plus[k] += 1
-    return gold - spent, spent + ore_spent
-
+            else:
+                fails[(pool, k, lvl)] = f + 1
+    return gold - spent, spent
 
 def economy(quality: str, build: str, trips: int = 4, size: int = 1) -> list[Kit]:
     """每一趟出发时的装备等级和药（差装备不升级，只带能买得起的药）"""

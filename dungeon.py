@@ -59,6 +59,29 @@ def data() -> dict:
     return _data
 
 
+_dungeon_items: Optional[set] = None
+
+
+def dungeon_items() -> set[str]:
+    """items_dungeon.yaml 里的物品 id（地牢掉的东西；村里店里卖的不在里面）"""
+    global _dungeon_items
+    if _dungeon_items is None:
+        with open(os.path.join(os.path.dirname(__file__), "items_dungeon.yaml"), encoding="utf-8") as f:
+            _dungeon_items = set((yaml.safe_load(f) or {}).get("items", {}))
+    return _dungeon_items
+
+
+def item_rarity(template: str, props: dict) -> str:
+    """一件地牢装备的稀有度：掉的时候记在实例上的为准；以前掉的按来源猜（头目招牌装备稀有、普通怪专属掉落普通、别的精良）"""
+    if props.get("rarity"):
+        return props["rarity"]
+    if template in boss_items():
+        return "rare"
+    if any(d.get("item") == template for drops in loot_data()["monsters"].values() for d in drops or []):
+        return "common"
+    return "uncommon"
+
+
 def loot_data() -> dict:
     """掉落表 loot.yaml：普通怪专属掉落、头目二选一、通用池、宝箱房主题池、路边小木匣、空房搜索"""
     global _loot
@@ -151,8 +174,10 @@ def _put_item(cur: Cursor, template: str, depth: int, *, room: Optional[str] = N
     every = loot_data()["rules"].get("boss_upgrade_every", 0)
     cur.execute("select name, type, slot, damage, defense from item_templates where id = %s", (template,))
     t = cur.fetchone()
-    if rarity and gem_category(t["type"], t["slot"]) and (n := roll_sockets(rarity, gem_rules())):
-        props["sockets"] = n
+    if rarity and gem_category(t["type"], t["slot"]):
+        props["rarity"] = rarity                # 拆解按稀有度出碎铁（engine.do_dismantle）
+        if n := roll_sockets(rarity, gem_rules()):
+            props["sockets"] = n
     if boss and every and (plus := depth // every - 1) > 0:
         if t["type"] == "weapon":
             props |= {"plus": plus, "damage": t["damage"] + plus * UPGRADE_STEP["damage"], "name": f"{t['name']} +{plus}"}

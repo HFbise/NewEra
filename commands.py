@@ -83,6 +83,20 @@ def upgrade_request(view: RoomView, t: str, smith: str) -> Optional[dict]:
     """找铁匠升级的话 → upgrade 的 item / ore / quote（target 调用的人填）；不是升级的话返回 None"""
     t = re.sub(rf"^(?:对|跟|找|和|向)\s*{re.escape(smith)}\s*(?:说|讲|问)?[:：]?\s*", "", t).strip()
     t = re.sub(r"[。！!~～…]+$", "", t)
+    # 垫碎铁："垫两份碎铁""用 3 份碎铁升级短剑""升级短剑，加碎铁"（没说几份就是一份）
+    scrap = 0
+    if m := re.search(rf"[，,]?\s*(?:垫|用|加|放|添)?\s*(?:上)?\s*({NUM})?\s*(?:份|块|个)?\s*碎铁", t):
+        scrap = max(1, cn_number(m[1])) if m[1] else 1
+        t = (t[:m.start()] + t[m.end():]).strip()
+        if not re.search(r"升级|强化|锻造|改良|打磨", t):
+            return {"action": "upgrade", "scrap": scrap, "ore": None}
+    out = _upgrade_words(view, t)
+    if out is not None and scrap:
+        out["scrap"] = scrap
+    return out
+
+
+def _upgrade_words(view: RoomView, t: str) -> Optional[dict]:
     if re.fullmatch(rf"(?:那就)?用(?:{ORE_RE}吧?|吧)?", t):
         return {"action": "upgrade", "ore": True}
     if re.fullmatch(rf"不用(?:{ORE_RE}(?:了|吧)?)?", t):
@@ -239,6 +253,13 @@ def _parse_one(view: RoomView, t: str) -> dict:
             want = (m[1] or m[2]).strip()
             if any(want in d["name"] or d["name"] in want for d in box.donated) and want not in box.item_name:
                 return {"action": "take_donated", "name": want, "target": ref}
+
+    # 拆解（找莉娜）："拆解铁斧""把旧皮甲拆了""帮我拆掉骨弓"
+    if smith := next((n for n in view.npcs if n.template.props.get("upgrades")), None):
+        u = re.sub(rf"^(?:对|跟|找|向)\s*{re.escape(smith.name)}\s*(?:说|讲)?[:：]?\s*(?:帮我|请|我要|我想)?\s*", "", t)
+        if m := re.fullmatch(r"(?:拆解|拆掉|拆了|拆开|拆)\s*(.+)|把\s*(.+?)\s*(?:拆解|拆掉|拆了|拆开)(?:掉|了)?", u):
+            return {"action": "dismantle", "item": _find(view, (m[1] or m[2]).strip(), "inv"),
+                    "target": {uid: r for r, uid in view.refs.items()}[smith.id]}
 
     # 解咒（找诺艾尔）："解咒""解除诅咒""对诺艾尔说 帮我解咒""找诺艾尔解开饮血双刃剑的诅咒"
     if seller := next((n for n in view.npcs if n.template.props.get("uncurse")), None):
