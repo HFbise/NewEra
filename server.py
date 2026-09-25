@@ -225,6 +225,7 @@ def get_state(player_id: UUID, after: Optional[int] = None, active: bool = False
             raise HTTPException(404, str(e))
         if active:
             engine.touch(conn, player_id)  # 页面每 3 秒拉一次，最近 5 分钟有操作才算心跳（挂机的人睡着）
+        engine.drop_sleepers(conn)         # 睡着的人自动离队
         _kick_round(conn, view.room.id)    # 战斗回合：等的人掉线了就不等他，结算（没有后台定时器，靠轮询推一把）
         return state(conn, view, after)
 

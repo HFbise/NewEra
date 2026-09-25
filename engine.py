@@ -214,6 +214,21 @@ def touch(conn: Connection, player_id: UUID) -> None:
         conn.execute("update players set last_active_at = now() where id = %s", (player_id,))
 
 
+def drop_sleepers(conn: Connection) -> None:
+    """睡着（下线、挂机）的人自动离队：不再跟着谁，跟着他的人也不跟了，队伍只剩一个人就散。
+    没有后台任务，谁拉状态就顺手清一次（人少，一条 update 很便宜）"""
+    with conn.transaction():
+        gone = [r[0] for r in conn.execute(f"""
+            update players set party_id = null, following = null
+            where (party_id is not null or following is not null)
+              and (last_active_at is null or last_active_at < now() - interval '{ONLINE_WINDOW}')
+            returning id""").fetchall()]
+        if gone:
+            conn.execute("update players set following = null where following = any(%s)", (gone,))
+        conn.execute("""update players p set party_id = null where party_id is not null
+                        and (select count(*) from players q where q.party_id = p.party_id) = 1""")
+
+
 def sleep(conn: Connection, player_id: UUID) -> None:
     """主动下线：角色留在原地睡着"""
     with conn.transaction():
@@ -3429,7 +3444,16 @@ def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]
     down = stunned = False
     # 偷袭、补刀判成致命就是一击毙命（扭断脖子），其余按档位的区间随机
     lethal_blow = finisher and tier == "lethal"
+    # 只图伤害的花样（不上状态、不推不撞、没借地形、没用掉东西）打怪：按普攻的算法（面板攻击减防御）再加档位的伤害，
+    # 比普攻重一点；带效果的照旧是档位 + 一半武器伤害（好处在效果上）
+    pure = (is_npc and tier != "none" and not a.status and not a.push and not a.knockback and not feature and not material
+            and not poison and not harmless_prank)
+    if pure:
+        corrode = _npc_effect(target, "corrode")
+        armor = max(0, target.template.defense - (corrode.value if corrode else 0))
+        swing = hurt_npc_by(_how(player, weapon, None)[1] + random.randint(*TIER_RANGE[tier]), armor)
     if dmg := (0 if harmless_prank else poison.harm if poison else target.hp if lethal_blow
+               else _bled(player, swing) if pure
                else _bled(player, random.randint(*TIER_RANGE[tier])
                           + (int(weapon_damage(weapon) * WEAPON_STUNT_SHARE) if weapon and tier != "none" else 0))):
         if is_npc:
