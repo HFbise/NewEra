@@ -739,13 +739,15 @@ def log_fights(cur: Cursor, npc_ids: list, outcome: str) -> None:
     """头目、精英打完（或者这一层回收时还活着）记一行战斗记录（fight_log）：放了哪些招、有没有被打断、
     打了玩家多少、打倒几次人。只记真交过手的（出过手或者打中过人）"""
     cur.execute(
-        """insert into fight_log (npc_template, name, rank, affix, theme, depth, players, casts, interrupted, acts, dealt, downs, outcome)
+        """insert into fight_log (npc_template, name, rank, affix, theme, depth, players, casts, interrupted, acts, dealt, downs,
+                                 sneaks, hides, outcome)
            select t.id, t.name, t.props->'dungeon'->>'rank', t.props->>'affix', t.props->'dungeon'->>'theme',
                   (t.props->'dungeon'->>'depth')::int,
                   coalesce(array(select jsonb_array_elements_text(n.tally->'foes')), '{}'),
                   coalesce(array(select jsonb_array_elements_text(n.tally->'casts')), '{}'),
                   coalesce((n.tally->>'interrupted')::int, 0), coalesce((n.tally->>'acts')::int, 0),
-                  coalesce((n.tally->>'dealt')::int, 0), coalesce((n.tally->>'downs')::int, 0), %s
+                  coalesce((n.tally->>'dealt')::int, 0), coalesce((n.tally->>'downs')::int, 0),
+                  coalesce((n.tally->>'sneaks')::int, 0), coalesce((n.tally->>'hides')::int, 0), %s
            from npcs n join npc_templates t on t.id = n.template_id
            where n.id = any(%s) and t.props->'dungeon'->>'rank' in ('boss', 'elite')
              and (n.tally ? 'acts' or n.tally ? 'dealt' or n.tally ? 'foes')""", (outcome, list(npc_ids)))

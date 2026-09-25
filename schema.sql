@@ -325,7 +325,20 @@ create table fight_log (
   acts         int not null default 0,            -- 头目出手几次
   dealt        int not null default 0,            -- 它打在玩家身上的伤害合计
   downs        int not null default 0,            -- 打倒了几次人
+  sneaks       int not null default 0,            -- 被偷袭得手几次（校准只拿正面硬打的算）
+  hides        int not null default 0,            -- 打它的时候，玩家在战斗中躲藏成功几次
   outcome      text                               -- killed / tamed / unfinished（这一层回收时还活着）
+);
+
+-- 地牢路上的陷阱：踩中还是躲开、挨了多少（看察觉练不练得上去、陷阱占掉血多少）
+create table trap_log (
+  id           bigserial primary key,
+  created_at   timestamptz not null default now(),
+  player_id    uuid references players(id) on delete cascade,
+  depth        int not null,
+  difficulty   int not null,
+  avoided      boolean not null,
+  dmg          int not null default 0
 );
 
 create table dungeon_runs (

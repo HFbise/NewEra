@@ -1022,9 +1022,11 @@ def _road_event(cur: Cursor, player: Player, view: RoomView, to: str) -> list[st
         # 同一层每踩中一次，下一个陷阱难度 -1（吃过亏就留神了），躲开一次就恢复
         cur.execute("update players set flags = flags || jsonb_build_object(%s::text, %s::jsonb) where id = %s",
                     (TRAP_EASE, Jsonb({"floor": here, "n": 0 if ok else ease + 1}), player.id))
+        dmg = 0 if ok else round((2 + steps(depth, 3)) * SCALE)
+        cur.execute("insert into trap_log (player_id, depth, difficulty, avoided, dmg) values (%s, %s, %s, %s, %s)",
+                    (player.id, depth, max(1, diff), ok, dmg))
         if ok:
             return [f"路上{trap}"] + rolled + [f"{player.name}{'想起陷阱图上画过这种地方，' if sense else ''}及时察觉，躲了过去"]
-        dmg = round((2 + steps(depth, 3)) * SCALE)
         hurt, down = _hurt_player(cur, player, dmg, "other", "陷阱")
         # 踩中了也长记性：几率涨一点察觉熟练（不然察觉 0 级的人永远判不成，永远练不上去）
         learn = _gain_skill(cur, player, "perception") if not down and "perception" not in view.trained and _roll(TRAP_LEARN) else []
@@ -2584,6 +2586,9 @@ def do_hide(cur: Cursor, player: Player, view: RoomView, a: Hide) -> list[str]:
         return facts + [f"{player.name}没能藏好"]
     st.hidden, st.detected = True, False
     _save_stealth(cur, player, st)
+    for n in foes:
+        if st.alerted and n.template.props.get("dungeon", {}).get("rank") in ("boss", "elite"):
+            _count(cur, n, "hides")             # fight_log：打它的时候躲过
     return facts + [f"{player.name}藏好了，暂时没人能发现"]
 
 
@@ -3572,6 +3577,8 @@ def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]
                           + (int(weapon_damage(weapon) * WEAPON_STUNT_SHARE) if weapon and tier != "none" else 0))):
         if double:
             dmg *= 2                            # 对精英、头目的致命偷袭：重伤档的伤害翻倍
+        if is_npc and skill == "stealth" and finisher:
+            _count(cur, target, "sneaks")       # fight_log：这一场是偷袭打的，校准不拿它算
         if is_npc:
             hurt, down = _hurt_npc(cur, player, target, dmg)
             hurt += _assassinated(cur, player, view, target, down, not _stealth(player).detected and not _stealth(player).alerted)
@@ -4058,7 +4065,7 @@ def upgrade_terms(item: ItemInstance) -> tuple[int, int, float]:
     """(升到几级, 费用, 这次什么都不垫的失败几率，算上保底)：费用只看升到第几级（rules.upgrade_cost），稀有的东西乘 props.upgrade_mult"""
     level = item.props.get("plus", 0) + 1
     cost, _ = upgrade_cost(level, float(_prop(item, "upgrade_mult") or 1))
-    return level, cost, 1 - upgrade_chance(level, _upgrade_pity(item, level))
+    return level, cost, 1 - upgrade_chance(level, _upgrade_pity(item, level), armor=upgrade_stat(item) == "defense")
 
 
 def _upgrade_pity(item: ItemInstance, level: int) -> int:
@@ -4126,7 +4133,7 @@ def do_upgrade(cur: Cursor, player: Player, view: RoomView, a: Upgrade) -> list[
         raise ActionError(f"{player.name}身上没有碎铁（找{npc.name}拆解用不上的地牢装备得来）")
     use_scrap = min(a.scrap, UPGRADE_SCRAP_MAX, scrap.quantity if scrap else 0)
     pity = _upgrade_pity(item, level)
-    chance = upgrade_chance(level, pity, bool(a.ore), use_scrap)
+    chance = upgrade_chance(level, pity, bool(a.ore), use_scrap, armor=stat == "defense")
     terms = _upgrade_text(item, cost, chance)
     if a.oil:
         # 莉娜的淬火油：必定成功，不收钱
@@ -4145,7 +4152,7 @@ def do_upgrade(cur: Cursor, player: Player, view: RoomView, a: Upgrade) -> list[
         _put_offer(cur, player.id, npc, key, cost)
         return [f"{npc.name}看了看{player.name}的{item.name}：{terms}",
                 f"{npc.name}瞥见{player.name}带着"
-                + "、".join(([f"奥利哈刚矿石（锻进去这次成功率翻倍到 {round(upgrade_chance(level, pity, True) * 100)}%，矿石用掉）"] if ore else [])
+                + "、".join(([f"奥利哈刚矿石（锻进去这次成功率翻倍到 {round(upgrade_chance(level, pity, True, armor=stat == "defense") * 100)}%，矿石用掉）"] if ore else [])
                             + ([f"{scrap.quantity} 份碎铁（每份 +{round(UPGRADE_SCRAP * 100)}%，一次最多垫 {UPGRADE_SCRAP_MAX} 份）"] if scrap else []))
                 + (f"；还有莉娜的淬火油，用了必定成功、不收钱（说「用淬火油」）" if oil else ""),
                 f"{player.name}说「用矿石」「垫两份碎铁」或者「不用」，{npc.name}就动手"]
@@ -4165,7 +4172,7 @@ def do_upgrade(cur: Cursor, player: Player, view: RoomView, a: Upgrade) -> list[
         cur.execute("update item_instances set props = props || %s where id = %s",
                     (Jsonb({"upgrade_fails": {"level": level, "n": pity + 1}}), item.id))
         return facts + [f"淬火的时候火候没掌握好，{item.name}没升上去，好在也没伤着（钱照收）",
-                        f"{npc.name}盯着炉火琢磨了一会儿：这把的火候摸清楚一点了（下次成功率 +{round(UPGRADE_PITY * 100)}%）"]
+                        f"{npc.name}盯着炉火琢磨了一会儿：这把的火候摸清楚一点了（下次成功率 +{round((UPGRADE_PITY_ARMOR if stat == "defense" else UPGRADE_PITY) * 100)}%）"]
     name = base + f" +{level}"
     cur.execute("update item_instances set props = (props - 'upgrade_fails') || %s where id = %s",
                 (Jsonb({"plus": level, stat: now + _step(item, stat), "name": name}), item.id))

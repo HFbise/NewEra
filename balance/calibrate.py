@@ -23,7 +23,7 @@ def main(names: list[str]) -> None:
             rows = c.execute("""select l.data from player_log l join players p on p.id = l.player_id
                                 where p.name = %s order by l.id""", (name,)).fetchall()
             floor, max_hp = 0, 20
-            stat = defaultdict(lambda: {"dmg": 0, "down": 0, "rounds": 0, "potions": 0, "turns": 0, "max": 20})
+            stat = defaultdict(lambda: {"dmg": 0, "dmg_stealth": 0, "down": 0, "rounds": 0, "potions": 0, "turns": 0, "max": 20})
             for (data,) in rows:
                 text = "\n".join(facts_of(data))
                 for line in text.split("\n"):
@@ -35,10 +35,12 @@ def main(names: list[str]) -> None:
                     continue
                 s = stat[floor]
                 s["turns"] += 1
+                # 偷袭、战斗中躲藏的回合另算：校准只拿正面硬打的比（模拟里没有这些打法）
+                key = "dmg_stealth" if re.search(r"可以出其不意地偷袭|藏好了", text) else "dmg"
                 for m in re.finditer(rf"对{re.escape(name)}造成 (\d+) 点伤害", text):
-                    s["dmg"] += int(m[1])
+                    s[key] += int(m[1])
                 for m in re.finditer(rf"{re.escape(name)}(?:中毒|流血)，掉了 (\d+) 点血", text):
-                    s["dmg"] += int(m[1])
+                    s[key] += int(m[1])
                 for m in re.finditer(rf"{re.escape(name)} HP \d+/(\d+)", text):
                     max_hp = int(m[1])
                 s["max"] = max_hp
@@ -46,10 +48,11 @@ def main(names: list[str]) -> None:
                 s["rounds"] += len(re.findall(r"【第 \d+ 轮】", text))
                 s["potions"] += len(re.findall(rf"{re.escape(name)}(?:喝下了|吃掉了|喝掉了)", text))
             print(f"== {name}（记录 {len(rows)} 条）")
-            print("层 | 挨的伤害 | 占上限 | 倒下 | 回合 | 吃喝 | 这层的命令数")
+            print("层 | 正面硬打挨的伤害 | 占上限 | 偷袭、躲藏的回合挨的 | 倒下 | 回合 | 吃喝 | 这层的命令数")
             for f in sorted(stat):
                 s = stat[f]
-                print(f"{f} | {s['dmg']} | {s['dmg'] / s['max'] * 100:.0f}% | {s['down']} | {s['rounds']} | {s['potions']} | {s['turns']}")
+                print(f"{f} | {s['dmg']} | {s['dmg'] / s['max'] * 100:.0f}% | {s['dmg_stealth']} | {s['down']} | {s['rounds']} | "
+                      f"{s['potions']} | {s['turns']}")
 
 
 if __name__ == "__main__":

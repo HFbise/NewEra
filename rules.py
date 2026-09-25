@@ -215,25 +215,30 @@ def upgrade_step(stat: str, ranged: bool) -> float:
 
 
 UPGRADE_COST = (12.5, 1.6)              # 升到第 N 级：12.5 × 1.6^N，+1 要 20、+3 要 51、+5 要 131、+8 要 537、+10 要 1374
-UPGRADE_CHANCE_STEP = 0.11             # 用模拟调：第 11 层主武器约 +5、第 16 层约 +7 这条线不变
+UPGRADE_CHANCE_STEP = 0.11             # 武器。用模拟调：第 11 层主武器约 +5、第 16 层约 +7 这条线不变
+UPGRADE_CHANCE_STEP_ARMOR = 0.22       # 防具单独压（失败不掉级以后防具升得太快）：+3 34%、+4 12%、+5 起 5%；费用不动
 UPGRADE_CHANCE_MIN = 0.05
 UPGRADE_PITY = 0.10
+UPGRADE_PITY_ARMOR = 0.03               # 防具的保底小一点（防具便宜、钱够，保底 10% 时成功率怎么压都会升到 +4.5）
 UPGRADE_SCRAP, UPGRADE_SCRAP_MAX = 0.05, 4
 UPGRADE_MIN_COST = 5
 UPGRADE_MAX = 10
 UPGRADE_DISCOUNT = 0.9                  # 莉娜的回礼（好感 20）：熟客价九折
 
 
-def upgrade_chance(level: int, fails: int = 0, ore: bool = False, scrap: int = 0) -> float:
-    """升到第 level 级这一次的成功率：fails 是这一级已经连续失败几次（保底），ore 垫了奥利哈刚（翻倍），scrap 垫了几份碎铁"""
-    p = max(UPGRADE_CHANCE_MIN, 1 - UPGRADE_CHANCE_STEP * level) + UPGRADE_PITY * fails + UPGRADE_SCRAP * min(scrap, UPGRADE_SCRAP_MAX)
+def upgrade_chance(level: int, fails: int = 0, ore: bool = False, scrap: int = 0, armor: bool = False) -> float:
+    """升到第 level 级这一次的成功率：fails 是这一级已经连续失败几次（保底），ore 垫了奥利哈刚（翻倍），scrap 垫了几份碎铁，
+    armor 是防具（系数更大）。最低 UPGRADE_CHANCE_MIN，+9、+10 也不会是 0"""
+    step = UPGRADE_CHANCE_STEP_ARMOR if armor else UPGRADE_CHANCE_STEP
+    pity = UPGRADE_PITY_ARMOR if armor else UPGRADE_PITY
+    p = max(UPGRADE_CHANCE_MIN, 1 - step * level) + pity * fails + UPGRADE_SCRAP * min(scrap, UPGRADE_SCRAP_MAX)
     return min(1.0, p * (2 if ore else 1))
 
 
-def upgrade_cost(level: int, mult: float = 1.0) -> tuple[int, float]:
+def upgrade_cost(level: int, mult: float = 1.0, armor: bool = False) -> tuple[int, float]:
     """升到第 level 级的 (费用, 什么都不垫时失败的几率)；mult 是这件东西的稀有度倍数"""
     cost = UPGRADE_COST[0] * UPGRADE_COST[1] ** level * mult
-    return max(UPGRADE_MIN_COST, round(cost)), 1 - upgrade_chance(level)
+    return max(UPGRADE_MIN_COST, round(cost)), 1 - upgrade_chance(level, armor=armor)
 
 
 def stat_text(v: float) -> str:
@@ -282,9 +287,9 @@ def max_groups(depth: int) -> int:
 
 
 def group_chances(depth: int) -> tuple[float, float]:
-    """第二群、第三群出现的几率：第二群从第 8 层 10% 起每层 +10%，第 17 层起必出；第三群从第 16 层 10% 起，第 25 层起必出
-    （以前到第 8、16 层一下跳一档，第 16 层是断崖）"""
-    return max(0.0, min(1.0, (depth - 7) * 0.1)), max(0.0, min(1.0, (depth - 15) * 0.1))
+    """第二群、第三群出现的几率：第二群从第 4 层 10% 起每层 +10%（第 8 层 50%，跟以前一样），第 13 层起必出；
+    第三群从第 16 层 10% 起，第 25 层起必出（以前到第 8、16 层一下跳一档，第 16 层是断崖）"""
+    return max(0.0, min(1.0, (depth - 3) * 0.1)), max(0.0, min(1.0, (depth - 15) * 0.1))
 
 
 def roll_groups(depth: int) -> int:

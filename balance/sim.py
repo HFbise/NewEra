@@ -33,6 +33,8 @@ for _f in ("world.yaml", "items_dungeon.yaml"):
     ITEMS.update(yaml.safe_load(open(_f, encoding="utf-8"))["items"])
 
 TRIP = 5                                # 一趟：两块传送石之间（1–5、6–10……），出发前回城买药、升级
+TRIPS = 6                               # 一共几趟：走到第 30 层（深层装备、主题还没做，21 层以后先用第 16 层那套装备，只当预警）
+FLOORS = TRIPS * TRIP
 POTION = "blood_potion"                 # 血药
 HERB_HEAL = ITEMS["herb"]["heal"]
 TORCH_LIT = ITEMS["torch_lit"]["props"]["light"]
@@ -63,18 +65,19 @@ START_TRIP = {"bow": 1, "xbow": 2, "sword_shield+bow": 1}
 # 护甲：差装备只有开局的皮甲和古旧护符（地窖桌上人人拿得到），一直不升级；
 #       正常：第 1 趟是莉娜店里的全套（皮帽、皮甲、皮靴）+ 护符；第 2 趟锁子甲；第 3 趟起头目的胸甲（3）和典狱长的头盔（2）
 ARMOR = {
-    "poor": [[("皮甲", 10), ("古旧护符", 20)]] * 4,
+    "poor": [[("皮甲", 10), ("古旧护符", 20)]] * TRIPS,
     "normal": [[("皮帽", 10), ("皮甲", 10), ("皮靴", 10), ("古旧护符", 20)],
                [("皮帽", 10), ("锁子甲", 20), ("皮靴", 10), ("古旧护符", 20)],
-               [("头盔", 20), ("头目胸甲", 30), ("皮靴", 10), ("古旧护符", 20)],
-               [("头盔", 20), ("头目胸甲", 30), ("皮靴", 10), ("古旧护符", 20)]],
+               [("头盔", 20), ("头目胸甲", 30), ("皮靴", 10), ("古旧护符", 20)]]
+              + [[("头盔", 20), ("头目胸甲", 30), ("皮靴", 10), ("古旧护符", 20)]] * (TRIPS - 3),
 }
 ARMOR["fav"] = ARMOR["normal"]
+ARMOR["real"] = ARMOR["normal"]        # 真人档：地牢掉的防具照穿，只是一件都不升
 # 盾：剑盾打法第 1 趟木盾，之后塔盾（挡远程 2 点）；最后一项是格挡几率（物品表的 props.block）
 _TOWER = ("塔盾", ITEMS["tower_shield"]["defense"],
           next(e["value"] for e in ITEMS["tower_shield"]["props"]["effects"] if e["do"] == "guard"),
           ITEMS["tower_shield"]["props"].get("block", 0))
-SHIELD = [("木盾", ITEMS["wooden_shield"]["defense"], 0, ITEMS["wooden_shield"]["props"].get("block", 0)), _TOWER, _TOWER, _TOWER]
+SHIELD = [("木盾", ITEMS["wooden_shield"]["defense"], 0, ITEMS["wooden_shield"]["props"].get("block", 0))] + [_TOWER] * (TRIPS - 1)
 DMG = {k: ITEMS[k]["damage"] for k in ("shiny_sword", "steel_shortsword", "iron_axe", "hunting_bow", "heavy_crossbow", "sling")}
 
 
@@ -97,7 +100,7 @@ XBOW_PIERCE = next(e["value"] for e in ITEMS["heavy_crossbow"]["props"]["effects
 def melee_weapons(build: str, trip: int) -> list[tuple[str, int]]:
     """(名字, 伤害) 主手在前"""
     sword = ("闪亮的短剑", DMG["shiny_sword"]) if trip == 0 else ("精钢短剑", DMG["steel_shortsword"])
-    if build == "dual":
+    if build in ("dual", "dual_sneak"):
         return [sword, ("铁斧", DMG["iron_axe"]) if trip == 0 else ("闪亮的短剑", DMG["shiny_sword"]) if trip == 1
                 else ("精钢短剑", DMG["steel_shortsword"])]
     if build in ("sword_shield", "sword_torch", "sling_sword", "mcb_sword", "hxb_sword"):
@@ -121,10 +124,12 @@ def ranged_weapon(build: str, trip: int) -> Optional[Weapon]:
     return None
 
 
-BUILDS = {"dual": "双持", "sword_shield": "剑盾", "sword_torch": "剑+火把", "bow": "猎弓", "xbow": "绞盘重弩",
+BUILDS = {"dual": "双持", "dual_sneak": "双持潜行", "sword_shield": "剑盾", "sword_torch": "剑+火把", "bow": "猎弓", "xbow": "绞盘重弩",
           "sling_sword": "投石索配剑", "mcb_sword": "麦琪的弩配剑", "hxb_sword": "手弩配剑",
           "sword_shield+bow": "剑盾 + 猎弓"}
-QUALITY = {"poor": "装备差", "normal": "正常", "fav": "好感全满"}
+QUALITY = {"poor": "装备差", "normal": "正常", "fav": "好感全满", "real": "真人档"}
+# 真人档（照玩家A这一趟）：只升武器、钱攒着不花完（每趟最多花 REAL_SPEND），不升防具、不镶宝石、不买血药，只靠路上捡的药草
+REAL_SPEND = 0.1                        # 照玩家A调的：第 16 层主武器 +4、身上攒着约 4000 金
 
 
 def endurance_hp(depth: int) -> int:
@@ -242,14 +247,17 @@ def refine_run(gold: int, bag: list[list], deepest: int) -> int:
     return spent
 
 
+ORE_BELOW = 0.4
+
+
 def upgrade_run(gold: int, weapons: list[int], armor: list[int], w_plus: list[int], a_plus: list[int],
-                discount: float, oil: int, ore: list[int]) -> tuple[int, int]:
+                discount: float, oil: int, ore: list[int], w_share: float = 0.5) -> tuple[int, int]:
     """engine.do_upgrade 的规则：失败不掉级、钱照收，同一级连续失败每次 +UPGRADE_PITY（保底），矿石这一次成功率翻倍、用掉。
     钱一半花在武器、一半花在防具上，每样按"最便宜的一次"先升；有矿石就垫在主武器上。返回 (剩下的钱, 花掉的钱)"""
     spent = 0
     fails: dict = {}
     for pool, base, plus in (("w", weapons, w_plus), ("a", armor, a_plus)):
-        budget = gold // 2 if pool == "w" else gold - spent
+        budget = int(gold * w_share) if pool == "w" else gold - spent
         while True:
             opts = []
             for k, b in enumerate(base):
@@ -269,17 +277,18 @@ def upgrade_run(gold: int, weapons: list[int], armor: list[int], w_plus: list[in
                 break
             budget -= cost
             spent += cost
-            use_ore = pool == "w" and k == 0 and ore[0] > 0
+            f = fails.get((pool, k, lvl), 0)
+            # 矿石留到这一次成功率低于 ORE_BELOW 才用（翻倍、用掉；低等级用太浪费）
+            use_ore = pool == "w" and k == 0 and ore[0] > 0 and R.upgrade_chance(lvl, f) < ORE_BELOW
             if use_ore:
                 ore[0] -= 1
-            f = fails.get((pool, k, lvl), 0)
-            if random.random() < R.upgrade_chance(lvl, f, use_ore):
+            if random.random() < R.upgrade_chance(lvl, f, use_ore, armor=pool == "a"):
                 plus[k] += 1
             else:
                 fails[(pool, k, lvl)] = f + 1
     return gold - spent, spent
 
-def economy(quality: str, build: str, trips: int = 4, size: int = 1) -> list[Kit]:
+def economy(quality: str, build: str, trips: int = TRIPS, size: int = 1) -> list[Kit]:
     """每一趟出发时的装备等级和药（差装备不升级，只带能买得起的药）"""
     kits, gold = [], 0
     w_plus = [0] * len(upgradable_weapons(build, 0, quality))
@@ -292,14 +301,14 @@ def economy(quality: str, build: str, trips: int = 4, size: int = 1) -> list[Kit
     bag: list[list] = []                # 捡到的宝石 [id, 品质]
     sockets: dict[str, int] = {}        # 每件带孔装备的孔数（拿到时掷一次）
     for trip in range(trips):
-        want = {"poor": 2, "normal": 4, "fav": 4}[quality]
+        want = {"poor": 2, "normal": 4, "fav": 4, "real": 0}[quality]
         potions = min(want, gold // potion_price)
         gold -= potions * potion_price
         torches = 3 if build == "sword_torch" else 0
         gold -= min(gold, torches * TORCH_PRICE)
         spent = 0
         refine_spent = 0
-        if VARIANT["gems"] and quality != "poor":
+        if VARIANT["gems"] and quality not in ("poor", "real"):
             refine_spent = refine_run(gold, bag, trip * TRIP)
             gold -= refine_spent
         if quality != "poor":
@@ -309,11 +318,16 @@ def economy(quality: str, build: str, trips: int = 4, size: int = 1) -> list[Kit
             armor = [d for _, d in ARMOR[quality][trip]] + ([SHIELD[trip][1]] if build == "sword_shield" else [])
             a_plus = (a_plus + [0] * len(armor))[:len(armor)]
             before = gold
-            gold, spent = upgrade_run(gold, weapons, armor, w_plus, a_plus, discount, oil, ore)
+            if quality == "real":
+                kept = gold - int(gold * REAL_SPEND)
+                left, _ = upgrade_run(int(gold * REAL_SPEND), weapons, [], w_plus, [], discount, oil, ore, w_share=1.0)
+                gold = kept + left
+            else:
+                gold, spent = upgrade_run(gold, weapons, armor, w_plus, a_plus, discount, oil, ore)
             spent = before - gold
             oil = 0
         gem_bonus = gem_def = gem_pierce = gem_crit = 0.0
-        if VARIANT["gems"] and quality != "poor":
+        if VARIANT["gems"] and quality not in ("poor", "real"):
             pieces = [n for n, _ in (melee_weapons(build, trip)[:1] if build not in ("bow", "xbow") else [])] \
                 + ([ranged_weapon(build, trip).name] if build in ("bow", "xbow") else []) \
                 + [n for n, _ in ARMOR[quality][trip]] + ([SHIELD[trip][0]] if build == "sword_shield" else [])
@@ -347,7 +361,7 @@ def upgradable_weapons(build: str, trip: int, quality: str) -> list[int]:
         return [r.damage, ws[0][1]]
     if quality == "fav" and ws:
         ws = [("无铭", blade_damage(trip * TRIP))] + ws[1:]
-    return [d for _, d in ws][:2 if build == "dual" else 1]
+    return [d for _, d in ws][:2 if build in ("dual", "dual_sneak") else 1]
 
 
 def blade_damage(deepest: int) -> int:
@@ -409,6 +423,8 @@ class Hero:
     torch_light: int = 0               # 手上点着的火把给的光（点燃 35、弱光 20）
     potions: int = 0
     herbs: int = 0
+    sneak: bool = False                 # 潜行打法：进门没被警觉的怪盯上就先偷袭一下
+    stealth: int = 0                    # 隐匿等级
     perks: set = field(default_factory=set)
     effects: dict = field(default_factory=dict)     # kind -> {"value", "left", "hp"}
     status: Optional[dict] = None
@@ -508,6 +524,32 @@ class Fight:
 
     def light(self) -> int:
         return min(100, self.base_light + max([h.torch_light for h in self.heroes if not h.down] or [0]))
+
+    def sneak_open(self) -> None:
+        """潜行打法（engine 第一批改完的规则）：房间里没有警觉的怪才能偷袭，每人开场一下（隐匿对暗杀难度）；
+        致命的普通怪直接死，精英、头目改成重伤 ×2；偷袭完这个房间就戒备了，之后正常打"""
+        live = self.alive()
+        if not live or any(m.props.get("keen") or m.rank == "boss" for m in live):
+            return
+        for h in self.heroes:
+            live = self.alive()
+            if not h.sneak or h.down or not live:
+                continue
+            diff = 4 + round(R.steps(self.depth, 6))
+            if random.random() >= R.skill_chance(h.stealth, diff):
+                continue                          # 没成：被发现，正常开打
+            m = min(live, key=lambda x: x.hp)
+            self.sneaks = getattr(self, "sneaks", 0) + 1
+            heavy = R.hurt_npc_by(power(h, None) + random.randint(30, 60), m.df)
+            if m.rank == "elite":
+                m.hp -= 2 * heavy
+            elif random.random() < SNEAK_LETHAL:
+                m.hp = 0
+            else:
+                m.hp -= heavy
+            for key in list(self.dist):
+                if key[0] == id(h) and key[1] == id(m):
+                    self.dist[key] = 0            # 偷袭得贴上去
 
     def alive(self) -> list[Mon]:
         return [m for m in self.mons if m.hp > 0]
@@ -849,6 +891,14 @@ class FloorStat:
     stalls: int = 0
 
 
+def stealth_level(depth: int) -> int:
+    """隐匿等级（照玩家A：第 12 层 3 级、第 13 层 4 级），每 4 层大约一级"""
+    return min(8, 1 + depth // 4)
+
+
+SNEAK_LETHAL = 0.7                      # 偷袭时 AI 判成致命的比例（其余按重伤）
+
+
 def make_heroes(build: str, quality: str, trip: int, kit, size: int, depth: int) -> list[Hero]:
     if "+" in build:                        # 混编两人队：每人一种打法、一份自己的升级进度
         return [h for b, k in zip(build.split("+"), kit) for h in make_heroes(b, quality, trip, k, 1, depth)]
@@ -875,7 +925,8 @@ def make_heroes(build: str, quality: str, trip: int, kit, size: int, depth: int)
                       for k, d in enumerate(armor)) + kit.gem_def
         hp = endurance_hp(depth)
         perks = {"bookmark", "tome", "flask", "drug"} if quality == "fav" else set()
-        heroes.append(Hero(hp, hp, 2 * R.SCALE, defense, ws, r, guard_ranged=guard, block=block, gem_bonus=kit.gem_bonus, gem_pierce=kit.gem_pierce, gem_crit=kit.gem_crit,
+        heroes.append(Hero(hp, hp, 2 * R.SCALE, defense, ws, r, sneak=build == "dual_sneak", stealth=stealth_level(depth),
+                           guard_ranged=guard, block=block, gem_bonus=kit.gem_bonus, gem_pierce=kit.gem_pierce, gem_crit=kit.gem_crit,
                            potions=kit.potions, perks=perks))
     return heroes
 
@@ -951,6 +1002,7 @@ def run_trip(build: str, quality: str, trip: int, kit: Kit, size: int, stats: di
                 mons += spawn(depth, monster, rank, theme_key, size, len(groups), kind == "stairs")
             light = room_light(THEMES[theme_key])
             fight = Fight([h for h in heroes if not h.down], mons, light, cover, depth)
+            fight.sneak_open()
             hp_before = {id(h): h.taken for h in fight.heroes}
             result = fight.run()
             st.fights += 1
@@ -1010,6 +1062,7 @@ def fight_test(build: str, quality: str, trip: int, depth: int, groups: list[tup
         for monster, rank in groups:
             mons += spawn(depth, monster, rank, theme, size, len(groups), boss, affix=affix)
         f = Fight(heroes, mons, room_light(THEMES[theme]) if light is None else light, False, depth)
+        f.sneak_open()
         before = sum(h.taken for h in heroes)
         r = f.run()
         lost += (sum(h.taken for h in heroes) - before) / sum(h.max_hp for h in heroes)     # 挨的伤害合计（中途喝药、私酿回的不抵）
@@ -1037,15 +1090,15 @@ def main() -> None:
 
     # ---- 经济 ----
     random.seed(args.seed)
-    incomes = {d: sum(floor_income(d, 1, False) for _ in range(300)) / 300 for d in range(1, 21)}
-    out.append("## 1. 经济（剑盾，单人，假设一路活着；先拿矿石砸武器（每层约 0.5 块），剩下的钱一半升武器、一半升防具，"
-               "没矿石时失败率超过 60% 就不升了）\n")
-    out.append("每层收入（金币）：" + "、".join(f"{d} 层 {incomes[d]:.0f}" for d in range(1, 21)) + "\n")
+    incomes = {d: sum(floor_income(d, 1, False) for _ in range(300)) / 300 for d in range(1, FLOORS + 1)}
+    out.append("## 1. 经济（剑盾，单人，假设一路活着；钱一半升武器、一半升防具，失败不掉级、同一级连败有保底；"
+               "矿石留到主武器成功率低于 40% 时垫上；真人档只拿一成的钱升武器）\n")
+    out.append("每层收入（金币）：" + "、".join(f"{d} 层 {incomes[d]:.0f}" for d in range(1, FLOORS + 1)) + "\n")
     out.append("| 出发时 | 攒下的钱 | 带血药 | 花在升级 | 武器 | 防具（每件） |")
     out.append("|---|---|---|---|---|---|")
-    for q in ("normal", "fav"):
+    for q in ("normal", "fav", "real"):
         eco = [economy(q, "sword_shield") for _ in range(100)]
-        for t in range(4):
+        for t in range(TRIPS):
             def avg(f, t=t, eco=eco):
                 return sum(f(e[t]) for e in eco) / len(eco)
             arm = [avg(lambda k_, k=k: k_.armor_plus[k]) for k in range(len(eco[0][t].armor_plus))]
@@ -1063,6 +1116,8 @@ def main() -> None:
                 combos.append((q, b, size))
         if q != "poor":
             combos.append((q, "sword_shield+bow", 2))
+    # 真人档（只升武器、不买血药）和潜行打法（玩家A那样）
+    combos += [("normal", "dual_sneak", 1), ("real", "dual", 1), ("real", "dual_sneak", 1), ("real", "sword_shield", 1)]
     table, room_log = {}, {}
     for q, b, size in combos:
         random.seed(f"{args.seed}-{q}-{b}-{size}")
@@ -1071,7 +1126,7 @@ def main() -> None:
             eco = [list(zip(*(economy(q, part) for part in b.split("+")))) for _ in range(30)]
         else:
             eco = [economy(q, b) for _ in range(30)]
-        for t in range(START_TRIP.get(b, 0), 4):
+        for t in range(START_TRIP.get(b, 0), TRIPS):
             for n in range(args.trips):
                 run_trip(b, q, t, eco[n % len(eco)][t], size, stats,
                          room_log if (q, b, size) == ("normal", "sword_shield", 1) else None)
@@ -1088,25 +1143,26 @@ def main() -> None:
         return surv
 
     out.append("## 2. 走完一段（两块传送石之间）的存活率\n")
-    out.append("目标（正常装备）：1–5 层约 99%、6–10 层约 85%、11–15 层约 65%、16–20 层约 50%（16 层以后只当预警）\n")
-    out.append("| 装备 | 打法 | 人数 | 1–5 | 6–10 | 11–15 | 16–20 |")
-    out.append("|---|---|---|---|---|---|---|")
+    out.append("目标（正常装备）：1–5 层约 99%、6–10 层约 85%、11–15 层约 65%、16–20 层约 50%；"
+               "21 层以后深层装备、主题还没做（用第 16 层那套装备），只当预警\n")
+    out.append("| 装备 | 打法 | 人数 | " + " | ".join(f"{t * TRIP + 1}–{t * TRIP + TRIP}" for t in range(TRIPS)) + " |")
+    out.append("|---|---|---|" + "---|" * TRIPS)
     for (q, b, size), stats in table.items():
         out.append(f"| {QUALITY[q]} | {BUILDS[b]} | {size} | "
-                   + " | ".join("-" if (v := seg(stats, t)) is None else pct(v) for t in range(4)) + " |")
+                   + " | ".join("-" if (v := seg(stats, t)) is None else pct(v) for t in range(TRIPS)) + " |")
     out.append("")
 
     def per_floor(title: str, fn, qs=("normal",)) -> None:
         out.append(title + "\n")
-        out.append("| 装备 | 打法 | 人数 | " + " | ".join(str(d) for d in range(1, 21)) + " |")
-        out.append("|---|---|---|" + "---|" * 20)
+        out.append("| 装备 | 打法 | 人数 | " + " | ".join(str(d) for d in range(1, FLOORS + 1)) + " |")
+        out.append("|---|---|---|" + "---|" * FLOORS)
         for (q, b, size), stats in table.items():
             if q in qs:
                 out.append(f"| {QUALITY[q]} | {BUILDS[b]} | {size} | "
-                           + " | ".join(fn(stats[d]) if d in stats and stats[d].people else "-" for d in range(1, 21)) + " |")
+                           + " | ".join(fn(stats[d]) if d in stats and stats[d].people else "-" for d in range(1, FLOORS + 1)) + " |")
         out.append("")
     per_floor("## 3. 每层死亡率（目标：1–5 层 ≤1%，6–10 ≤3%，11–15 ≤8%，16–20 ≤13%；头目层可以再高 5 个百分点）",
-              lambda s: pct(s.died / s.people), ("poor", "normal", "fav"))
+              lambda s: pct(s.died / s.people), ("poor", "normal", "fav", "real"))
     per_floor("## 4. 每层掉血（这一层挨的伤害合计 ÷ 血量上限；目标 1–5 层 30–40%，6–10 约 50%，11–15 约 60%）",
               lambda s: pct(s.taken / s.people))
     per_floor("## 5. 每层用掉几瓶血药", lambda s: f"{s.potions / s.people:.1f}")
@@ -1115,7 +1171,7 @@ def main() -> None:
     out.append("## 7. 各种房间（正常装备、剑盾、单人，跟着一趟走下来的真实状态进场）：一场挨的伤害合计 / 团灭率\n")
     out.append("| 层 | 普通近战 | 有远程 | 有治疗 | 头目 |")
     out.append("|---|---|---|---|---|")
-    for d in range(1, 21):
+    for d in range(1, FLOORS + 1):
         cells = []
         for k in ("melee", "ranged", "healer", "boss"):
             v = room_log.get((d, k))
