@@ -433,6 +433,7 @@ class Dispenser(BaseModel):
     fail: str = ""                      # 判定失败时发生的事
     fail_damage: int = 0                # 失败掉的血
     available: bool = True              # 这个玩家还能不能拿（身上已经有了就只看得到桶、桌子本身）
+    extra: dict = {}                    # 地牢事件房原样的 take 配置（服务要用的参数：cost_gold、buff、self_status……）
 
     @property
     def name(self) -> str:
@@ -559,7 +560,7 @@ class Status(BaseModel):
                                      "prone": "倒在地上，还没爬起来"}[self.kind]
 
 
-EffectKind = Literal["poison", "bleed", "blind", "corrode", "whet", "cheer", "wound"]     # wound 重伤：受到的治疗 × value%
+EffectKind = Literal["poison", "bleed", "blind", "corrode", "whet", "cheer", "wound", "silence", "bless"]     # wound 重伤：受到的治疗 × value%
 # whet、cheer 是好的：whet 磨刀石，这一层伤害 +value；cheer 麦琪的"回头见❤"，攻击 +value%，left 是还剩几层
 
 
@@ -572,6 +573,7 @@ class Effect(BaseModel):
     left: int = 1
     label: str = ""
     source: str = ""                    # 谁弄的（倒下时记原因）
+    stat: str = ""                      # 祝福（bless）加的是什么：atk_pct / hit_pct / dodge / regen，value 是百分数
     hp: int = 0                         # 腐蚀临时扣掉的血量上限，消退时还回去
 
 

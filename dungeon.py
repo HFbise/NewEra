@@ -54,7 +54,7 @@ LOOT_NOT_YET: set[str] = set()         # 机制还没做的物品先不掉（第
 DEEP_DUNGEON = ("deep_dungeon_16.yaml", "deep_dungeon_21.yaml")      # 深层主题（themes / monsters / events）
 DEEP_LOOT, DEEP_ITEMS = "deep_loot.yaml", "deep_items.yaml"
 # 机制接完了的深层主题才进主题池（一个一个接，接完用模拟对一下再放进来）
-DEEP_READY = {"forge", "crystal"}
+DEEP_READY = {"forge", "crystal", "silent"}
 
 
 def _yaml(name: str) -> dict:
@@ -448,7 +448,8 @@ def _template(cur: Cursor, depth: int, kind: str, rank: str, theme: str, share: 
     for key in ("immune", "weak", "resist_element"):   # 不吃的状态、弱点、不怕的属性（熔炉的怪不怕火）
         if m.get(key):
             props[key] = m[key]
-    for key in ("healer", "verb", "guard_allies", "reflect_ranged", "shield_allies"):   # 治疗、出手的说法、护同伴、折回远程、套盾
+    for key in ("healer", "verb", "guard_allies", "reflect_ranged", "shield_allies", "dormant", "wake_noise", "hearing",
+                "bell", "silence_field", "noise_heal"):   # 治疗、出手的说法、护同伴、折回远程、套盾
         if m.get(key):
             props[key] = m[key]
     if rank == "boss" or fx.get("keen") or stair:
@@ -475,6 +476,19 @@ def _template(cur: Cursor, depth: int, kind: str, rank: str, theme: str, share: 
     return tid
 
 
+def floor_state(cur: Cursor, room_id: str) -> dict:
+    """这一层的整层状态（dungeon_floors.state）"""
+    run, depth = parse_room(room_id)
+    cur.execute("select state from dungeon_floors where run_id = %s and depth = %s", (run, depth))
+    row = cur.fetchone()
+    return (row and row["state"]) or {}
+
+
+def set_floor_state(cur: Cursor, room_id: str, values: dict) -> None:
+    run, depth = parse_room(room_id)
+    cur.execute("update dungeon_floors set state = state || %s where run_id = %s and depth = %s", (Jsonb(values), run, depth))
+
+
 def floor_info(cur: Cursor, room_id: str) -> dict:
     """地牢房间所在的那一层：depth、theme、party_size"""
     run, depth = parse_room(room_id)
@@ -482,11 +496,13 @@ def floor_info(cur: Cursor, room_id: str) -> dict:
     return cur.fetchone()
 
 
-def spawn_wanderer(cur: Cursor, room: str) -> str:
-    """游荡的怪跟进了房间（走路时的随机事件）：这一层主题里的普通怪，返回名字"""
+def spawn_wanderer(cur: Cursor, room: str, groups: int = 1) -> str:
+    """游荡的怪跟进了房间（走路时的随机事件、静默神殿声响满了）：这一层主题里的普通怪，返回名字"""
     f = floor_info(cur, room)
-    kind = random.choice(_kinds(data()["themes"][f["theme"]], f["depth"]))
-    _spawn_group(cur, room, f["depth"], kind, "normal", f["theme"], f["party_size"] or 1)
+    kind = random.choice([k for k in _kinds(data()["themes"][f["theme"]], f["depth"])
+                          if not data()["monsters"][k].get("dormant")] or _kinds(data()["themes"][f["theme"]], f["depth"]))
+    for _ in range(groups):
+        _spawn_group(cur, room, f["depth"], kind, "normal", f["theme"], f["party_size"] or 1, groups)
     return data()["monsters"][kind]["name"]
 
 
@@ -572,7 +588,9 @@ def spawn_minions(cur: Cursor, room: str, depth: int, kind: str, theme: str, cou
     names = []
     rank = "elite" if elite or depth >= ELITE_MINIONS_FROM else "normal"
     for _ in range(count):
-        _spawn(cur, room, depth, kind, rank, theme, hp_mult=SUMMON_HP, minion=True, loot=False)
+        npc_id = _spawn(cur, room, depth, kind, rank, theme, hp_mult=SUMMON_HP, minion=True, loot=False)
+        if data()["monsters"][kind].get("dormant"):          # 叫来的石像是醒着的
+            cur.execute("""update npcs set tally = tally || '{"awake": 1}' where id = %s""", (npc_id,))
         names.append(("凶悍的" if rank == "elite" else "") + data()["monsters"][kind]["name"])
     return names
 
@@ -814,6 +832,10 @@ def _arrive(cur: Cursor, player, run: UUID, depth: int, above: Optional[str], on
     cur.execute("update dungeon_runs set last_active_at = now() where id = %s", (run,))
     t = data()["themes"][theme]
     facts = [f"{player.name}来到了远古地牢第 {depth} 层：{t['name']}。{t['intro']}"] + arrived(cur, [player.name], depth)
+    if (player.flags or {}).get("_reveal_next") == depth:
+        reveal(cur, entry)
+        cur.execute("update players set flags = flags - '_reveal_next' where id = %s", (player.id,))
+        facts.append(f"禁言碑上读到的路在{player.name}脑子里一条条亮了起来：这一层的地图都知道了")
     if depth % BOSS_EVERY == 0:
         facts.append(f"这一层的楼梯间守着{t['boss']['name']}")
     return entry, facts

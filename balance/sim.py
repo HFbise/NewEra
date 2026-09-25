@@ -420,6 +420,8 @@ class Mon:
     regen: float = 0.0                  # 扎根：每轮回血
     stance: str = ""                    # 冷却 / 熔化（矮人王的铸像）
     stance_at: int = 0
+    rung: int = 0                       # 敲钟人摇铃加的攻击
+    bell_acts: int = 0
     shield: int = 0                     # 共鸣者套的光膜：挡下几次
     shield_acts: int = 0
 
@@ -493,8 +495,10 @@ def spawn(depth: int, kind: str, rank: str, theme_key: str, size: int, groups: i
     m = THEMES[theme_key]["boss"] if rank == "boss" else MONSTERS[kind]
     hp, atk, df = R.monster_stats(depth, m, rank)
     props = {k: m[k] for k in ("animal", "light_averse", "undead", "keen", "ranged", "healer", "on_hit", "guard_allies",
-                               "immune", "weak", "stances", "resist_element", "reflect_ranged", "shield_allies", "nodes")
-             if m.get(k)}
+                               "immune", "weak", "stances", "resist_element", "reflect_ranged", "shield_allies", "nodes",
+                               "dormant", "bell", "silence_field") if m.get(k)}
+    if m.get("hearing"):
+        props["keen"] = True                # 聆听者：偷袭要动身子，它听得见
     if m.get("pack"):
         props["pack"] = kind
     if boss_room:
@@ -565,6 +569,8 @@ def pick_target(mon: Mon, heroes: list[Hero], hits: dict) -> Hero:
 
 class Fight:
     def __init__(self, heroes: list[Hero], mons: list[Mon], light: int, cover: bool, depth: int):
+        # 沉睡的石像：只有吵起来才醒（说话、砸东西、被撞倒），安静地打大约一半的仗它一直睡着
+        mons = [m for m in mons if not (m.props.get("dormant") and random.random() < DORMANT_SLEEPS)] or mons[:1]
         self.heroes, self.mons, self.base_light, self.cover, self.depth = heroes, mons, light, cover, depth
         self.dist = {(id(h), id(m)): 2 for h in heroes for m in mons}      # START_DISTANCE
         self.hits: dict = {}
@@ -654,7 +660,7 @@ class Fight:
 
     def tick_turn(self, h: Hero) -> None:
         """中毒、看不清、腐蚀、重伤：每回合"""
-        for kind in ("poison", "blind", "corrode", "wound"):
+        for kind in ("poison", "blind", "corrode", "wound", "silence"):
             e = h.effects.get(kind)
             if not e:
                 continue
@@ -735,8 +741,8 @@ class Fight:
             live = self.alive()
             # 回礼：诺艾尔的书（每层一次，全场定住）、一口倒（每趟一次，放倒一只）
             ok = [m for m in live if m.rank != "boss" or not m.held]
-            if any(x.silence for x in live):
-                ok = []                          # 馆长禁了声，书念不了
+            if any(x.silence or x.props.get("silence_field") for x in live) or "silence" in h.effects:
+                ok = []                          # 馆长禁了声、大祭司在场、自己中了禁声：书念不了
             if "tome" in h.perks and "tome" not in h.floor_used and ok and (len(ok) >= 2 or ok[0].rank == "boss"):
                 h.floor_used.add("tome")
                 for m in ok:
@@ -809,7 +815,7 @@ class Fight:
         if "bleed" in h.effects:
             dmg = max(R.SCALE, math.floor(dmg * R.BLEED_DAMAGE))
         weak = m.props.get("weak")
-        if (weak == "pierce" and pierce) or (weak == "light" and self.light() >= R.LIGHT_BRIGHT):
+        if (weak == "pierce" and pierce) or (weak in ("light", "bright") and self.light() >= R.LIGHT_BRIGHT):
             dmg = math.ceil(dmg * R.WEAK_MULT)
         m.hp -= dmg
         m.threat[id(h)] = m.threat.get(id(h), 0) + dmg
@@ -959,6 +965,12 @@ class Fight:
 
     def enemy_act(self, m: Mon, h: Hero, mult: float = 1.0) -> None:
         props = m.props
+        if bell := props.get("bell"):
+            m.bell_acts += 1
+            if m.bell_acts % bell.get("every", 3) == 0:
+                for x in self.alive():
+                    x.rung += bell.get("atk", R.SCALE)      # 敲钟人摇铃：全场的怪这一场攻击加一截
+                return
         if sh := props.get("shield_allies"):
             m.shield_acts += 1
             bare = [n for n in self.alive() if n is not m and not n.props.get("inert") and n.shield <= 0]
@@ -1003,7 +1015,7 @@ class Fight:
             atk += m.props["frenzy"]
         if m.rank == "boss" and R.enraged(m.depth, ratio):
             atk += R.ENRAGE_ATK
-        atk += m.phase_atk + stance_of(m).get("atk", 0)
+        atk += m.phase_atk + stance_of(m).get("atk", 0) + m.rung
         marked = m.mark is h
         if marked:
             atk += m.mark_bonus
@@ -1074,6 +1086,7 @@ def stealth_level(depth: int) -> int:
     return min(8, 1 + depth // 4)
 
 
+DORMANT_SLEEPS = 0.5                    # 静默神殿：一场仗里沉睡的石像一直没被吵醒的几率
 HEAT_WALK, HEAT_QUENCH = 10, 8          # 灼热的一层战斗外大约几个动作、两瓶泉水压住几个
 SNEAK_LETHAL = 0.7                      # 偷袭时 AI 判成致命的比例（其余按重伤）
 SNEAK_PAST = 0.85                       # 潜行打法溜过一个房间的几率 = SNEAK_PAST ^ (1 + 群数)：一群 72%、两群 61%、三群 52%

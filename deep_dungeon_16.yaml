@@ -212,7 +212,7 @@ themes:
   # ======================= 静默神殿 =======================
   silent:
     name: 静默神殿
-    light: 25
+    light: 45                   # 初版25：模拟里太黑（越暗怪越凶，大祭司又禁了光明卷轴），头目团灭七成
     min_depth: 16
     noise:                      #声响：整层一个声响值，大声的动作会往上加；满了就引来游荡的怪
       max: 10
@@ -273,7 +273,7 @@ themes:
       - {name: 悬挂的铜钟, max_tier: heavy, noise: 5}        #用它（砸、推）会一下加 5 点声响
       - {name: 石像底座, max_tier: heavy}
       - {name: 巨大的香炉, max_tier: heavy}
-      - {name: 烛台架, max_tier: light}
+      - {name: 烛台架, max_tier: light, lamp: true}     # 点着的长明烛，砸了房间暗一截
       - {name: 长椅, max_tier: light}
     traps:
       - 一块地砖微微一沉，头顶一张沉重的铜网罩了下来
@@ -289,7 +289,7 @@ themes:
       name: 无舌的大祭司
       description: 一个身披白袍的高大身影，脸上罩着一张没有嘴的银面具，手里握着一只没有铃舌的铜铃，走路时白袍下摆拖过地面，一点声音都没有。
       persona: 他割掉了自己的舌头，好让神殿永远安静。他恨一切声音，谁在他面前出声，谁就是在亵渎。他出手的时候也不发出一点声响。
-      hp: 1.2
+      hp: 1.0                   # 初版1.2，模拟对到第 16 层普通档 41% / 5%
       atk: 10
       def: 10
       immune: [silence, blind]

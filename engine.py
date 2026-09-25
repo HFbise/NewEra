@@ -173,7 +173,8 @@ def forage_labels(cur: Cursor, room: Room) -> list[str]:
 
 
 SERVICE_NAMES = {"free_upgrade": "锻造纹（照着敲，能把手上的兵器再打磨一番）", "mirror_duel": "自己的倒影",
-                 "gem": "一颗宝石"}
+                 "gem": "一颗宝石", "wish": "一个愿望（投钱许愿，要安静）", "cleanse": "忏悔（清掉身上的晦气）",
+                 "reveal_next_floor": "碑文（下一层的路）"}
 
 
 def load_dispensers(cur: Cursor, room: Room, player_id: UUID) -> list[Dispenser]:
@@ -200,7 +201,7 @@ def load_dispensers(cur: Cursor, room: Room, player_id: UUID) -> list[Dispenser]
                       service=d.get("service"), bonus_gem=d.get("bonus_gem", 0.0),
                       once=d.get("once", False), repeat=d.get("repeat", False), skill=d.get("skill"),
                       difficulty=d.get("difficulty", 0), fail=d.get("fail", ""), fail_damage=d.get("fail_damage", 0),
-                      donate=d.get("donate", []), donated=donated.get(key, []),
+                      donate=d.get("donate", []), donated=donated.get(key, []), extra=d,
                       available=(d.get("repeat") or not owned & {d.get("item"), *d.get("unless", [])})
                       and not (d.get("once") and key in taken))
             for key, d in cfg.items()]
@@ -823,6 +824,7 @@ def _attack_extras(cur: Cursor, player: Player, npc: Npc, fired: list[dict]) -> 
             for other in [n for n in _enemies(cur, player.room_id) if n.id != npc.id]:
                 hurt, _ = _hurt_npc(cur, player, other, int(e.get("value", 1)))
                 facts += [f"{other.name}被扫到，受到 {e.get('value', 1)} 点伤害"] + hurt
+            facts += _noise(cur, player, "aoe")
         elif e["do"] == "self_damage":
             hurt, _ = _hurt_player(cur, player, int(e.get("value", 1)), "other", "手里的凶器")
             facts += [f"{player.name}自己掉了 {e.get('value', 1)} 点血"] + hurt
@@ -1328,6 +1330,50 @@ def _give_player_new(cur: Cursor, player: Player, template_id: str) -> None:
         cur.execute("insert into item_instances (template_id, player_id) values (%s, %s)", (template_id, player.id))
 
 
+WISHES = [("atk_pct", 15, "许愿池的祝福（攻击 +15%）"), ("dodge", 10, "许愿池的祝福（对方命中 -10%）"),
+          ("regen", 3, "许愿池的祝福（每回合回 3% 血）")]
+
+
+def _wish(cur: Cursor, player: Player, d: Dispenser) -> list[str]:
+    """许愿池：付 cost_gold × 层数的钱，这一层随机一个小祝福；整层声响已经到 fail_if_noise_at_least 就不灵（钱照付）"""
+    depth = dungeon.parse_room(player.room_id)[1]
+    cost = int(d.extra.get("cost_gold", 10)) * depth
+    if player.gold < cost:
+        raise ActionError(f"投一次要 {cost} 金币，{player.name}身上不够")
+    cur.execute("update players set gold = gold - %s where id = %s", (cost, player.id))
+    noise = int(dungeon.floor_state(cur, player.room_id).get("noise", 0))
+    if noise >= int(d.extra.get("fail_if_noise_at_least", 99)):
+        return [f"{player.name}往池里投了 {cost} 金币，钱币沉下去时却溅起了一圈水花：这一层太吵了，愿望不灵（声响 {noise}）"]
+    stat, pct, label = random.choice(WISHES)
+    _give_bless(cur, player, stat, pct, label)
+    return [f"{player.name}往池里轻轻投了 {cost} 金币，钱币无声地沉了下去", f"{player.name}得到了{label}，出了这一层就散"]
+
+
+def _cleanse(cur: Cursor, player: Player) -> list[str]:
+    """忏悔室：清掉身上所有减益（腐蚀扣的血量上限还回去），回血量上限的 15%"""
+    bad = [e for e in player.effects if e.kind not in ("whet", "cheer", "bless")]
+    back = sum(e.hp for e in bad)
+    player.effects = [e for e in player.effects if e not in bad]
+    _save_effects(cur, player)
+    gain = round((player.max_hp + back) * 0.15)
+    cur.execute("update players set max_hp = max_hp + %s, hp = least(max_hp + %s, hp + %s), status = null where id = %s",
+                (back, back, gain, player.id))
+    return [f"{player.name}在帘子后面轻声说完了自己做过的事，木板后面的人叹了口气",
+            f"{player.name}身上的晦气散了" + (f"（{'、'.join(EFFECT_NAMES[e.kind] for e in bad)}都消退了）" if bad else "")
+            + f"，回了 {gain} 点血"]
+
+
+def _read_stele(cur: Cursor, player: Player, d: Dispenser) -> list[str]:
+    """禁言碑：下一层进去时整层地图都知道；代价是接下来一阵子禁声（说不了话、念不了书卷）"""
+    depth = dungeon.parse_room(player.room_id)[1]
+    cur.execute("update players set flags = flags || jsonb_build_object('_reveal_next', %s::int) where id = %s", (depth + 1, player.id))
+    ss = d.extra.get("self_status") or {}
+    player.effects = [e for e in player.effects if e.kind != "silence"] + [
+        Effect(kind="silence", value=1, left=int(ss.get("actions", 10)), label="读完碑文说不出话", source="禁言碑")]
+    _save_effects(cur, player)
+    return [f"{player.name}一行行读完了碑文，下一层的路都记在了心里", f"读完以后{player.name}喉咙发紧，很长一段时间都说不出话来（禁声）"]
+
+
 def _mirror_duel(cur: Cursor, player: Player, d: Dispenser) -> list[str]:
     """镜厅：镜子里走出一个照着他打出来的倒影（血六成，攻防跟他一样），打死了掉宝石和晶粉"""
     f = dungeon.floor_info(cur, player.room_id)
@@ -1399,6 +1445,12 @@ def _take_from(cur: Cursor, player: Player, view: RoomView, d: Dispenser) -> lis
         return facts + _free_upgrade(cur, player, d)
     if d.service == "mirror_duel":
         return facts + _mirror_duel(cur, player, d)
+    if d.service == "wish":
+        return facts + _wish(cur, player, d)
+    if d.service == "cleanse":
+        return facts + _cleanse(cur, player)
+    if d.service == "reveal_next_floor":
+        return facts + _read_stele(cur, player, d)
     if d.item == "gem":
         f = dungeon.floor_info(cur, player.room_id)
         gem = dungeon.put_gem(cur, dungeon.pick_gem(f["theme"]), f["depth"], player=player.id)
@@ -1629,20 +1681,72 @@ def _room_light(cur: Cursor, player: Player, view: RoomView, item: ItemInstance,
     """光明卷轴：这个房间光亮 +N，走出房间就散了"""
     if not view.room.props.get("env"):
         raise ActionError("这里够亮了，用不着")
-    if who := _silenced(cur, player.room_id):
-        raise ActionError(f"{who}禁了声，{item.name}上的字都暗着，念不出来（等它再出手几次）")
+    if who := _silenced(cur, player.room_id, player):
+        raise ActionError(f"{who}禁了声，{item.name}上的字都暗着，念不出来")
     _consume(cur, item)
+    noise = _noise(cur, player, "read")
     cur.execute("""update rooms set props = jsonb_set(props, '{env,scroll}', %s) where id = %s""",
                 (Jsonb({"value": int(_prop(item, "room_light")), "by": str(player.id)}), player.room_id))
-    return [f"{player.name}展开{item.name}，上面的字一个接一个亮起来，把整个房间照得雪亮"]
+    return [f"{player.name}展开{item.name}，上面的字一个接一个亮起来，把整个房间照得雪亮"] + noise
+
+
+def _feature_cfg(cur: Cursor, room_id: str, name: str) -> dict:
+    """这个环境物件在主题里的配置（on_break、noise、clears_fog）"""
+    if not dungeon.is_dungeon(room_id):
+        return {}
+    theme = dungeon.floor_info(cur, room_id)["theme"]
+    return next((f for f in dungeon.data()["themes"][theme].get("features", []) if f["name"] == name), {})
+
+
+# ============ 声响（静默神殿 theme.noise）============
+# 整层一个声响值（dungeon_floors.state.noise），出声的动作往上加：说话 1、念书卷 2、砸碎重物 2、重伤以上的一下 1、
+# 群伤 2、被撞倒 1、逃跑 1，铜钟这种物件自己定。房间也记一份（rooms.env.noise），到了石像的 wake_noise 它就醒。
+# 满了（max，装备 noise_max_add 往上加）引来游荡的怪直接扑进这个房间（21 层起一群），声响回落到 reset_to。
+# 大祭司在场时每个出声的动作给他回血量上限的 noise_heal
+def _noise(cur: Cursor, player: Player, what, heal: bool = True) -> list[str]:
+    room = player.room_id
+    if not what or not dungeon.is_dungeon(room):
+        return []
+    cfg = dungeon.data()["themes"][dungeon.floor_info(cur, room)["theme"]].get("noise")
+    if not cfg:
+        return []
+    amount = int(cfg.get("add", {}).get(what, 0)) if isinstance(what, str) else int(what)
+    if mults := [e.get("value", 1) for e in _fx(_worn(cur, player), "noise_mult")]:
+        amount = round(amount * min(mults))         # 软底靴这类：声响 ×value（取最好的一件）
+    if amount <= 0:
+        return []
+    top = int(cfg.get("max", 10) + gear_add(cur, player, "noise_max_add"))
+    noise = int(dungeon.floor_state(cur, room).get("noise", 0)) + amount
+    env = _room_env(cur, room)
+    here = int(env.get("noise", 0)) + amount
+    cur.execute("update rooms set props = jsonb_set(props, '{env,noise}', to_jsonb(%s::int)) where id = %s", (here, room))
+    facts = [f"（声响 {min(noise, top)}/{top}）"]
+    for n in load_npcs(cur, "n.room_id = %s and n.alive and (t.props->>'dormant')::boolean", (room,)):
+        if not _tally(cur, n, "awake") and here >= int(n.template.props.get("wake_noise", 3)):
+            _tally_merge(cur, n, {"awake": 1})
+            facts.append(f"{n.name}眼皮上的石屑簌簌往下掉：它被吵醒了")
+    if heal:
+        for n in _enemies(cur, room):
+            if (pct := n.template.props.get("noise_heal")) and n.hp < n.template.max_hp:
+                gain = min(n.template.max_hp - n.hp, max(1, round(n.template.max_hp * pct)))
+                cur.execute("update npcs set hp = hp + %s where id = %s", (gain, n.id))
+                facts.append(f"{n.name}的银面具微微一亮，那一声让他回了 {gain} 点血")
+    if noise >= top:
+        full = cfg.get("full", {})
+        noise = int(full.get("reset_to", 5))
+        depth = dungeon.parse_room(room)[1]
+        name = dungeon.spawn_wanderer(cur, room, 2 if depth >= 21 else 1)
+        st = _stealth(player)
+        st.detected, st.hidden = True, False
+        _save_stealth(cur, player, st)
+        facts.append(f"声音在整座神殿里回荡开去，远处传来急促的脚步：{name}循着声音直扑了进来")
+    dungeon.set_floor_state(cur, room, {"noise": noise})
+    return facts
 
 
 def _feature_break(cur: Cursor, room_id: str, name: str) -> list[str]:
     """环境物件用掉以后（on_break）：打碎晶簇，房间暗下来"""
-    if not dungeon.is_dungeon(room_id):
-        return []
-    theme = dungeon.floor_info(cur, room_id)["theme"]
-    ft = next((f for f in dungeon.data()["themes"][theme].get("features", []) if f["name"] == name), {})
+    ft = _feature_cfg(cur, room_id, name)
     if not (brk := ft.get("on_break")) or "light" not in brk:
         return []
     env = _room_env(cur, room_id)
@@ -1723,8 +1827,8 @@ def _stun(cur: Cursor, player: Player, view: RoomView, item: ItemInstance, targe
     foes = _enemies(cur, player.room_id)
     if not foes:
         raise ActionError(f"这里没有敌人，{item.name}念了也没用")
-    if who := _silenced(cur, player.room_id):
-        raise ActionError(f"{who}禁了声，{item.name}上的字都暗着，念不出来（等它再出手几次）")
+    if who := _silenced(cur, player.room_id, player):
+        raise ActionError(f"{who}禁了声，{item.name}上的字都暗着，念不出来")
     # 这一仗已经被控过的头目不吃这一套；房间里只剩它的话书先不念（不白白用掉这一层的次数）
     immune = [n for n in foes if _boss_resists(cur, n, mark=False)]
     if immune and len(immune) == len(foes):
@@ -2145,6 +2249,8 @@ def _pvp_target(cur: Cursor, player: Player, name: str) -> Player:
 
 def _hurt_npc(cur: Cursor, player: Player, npc: Npc, dmg: int) -> tuple[list[str], bool]:
     """扣 NPC 血，返回 (facts, 是否死了)。死了掉东西，击杀标记算整支队伍的"""
+    if npc.template.props.get("dormant") and not _tally(cur, npc, "awake"):
+        _tally_merge(cur, npc, {"awake": 1})          # 挨了打的石像醒了
     if dmg > 0 and _tally(cur, npc, "shield") > 0:
         cur.execute("""update npcs set tally = tally || jsonb_build_object('shield', (tally->>'shield')::int - 1) where id = %s""", (npc.id,))
         return [f"{npc.name}身上那层嗡嗡作响的光膜挡下了这一下，碎了（HP {npc.hp}/{npc.template.max_hp}）"], False
@@ -2314,6 +2420,7 @@ def _npc_strike(cur: Cursor, player: Player, npc: Npc, verb: str, chance: float 
     if props.get("skills"):
         atk += int(_tallies(cur, npc).get("phase_atk", 0))     # 转阶段加的攻击
     atk += int(_stance(cur, npc)[1].get("atk", 0))             # 矮人王的铸像：冷却时手软、熔化时手重
+    atk += int(_tallies(cur, npc).get("rung", 0))               # 敲钟人摇过铃
     marked = props.get("skills") and _tallies(cur, npc).get("mark") == str(player.id)
     if marked:
         atk += int(_tallies(cur, npc).get("mark_bonus", 2))     # 典狱长判了罪的人
@@ -2384,7 +2491,8 @@ def _set_distance(st: Stealth, npc: Npc, d: int) -> int:
 # 看不清：光亮算 0（命中只剩 5%）；腐蚀：防御 -value、血量上限临时扣 hp（消退还回来）。
 # 同一种再中一次只刷新时间。住店、扎营、被扶起来、急救都会清掉
 EFFECT_NAMES = {"poison": "中毒", "bleed": "流血", "blind": "看不清", "corrode": "腐蚀", "whet": "磨利", "cheer": "浑身是劲",
-                "wound": "重伤"}
+                "wound": "重伤", "silence": "禁声", "bless": "祝福"}
+FLOOR_EFFECTS = ("whet", "bless")       # 只管这一层的（source 记 run:depth），换了一层就散
 # 住店、扎营、被扶起来清掉的只是坏效果，磨利、浑身是劲这种好的留着（那几处 update 里直接写了 jsonb 过滤）
 # 清掉所有效果时把腐蚀扣的血量上限还回去（SQL 片段，用在 update players set ... 里，得在改 hp 之前算）
 RESTORE_MAX_HP = "coalesce((select sum((e->>'hp')::int) from jsonb_array_elements(effects) e), 0)"
@@ -2444,7 +2552,7 @@ def _inflict(cur: Cursor, player: Player, kind: str, label: str, depth: int, sou
         _set_status(cur, "players", player.id, st)
         player.status = st
         return [f"{player.name}{label}" + ("，得先挣脱" if kind == "restrained" else "，得先爬起来" if kind == "prone"
-                                            else "，失去战斗能力")]
+                                            else "，失去战斗能力")] + (_noise(cur, player, "fall") if kind == "prone" else [])
     label = label or EFFECT_NAMES[kind]
     # 中毒、流血按那一下的伤害算（value_mult：这只怪的毒、血口子轻一点）；腐蚀、看不清照旧
     value = dot_value(kind, base, depth, value_mult) if kind != "wound" else round(100 * (0.5 if heal_mult is None else heal_mult))
@@ -2461,7 +2569,8 @@ def _inflict(cur: Cursor, player: Player, kind: str, label: str, depth: int, sou
             "bleed": f"接下来 {e.left} 个动作每动一下掉 {value} 点血，使不上劲",
             "blind": "这一回合什么都看不清",
             "wound": f"接下来 {e.left} 回合受到的治疗" + ("全都不起作用" if value == 0 else f"只剩 {value}%") + "，药草、绷带解不了",
-            "corrode": ""}[kind]
+            "silence": f"接下来 {e.left} 回合说不出话，也念不了书和卷轴",
+            "corrode": ""}.get(kind, "")
     if kind == "corrode":
         e.hp = min(player.max_hp - 1, max(1, round(player.max_hp * CORRODE_HP)))
         player.max_hp -= e.hp
@@ -2471,6 +2580,22 @@ def _inflict(cur: Cursor, player: Player, kind: str, label: str, depth: int, sou
     player.effects.append(e)
     _save_effects(cur, player)
     return [f"{player.name}{label}（{EFFECT_NAMES[kind]}：{what}）"]
+
+
+def _floor_tag(room_id: str) -> str:
+    run, depth = dungeon.parse_room(room_id)
+    return f"{run.hex}:{depth}"
+
+
+def _bless(player: Player, stat: str) -> float:
+    """这一层身上的祝福（许愿池、清醒梦、星图）加的比例"""
+    return sum(e.value / 100 for e in player.effects if e.kind == "bless" and e.stat == stat)
+
+
+def _give_bless(cur: Cursor, player: Player, stat: str, pct: int, label: str) -> None:
+    player.effects = [e for e in player.effects if not (e.kind == "bless" and e.stat == stat)] + [
+        Effect(kind="bless", value=pct, left=1, label=label, source=_floor_tag(player.room_id), stat=stat)]
+    _save_effects(cur, player)
 
 
 def _tick_effects(cur: Cursor, player: Player, unit: str) -> list[str]:
@@ -2483,12 +2608,18 @@ def _tick_effects(cur: Cursor, player: Player, unit: str) -> list[str]:
         if e.kind == "cheer":
             keep.append(e)                      # 按层数算，下到新的一层才减（_torch_floor）
             continue
-        if e.kind == "whet":
+        if e.kind in FLOOR_EFFECTS:
+            if unit == "turn" and e.kind == "bless" and e.stat == "regen" and player.hp < player.max_hp \
+                    and dungeon.is_dungeon(player.room_id) and e.source == _floor_tag(player.room_id):
+                # 许愿池的回血祝福：每回合回一点
+                gain = min(player.max_hp - player.hp, max(1, round(player.max_hp * e.value / 100)))
+                cur.execute("update players set hp = hp + %s where id = %s", (gain, player.id))
+                player.hp += gain
             if unit == "turn" and dungeon.is_dungeon(player.room_id) and e.source != "{}:{}".format(
                     dungeon.parse_room(player.room_id)[0].hex, dungeon.parse_room(player.room_id)[1]):
-                facts.append(f"{player.name}武器上磨出来的锋利劲过去了")
+                facts.append(f"{player.name}武器上磨出来的锋利劲过去了" if e.kind == "whet" else f"{player.name}身上的{e.label}散了")
             elif unit == "turn" and not dungeon.is_dungeon(player.room_id):
-                facts.append(f"{player.name}武器上磨出来的锋利劲过去了")
+                facts.append(f"{player.name}武器上磨出来的锋利劲过去了" if e.kind == "whet" else f"{player.name}身上的{e.label}散了")
             else:
                 keep.append(e)
             continue
@@ -2609,8 +2740,12 @@ def _save_stealth(cur: Cursor, player: Player, st: Stealth) -> None:
 
 def _enemies(cur: Cursor, room_id: str) -> list[Npc]:
     """在场、活着的敌人"""
-    return [n for n in load_npcs(cur, "n.room_id = %s and n.alive", (room_id,), lock=True)
+    return [n for n in load_npcs(cur, f"n.room_id = %s and n.alive and {AWAKE_SQL}", (room_id,), lock=True)
             if n.template.hostile and n.combatable]
+
+
+# 沉睡的（石面守像，props.dormant）：房间声响到 wake_noise 或者挨了打才醒（npcs.tally.awake），醒之前不算敌人
+AWAKE_SQL = "not (coalesce((t.props->>'dormant')::boolean, false) and not coalesce((n.tally->>'awake')::boolean, false))"
 
 
 def do_maneuver(cur: Cursor, player: Player, view: RoomView, a: Maneuver) -> list[str]:
@@ -2694,9 +2829,25 @@ def do_dodge(cur: Cursor, player: Player, view: RoomView, a: Dodge) -> list[str]
     return [f"{player.name}{a.description or '摆好架势，准备闪避'}"]
 
 
+STILL_ACTIONS = {"hide", "look", "close_eyes", "reject"}     # 不算"动了身子"的（聆听者听不见）
+
+
+def _heard(enemies: list[Npc], done: list) -> Optional[str]:
+    """聆听者（props.hearing）：躲着的人这一轮除了躲藏还动了身子，就听得出他在哪"""
+    ears = [n for n in enemies if n.template.props.get("hearing") and n.status is None]
+    if ears and any(a.action not in STILL_ACTIONS for a, _ in done):
+        return f"{ears[0].name}的大耳朵一张，转向了{{who}}：它听见了动静"
+    return None
+
+
 def _dodge_bonus(player: Player) -> float:
     """闪避让对方这一下命中率降多少：察觉越高降得越多"""
     return DODGE_BONUS + DODGE_PER_LEVEL * skill_level(player.skills.get("perception", 0))
+
+
+def _evade(player: Player, dodged: bool) -> float:
+    """这一轮对方命中率降多少：闪避了按察觉算，另外加许愿池的闪避祝福"""
+    return (_dodge_bonus(player) if dodged else 0.0) + _bless(player, "dodge")
 
 
 PERCEPTION_DETECT = {-1: 0.5, 0: 1.0, 1: 1.5}     # 怪的察觉（迟钝 / 普通 / 敏锐）：被发现的几率乘多少
@@ -2860,6 +3011,9 @@ def enemy_turn(conn: Connection, player_id: UUID, actions: list[PlayerAction],
                 st.hidden, st.detected, hid = True, False, True
             elif a.action == "dodge" and r.success:
                 dodge = True
+        if hid and (heard := _heard(alive, done)):
+            st.hidden, st.detected, hid, seen = False, True, False, True
+            ticked.append(heard.replace("{who}", player.name))
         stood = ticked + _enemies_stand(cur, alive)          # 倒地的这一轮爬起来，不算打断
         if hid and enemies and seen:
             # 躲起来了：别的怪跟丢了他，贴身的那几只摸黑乱挥（命中减半）
@@ -2887,7 +3041,7 @@ def enemy_turn(conn: Connection, player_id: UUID, actions: list[PlayerAction],
                     + DETECT_PER_FOE * (len(enemies) - 1)
                 st.chance = round(min(1.0, st.chance + step), 2)
         # 闪避：察觉越高躲得越好
-        dodge_bonus = _dodge_bonus(player) if dodge else 0.0
+        dodge_bonus = _evade(player, dodge)
         if _room_env(cur, player.room_id).get("ground") == "water" and not gear_has(cur, player, "wade"):
             dodge_bonus /= 2                    # 积水泥泞，躲不利索（沼泽高筒靴不怕）
         if st.detected:
@@ -2952,7 +3106,8 @@ def in_round(cur: Cursor, room_id: str, player_id: UUID) -> bool:
 def _monster_fight(cur: Cursor, room_id: str) -> bool:
     """房间里有活着的敌人"""
     cur.execute("""select 1 from npcs n join npc_templates t on t.id = n.template_id
-                   where n.room_id = %s and n.alive and t.hostile and t.max_hp is not null limit 1""", (room_id,))
+                   where n.room_id = %s and n.alive and t.hostile and t.max_hp is not null and """ + AWAKE_SQL + " limit 1",
+                (room_id,))
     return cur.fetchone() is not None
 
 
@@ -3122,6 +3277,9 @@ def round_enemies(conn: Connection, room_id: str, done: dict[UUID, list[tuple[Pl
                     st.hidden, st.detected, hid = True, False, True
                 elif a.action == "dodge" and r.success:
                     dodge = True
+            if hid and (heard := _heard(enemies, done.get(p.id, []))):
+                st.hidden, st.detected, hid, seen = False, True, False, True
+                facts.append(heard.replace("{who}", p.name))
             if enemies and not hid and not st.detected:
                 keen = any(n.template.props.get("keen") for n in enemies)
                 if keen or _roll(min(1.0, st.chance * _sharpness(enemies))):
@@ -3131,7 +3289,7 @@ def round_enemies(conn: Connection, room_id: str, done: dict[UUID, list[tuple[Pl
                     step = max(DETECT_STEP_MIN, DETECT_STEP - 0.01 * skill_level(p.skills.get("stealth", 0))) \
                         + DETECT_PER_FOE * (len(enemies) - 1)
                     st.chance = round(min(1.0, st.chance + step), 2)
-            bonus = _dodge_bonus(p) if dodge else 0.0
+            bonus = _evade(p, dodge)
             if _room_env(cur, room_id).get("ground") == "water" and not gear_has(cur, p, "wade"):
                 bonus /= 2
             entry = {"p": p, "st": st, "dodge": bonus, "hit": 1.0}
@@ -3317,6 +3475,11 @@ def _skill_effect(cur: Cursor, npc: Npc, s: dict, targets: list[Player], depth: 
                     if hard:
                         continue
                     hard = True
+                if k == "silence" and npc.template.props.get("silence_field"):
+                    # 无舌的大祭司：禁声打在人身上（说不了话、念不了书卷）
+                    facts += _inflict(cur, p, "silence",
+                                      e.get("label", "喉咙一紧，发不出声音"), depth, npc.name, turns=e.get("turns"))
+                    continue
                 if k == "silence":
                     _tally_merge(cur, npc, {"silence": e.get("turns", 2)})
                     facts.append(f"（{npc.name}接下来出手 {e.get('turns', 2)} 次之内，谁都念不了书和卷轴）")
@@ -3395,9 +3558,13 @@ def _skill_effect(cur: Cursor, npc: Npc, s: dict, targets: list[Player], depth: 
     return facts
 
 
-def _silenced(cur: Cursor, room_id: str) -> Optional[str]:
-    """房间里有头目禁了声：返回它的名字"""
-    return next((n.name for n in _enemies(cur, room_id) if n.template.props.get("skills") and _tallies(cur, n).get("silence")), None)
+def _silenced(cur: Cursor, room_id: str, player: Optional[Player] = None) -> Optional[str]:
+    """念不了书卷：房间里有头目禁了声（或者在场就禁声的大祭司），或者这人自己中了禁声。返回谁弄的"""
+    if player and (e := _effect(player, "silence")):
+        return e.source or "禁声"
+    return next((n.name for n in _enemies(cur, room_id)
+                 if n.template.props.get("silence_field") or (n.template.props.get("skills") and _tallies(cur, n).get("silence"))),
+                None)
 
 
 def _extra_acts(cur: Cursor, npc: Npc) -> int:
@@ -3421,6 +3588,12 @@ def _enemy_act(cur: Cursor, player: Player, st: Stealth, npc: Npc, dodge: float,
                hit: float = 1.0, dmg: float = 1.0) -> list[str]:
     """hit：命中倍数（躲起来那一轮贴身的怪摸黑乱挥是 HIDDEN_HIT）；dmg：伤害倍数（深层头目第二下）"""
     props = npc.template.props
+    if (bell := props.get("bell")) and _count(cur, npc, "bell_acts") % bell.get("every", 3) == 0:
+        # 敲钟人：摇一次铃，这一场全场的怪攻击都加一截，声响跟着涨
+        for n in _enemies(cur, npc.room_id):
+            _tally_merge(cur, n, {"rung": _tally(cur, n, "rung") + int(bell.get("atk", SCALE))})
+        return [f"{npc.name}松开了手，铜铃叮的一声响彻大殿：所有的怪都红了眼（攻击 +{bell.get('atk', SCALE)}）"] \
+            + _noise(cur, player, int(bell.get("noise", 3)), heal=False)
     if (sh := props.get("shield_allies")) and _count(cur, npc, "shield_acts") % sh.get("every", 3) == 0:
         # 共鸣者：每出手几次给一个没盾的同伴套一层能挡一下的光膜
         allies = [n for n in _enemies(cur, npc.room_id) if n.id != npc.id and not n.template.props.get("inert")
@@ -3603,7 +3776,7 @@ def do_attack(cur: Cursor, player: Player, view: RoomView, a: Attack) -> list[st
 # 命中表：rules.RANGED_HIT、STEADY_HIT、BLIND_HIT、SMOKE_*
 
 
-WEAK_WORDS = {"fire": "怕火", "pierce": "甲缝", "light": "怕光", "holy": "怕圣物", "poison": "怕毒", "water": "怕水"}
+WEAK_WORDS = {"fire": "怕火", "pierce": "甲缝", "light": "怕光", "bright": "怕光", "holy": "怕圣物", "poison": "怕毒", "water": "怕水"}
 
 
 def _weak_spot(cur: Cursor, player: Player, npc: Npc, melee: list[ItemInstance], shooter: Optional[ItemInstance],
@@ -3623,7 +3796,7 @@ def _weak_spot(cur: Cursor, player: Player, npc: Npc, melee: list[ItemInstance],
         hit = ammo_fire or any(_prop(w, "fire") for w in ([shooter] if shooter else melee))
     elif weak == "pierce":
         hit = any(e.get("do") == "pierce" for e in fired)
-    elif weak == "light":
+    elif weak in ("light", "bright"):
         hit = _light(cur, npc.room_id) >= LIGHT_BRIGHT
     return WEAK_WORDS.get(weak, weak) if hit else None
 
@@ -3649,7 +3822,7 @@ def _choose_weapons(weapons: list[ItemInstance], d: int, want: Optional[ItemInst
 
 def _how(player: Player, melee: list[ItemInstance], shooter: Optional[ItemInstance]) -> tuple[str, int]:
     """(怎么打的说法, 攻击力)"""
-    cheer = 1 + (_effect(player, "cheer").value / 100 if _effect(player, "cheer") else 0)
+    cheer = 1 + (_effect(player, "cheer").value / 100 if _effect(player, "cheer") else 0) + _bless(player, "atk_pct")
     if shooter:
         verb = f"从{shooter.name}里抽出一把掷向" if _prop(shooter, "thrown") else f"端起{shooter.name}射向"
         return verb, int((player.attack + shooter.damage) * cheer + 0.5)
@@ -3848,6 +4021,11 @@ def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]
                     (feature["id"],))
     env = _room_env(cur, player.room_id)
     doused = _feature_break(cur, player.room_id, feature["name"]) if feature and feature["uses_left"] <= 1 else []
+    if feature:
+        doused += _noise(cur, player, _feature_cfg(cur, player.room_id, feature["name"]).get("noise")
+                         or ("break" if feature["max_tier"] in ("heavy", "lethal") else 0))
+    if a.tier in ("heavy", "lethal"):
+        doused += _noise(cur, player, "heavy_hit")
     if feature and feature["key"] in env.get("lamps", []):
         # 火盆、烛台被拿去砸人：灯灭了，房间暗下来
         dimmer = max(0, _base_light(env) - dungeon.LAMP_LIGHT)
@@ -5028,6 +5206,8 @@ def do_respawn(cur: Cursor, player: Player, view: RoomView, a: Respawn) -> list[
 
 
 def do_say(cur: Cursor, player: Player, view: RoomView, a: Say) -> list[str]:
+    if _effect(player, "silence"):
+        raise ActionError(f"{player.name}喉咙像被堵住了，一个字也说不出来（禁声，过一会儿才好）")
     if a.target is None:
         return [f"{player.name}说：“{a.message}”"]
     cur.execute("select 1 from players where room_id = %s and name = %s and id <> %s",
@@ -5118,6 +5298,9 @@ def execute(conn: Connection, view: RoomView, action: PlayerAction) -> ActionRes
                 raise
 
 
+NOISY = {"say": "talk", "talk": "talk", "flee": "flee"}      # 执行完加声响的动作（静默神殿）
+
+
 def execute_all(conn: Connection, view: RoomView, actions: list[PlayerAction], enemies: bool = True) -> list[ActionResult]:
     """按顺序执行，前一步失败就中断。玩家每做 ENEMY_EVERY 个动作，同区域的敌人行动一次（发现、逼近、攻击、爬起来），
     一句话结尾不够数也行动一次；facts 接在那一轮最后一个动作后面，results 和执行了的 actions 一一对应。
@@ -5131,6 +5314,10 @@ def execute_all(conn: Connection, view: RoomView, actions: list[PlayerAction], e
             action.message = slur(action.message)
         result = execute(conn, view, action)
         result.facts[:0], pending = pending, []
+        if result.success and action.action in NOISY and dungeon.is_dungeon(view.room.id):
+            with conn.transaction():
+                cur = _cursor(conn)
+                result.facts += _noise(cur, load_player(cur, view.player.id), NOISY[action.action])
         if action.action in ("equip", "unequip", "drop", "give", "sell"):
             with conn.transaction():
                 result.facts += _sync_gear_hp(_cursor(conn), view.player.id)

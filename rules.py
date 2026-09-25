@@ -91,7 +91,7 @@ OFFHAND_SHARE = 0.5                     # 双持时副手（左手）武器只�
 # ============ 负面效果 ============
 # 玩家身上的：中毒每回合掉血、命中和判定 -POISON_HIT；流血每个动作掉血、打出的伤害 ×BLEED_DAMAGE；
 # 看不清命中 ×BLIND_HIT；腐蚀防御 -value、血量上限临时扣 CORRODE_HP
-EFFECT_TURNS = {"poison": 3, "bleed": 4, "blind": 1, "corrode": 3, "wound": 3}      # wound 重伤：受到的治疗打折
+EFFECT_TURNS = {"poison": 3, "bleed": 4, "blind": 1, "corrode": 3, "wound": 3, "silence": 2}      # wound 重伤：受到的治疗打折
 POISON_HIT, BLEED_DAMAGE, CORRODE_HP = 0.15, 0.85, 0.15
 BLEED_VALUE = 0.5                       # 流血按动作跳（一个敌人回合跳两次），每跳只有中毒的一半，算下来跟中毒持平
 # 怪身上的（玩家装备打上去的）

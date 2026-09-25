@@ -359,6 +359,7 @@ create table dungeon_floors (
   camped      uuid[] not null default '{}',     -- 在这一层扎过营的人（每层每人一次）
   seen        int[] not null default '{}',      -- 这一层走过的格子（小地图，全队共用这份地牢）
   revealed    boolean not null default false,   -- 用地图残片显出了整层
+  state       jsonb not null default '{}',       -- 整层的状态：声响（静默神殿）、雾散了没有、星光周期……
   last_active_at timestamptz not null default now(),  -- 这一层最后有人走动的时间：没人在、STALE 没动静就删掉这一层
   primary key (run_id, depth)
 );
