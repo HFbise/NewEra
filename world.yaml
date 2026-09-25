@@ -222,14 +222,14 @@ items:
     type: armor
     slot: hand
     defense: 2
-    props: {price: 10}
+    props: {price: 10, block: 0.10}      # 格挡：几率完全挡下一击（跟闪避合计最多 30%）
   iron_shield:
     name: 铁盾
     description: 一面沉甸甸的铁皮盾，边缘有好几道砍痕，举起来能挡住大半个身子。占一只手。
     type: armor
     slot: hand
     defense: 3
-    props: {price: 30}
+    props: {price: 30, block: 0.15}
   chain_mail:
     name: 锁子甲
     description: 用成千上万个铁环编成的甲衣，穿上身沉，但刀砍上去只擦出火星。

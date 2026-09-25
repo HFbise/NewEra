@@ -1091,7 +1091,7 @@ def decide_give(db, view: RoomView, text: str, npc: Npc, giveable: list[ItemInst
                      for ref, s in sell_refs.items()) or "无"
     user = (f"<npc>\n名字：{npc.name}\n人设：{npc.template.persona}\n对玩家的好感：{affinity}（{engine.affinity_word(affinity)}）\n"
             f"对这个玩家的记忆：{memory or '第一次见面'}\n"
-            f"玩家做过的事：{'、'.join(view.player.flags) or '无'}\n可给物品：{gives}\n能现做的种类：{kinds}\n"
+            f"玩家做过的事：{'、'.join(f for f in view.player.flags if not f.startswith('_')) or '无'}\n可给物品：{gives}\n能现做的种类：{kinds}\n"
             f"卖货清单：{goods}\n"
             f"你做过的货：{made_text(made_before)}\n</npc>\n\n"
             f"<player>{view.player.name}，身上有 {view.player.gold} 金币</player>\n\n"
@@ -1350,7 +1350,7 @@ def narrate(db, view: RoomView, text: str, results: list[ActionResult],
              + (f"；{duel_text(view)}" if duel_text(view) else "")
              + f"\n装备着：{held}\n身上带着：{carried}\n金币：{view.player.gold}（这回合买卖之后剩下的，付了多少看 facts）</player>"]
     if npc:
-        deeds = "、".join(view.player.flags) or "无"
+        deeds = "、".join(f for f in view.player.flags if not f.startswith("_")) or "无"
         # NPC 能给的东西玩家已经有了：明说，免得玩家再要时 NPC 编别的理由（"钥匙给了别人"）
         gives = npc.template.props.get("gives", {})
         owned = [i.name for i in view.inventory if i.template.id in gives and i.name not in just_got]

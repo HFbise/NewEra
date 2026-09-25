@@ -316,9 +316,13 @@ def _template(cur: Cursor, depth: int, kind: str, rank: str, theme: str, share: 
         props["keen"] = True                    # 头目都是警觉的：一进门就发现人，偷袭不了
     if m.get("on_hit"):
         props["on_hit"] = m["on_hit"]           # 打中时几率附带的效果（engine._on_hit）
+    # 已经有了也按现在的数值更新：不然改了 dungeon.yaml、rules.monster_stats，以前生成过的层数、种类还是旧数值
     cur.execute(
         """insert into npc_templates (id, name, description, persona, hostile, max_hp, attack, defense, props)
-           values (%s, %s, %s, %s, true, %s, %s, %s, %s) on conflict (id) do nothing""",
+           values (%s, %s, %s, %s, true, %s, %s, %s, %s)
+           on conflict (id) do update set name = excluded.name, description = excluded.description,
+               persona = excluded.persona, max_hp = excluded.max_hp, attack = excluded.attack,
+               defense = excluded.defense, props = excluded.props""",
         (tid, name, description, m["persona"], hp, atk, df, Jsonb(props)))
     return tid
 

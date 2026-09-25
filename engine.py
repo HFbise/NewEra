@@ -636,8 +636,9 @@ def _ally_down(cur: Cursor, player: Player) -> bool:
     return cur.fetchone() is not None
 
 
-def _fire(cur: Cursor, player: Player, when: str, do: Optional[str] = None, npc: Optional[Npc] = None) -> list[dict]:
-    """这一刻（when）身上装备触发了哪些效果：对得上 vs 标签、满足 if 条件、掷中 chance 的"""
+def _fire(cur: Cursor, player: Player, when: str, do: Optional[str] = None, npc: Optional[Npc] = None,
+          roll: bool = True) -> list[dict]:
+    """这一刻（when）身上装备触发了哪些效果：对得上 vs 标签、满足 if 条件、掷中 chance 的（roll=False 不掷，只看条件）"""
     out = []
     for e in (e for i in _worn(cur, player) for e in (_prop(i, "effects") or [])
               if e.get("when") == when and (do is None or e.get("do") == do)):
@@ -650,7 +651,7 @@ def _fire(cur: Cursor, player: Player, when: str, do: Optional[str] = None, npc:
             continue
         if cond.get("ally_down") and not _ally_down(cur, player):
             continue
-        if e.get("chance", 1) < 1 and not _roll(e["chance"]):
+        if roll and e.get("chance", 1) < 1 and not _roll(e["chance"]):
             continue
         out.append(e)
     return out
@@ -936,6 +937,8 @@ def do_move(cur: Cursor, player: Player, view: RoomView, a: Move) -> list[str]:
             facts += dungeon.arrived(cur, names, dungeon.parse_room(to)[1]) + _torch_floor(cur, names, to)
     if spotted:
         facts.append(f"{'、'.join(spotted)}一下子就察觉到了来人")
+    for npc in load_npcs(cur, "n.room_id = %s and n.alive", (to,)):
+        facts += _upgrade_nudge(cur, player, npc)       # 走进铁匠铺：莉娜看不下去没升过的武器
     return facts + _beast_hint(cur, to)
 
 
@@ -2017,10 +2020,17 @@ def _npc_strike(cur: Cursor, player: Player, npc: Npc, verb: str, chance: float 
         chance *= NPC_BLIND_HIT                 # 被墨汁糊了眼的怪
     if not _roll(chance):
         return [f"{npc.name}{verb}，没打中{player.name}"]
-    # 影步靴这类：几率完全躲开（几件取最高）
-    dodges = _fire(cur, player, "hurt", "dodge", npc)
-    if dodges:
-        return [f"{npc.name}{verb}，" + (dodges[0].get("label") or f"被{player.name}躲开了")]
+    # 影步靴这类：几率完全躲开（几件取最高）；拿着盾（props.block）：几率完全挡下。两样一起掷，合计最多 AVOID_CAP。
+    # 挡的只是这一击，中毒、流血这些持续伤害挡不住
+    dodges = _fire(cur, player, "hurt", "dodge", npc, roll=False)
+    dodge = max((e.get("chance", 1) for e in dodges), default=0.0)
+    shield = max((i for i in _worn(cur, player) if _prop(i, "block")), key=lambda i: _prop(i, "block"), default=None)
+    block = float(_prop(shield, "block")) if shield else 0.0
+    r = random.random()
+    if r < min(dodge, AVOID_CAP):
+        return [f"{npc.name}{verb}，" + (max(dodges, key=lambda e: e.get("chance", 1)).get("label") or f"被{player.name}躲开了")]
+    if r < min(dodge + block, AVOID_CAP):
+        return [f"{npc.name}{verb}，被{player.name}用{shield.name}稳稳挡了下来"]
     light = _light(cur, npc.room_id)
     atk = npc.template.attack + (dark_attack(light) if dungeon.is_dungeon(npc.room_id) else 0)
     if npc.template.props.get("light_averse") and light >= LIGHT_BRIGHT:
@@ -2117,10 +2127,12 @@ def _on_hit(cur: Cursor, player: Player, npc: Npc) -> list[str]:
     if resist <= 0 or not _roll(hit.get("chance", 0.25) * resist):
         return []
     depth = npc.template.props.get("dungeon", {}).get("depth", 1)
-    return _inflict(cur, player, hit["kind"], hit.get("label", ""), depth, npc.name, hit.get("escape", 2))
+    return _inflict(cur, player, hit["kind"], hit.get("label", ""), depth, npc.name, hit.get("escape", 2), hit.get("turns"),
+                   hit.get("value_mult", 1.0))
 
 
-def _inflict(cur: Cursor, player: Player, kind: str, label: str, depth: int, source: str, escape: int = 2) -> list[str]:
+def _inflict(cur: Cursor, player: Player, kind: str, label: str, depth: int, source: str, escape: int = 2,
+             turns: Optional[int] = None, value_mult: float = 1.0) -> list[str]:
     """给玩家上一个效果：怪打中时附带的（_on_hit），决斗里对手装备触发的（_pvp_hit_extras）"""
     if kind in ("restrained", "prone", "stun"):
         if player.status:
@@ -2133,13 +2145,13 @@ def _inflict(cur: Cursor, player: Player, kind: str, label: str, depth: int, sou
         return [f"{player.name}{label}" + ("，得先挣脱" if kind == "restrained" else "，得先爬起来" if kind == "prone"
                                             else "，失去战斗能力")]
     label = label or EFFECT_NAMES[kind]
-    value = effect_value(kind, depth)
+    value = max(1, round(effect_value(kind, depth) * value_mult))      # value_mult：这只怪的毒、血口子轻一点（on_hit.value_mult）
     old = _effect(player, kind)
     if old:
-        old.left = EFFECT_TURNS[kind]
+        old.left = turns or EFFECT_TURNS[kind]
         _save_effects(cur, player)
         return [f"{player.name}又{label}，{EFFECT_NAMES[kind]}的时间重新算"]
-    e = Effect(kind=kind, value=value, left=EFFECT_TURNS[kind], label=label[:20], source=source)
+    e = Effect(kind=kind, value=value, left=turns or EFFECT_TURNS[kind], label=label[:20], source=source)     # turns：这只怪自己的持续轮数（on_hit.turns）
     what = {"poison": f"接下来 {e.left} 回合每回合掉 {value} 点血，出手也不准了",
             "bleed": f"接下来 {e.left} 个动作每动一下掉 {value} 点血，使不上劲",
             "blind": "这一回合什么都看不清",
@@ -3304,6 +3316,28 @@ def _leave_party(cur: Cursor, player: Player) -> None:
     )
 
 
+UPGRADE_NUDGE = "_upgrade_nudge"         # players.flags：莉娜提醒过升级了（下划线开头的是内部记号，侧栏不显示）
+NUDGE_GOLD, NUDGE_DEPTH = 20, 3
+
+
+def _upgrade_nudge(cur: Cursor, player: Player, npc: Npc) -> list[str]:
+    """带着钱回村、下过第 3 层、手上的武器还没升过：铁匠第一次见到时主动提一句（每人一次）。
+    不然新人不知道能升级，第 6 层撞墙也不知道为什么"""
+    if (not npc.template.props.get("upgrades") or player.flags.get(UPGRADE_NUDGE) or player.gold < NUDGE_GOLD
+            or dungeon.is_dungeon(player.room_id)):
+        return []
+    cur.execute("select deepest_floor from players where id = %s", (player.id,))
+    if cur.fetchone()["deepest_floor"] < NUDGE_DEPTH:
+        return []
+    weapon = next((w for w in _weapons(cur, player) if not w.props.get("plus") and not _prop(w, "lights")), None)
+    if weapon is None:
+        return []
+    cur.execute("update players set flags = flags || jsonb_build_object(%s::text, true) where id = %s", (UPGRADE_NUDGE, player.id))
+    player.flags[UPGRADE_NUDGE] = True
+    return [f"{npc.name}瞥见{player.name}手上那把没回过炉的{weapon.name}，皱起了眉头，像是看不下去"
+            f"（她能帮你升级：说「升级{weapon.name}」，+1 要 {upgrade_terms(weapon)[1]} 金币）"]
+
+
 def do_talk(cur: Cursor, player: Player, view: RoomView, a: Talk) -> list[str]:
     # 这里只校验对象在场，NPC 怎么回、给不给东西由对话步骤决定（见 giveable_items / npc_give）
     # 武器桶这类物件跟 NPC 列在一起，但不会说话，叙事按它的描述写
@@ -3314,7 +3348,7 @@ def do_talk(cur: Cursor, player: Player, view: RoomView, a: Talk) -> list[str]:
     # 外面多包的一层引号（玩家自己打了引号）也去掉
     message = re.sub(rf"^(对|跟|和|向){re.escape(npc.name)}(说|讲|问)?[\s，,：:]*", "", a.message).strip() or a.message
     message = message.strip("\"“”'‘’「」").strip() or message
-    facts = [f"{player.name}对{npc.name}说：“{message}”"] + _stele(cur, npc, player)
+    facts = [f"{player.name}对{npc.name}说：“{message}”"] + _stele(cur, npc, player) + _upgrade_nudge(cur, player, npc)
     offers = _offers(cur, player.id, npc)
     # 刚说要白给她钱、她问了"真要给我？"，这句回"是""给你"就给
     if (tip := offers.get("tip")) and TIP_CONFIRM_RE.search(message) and not re.search(r"不|算了|别", message[:4]):
@@ -4527,6 +4561,8 @@ def item_detail(item: ItemInstance, curse_sense: bool = False) -> str:
         lines.append("能给别人用：用药的人医药越高回得越多，给人用药能练医药")
     lines += [text for key, text in extra.items() if _prop(item, key)
               and (key != "cursed" or curse_sense or item.equipped_slot)]
+    if block := _prop(item, "block"):
+        lines.append(f"格挡：{round(block * 100)}% 几率完全挡下一击（跟闪避合计最多 {round(AVOID_CAP * 100)}%，挡不住中毒流血）")
     if mag := _prop(item, "magazine"):
         lines.append(f"一匣 {mag} 发，还剩 {item.props.get('shots', mag)} 发")
     if (steps := _prop(item, "reload_steps")) and steps > 1:

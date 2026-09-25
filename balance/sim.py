@@ -50,7 +50,7 @@ VARIANT = {"dmg": 1.0, "ranged_step": R.RANGED_UPGRADE_STEP, "reload_back": 1, "
 PREP_BELOW = 0.7                        # 进头目（楼梯间）之前血量低于这个比例：先扎营（这层还没扎过），再喝药
 # 远程打法从拿得到那把弓的那一段开始算：猎弓地牢第 4 层起才可能掉（不常见），算第 2 趟（6 层）起；
 # 绞盘重弩第 7–9 层起才掉，算第 3 趟（11 层）起。手弩莉娜店里就有，第 1 层起
-START_TRIP = {"bow": 1, "xbow": 2}
+START_TRIP = {"bow": 1, "xbow": 2, "sword_shield+bow": 1}
 
 
 # ============ 装备：按"走到这一段实际拿得到的"拼，数字是模板的基础值，升级另算 ============
@@ -65,8 +65,11 @@ ARMOR = {
                [("头盔", 2), ("头目胸甲", 3), ("皮靴", 1), ("古旧护符", 2)]],
 }
 ARMOR["fav"] = ARMOR["normal"]
-# 盾：剑盾打法第 1 趟木盾，之后塔盾（挡远程 2 点）
-SHIELD = [("木盾", 2, 0), ("塔盾", 3, 2), ("塔盾", 3, 2), ("塔盾", 3, 2)]
+# 盾：剑盾打法第 1 趟木盾，之后塔盾（挡远程 2 点）；最后一项是格挡几率（物品表的 props.block）
+SHIELD = [("木盾", 2, 0, ITEMS["wooden_shield"]["props"].get("block", 0)),
+          ("塔盾", 3, 2, ITEMS["tower_shield"]["props"].get("block", 0)),
+          ("塔盾", 3, 2, ITEMS["tower_shield"]["props"].get("block", 0)),
+          ("塔盾", 3, 2, ITEMS["tower_shield"]["props"].get("block", 0))]
 
 
 @dataclass
@@ -107,7 +110,8 @@ def ranged_weapon(build: str, trip: int) -> Optional[Weapon]:
 
 
 BUILDS = {"dual": "双持", "sword_shield": "剑盾", "sword_torch": "剑+火把", "bow": "猎弓", "xbow": "绞盘重弩",
-          "sling_sword": "投石索配剑", "mcb_sword": "麦琪的弩配剑", "hxb_sword": "手弩配剑"}
+          "sling_sword": "投石索配剑", "mcb_sword": "麦琪的弩配剑", "hxb_sword": "手弩配剑",
+          "sword_shield+bow": "剑盾 + 猎弓"}
 QUALITY = {"poor": "装备差", "normal": "正常", "fav": "好感全满"}
 
 
@@ -293,6 +297,7 @@ class Hero:
     melee: list[tuple[str, int]]        # (名字, 伤害)，已含升级
     ranged: Optional[Weapon]
     guard_ranged: int = 0               # 塔盾：远程伤害 −2
+    block: float = 0.0                  # 盾的格挡几率（跟闪避合计最多 AVOID_CAP）
     torch_light: int = 0               # 手上点着的火把给的光（点燃 35、弱光 20）
     potions: int = 0
     herbs: int = 0
@@ -572,6 +577,8 @@ class Fight:
     def strike(self, m: Mon, h: Hero, chance: float, ranged: bool) -> None:
         if random.random() >= chance:
             return
+        if random.random() < min(h.block, R.AVOID_CAP):
+            return                              # 用盾挡下了这一击
         light = self.light()
         atk = m.atk + R.dark_attack(light) - (1 if m.props.get("light_averse") and light >= R.LIGHT_BRIGHT else 0)
         dmg = R.hurt_player_by(atk, hero_def(h), m.depth, guard=h.guard_ranged if ranged else 0)
@@ -584,9 +591,9 @@ class Fight:
                 h.status = {"kind": "incapacitated" if kind == "stun" else kind, "escape": hit.get("escape", 2), "attempts": 0}
             return
         if kind in h.effects:
-            h.effects[kind]["left"] = R.EFFECT_TURNS[kind]
+            h.effects[kind]["left"] = hit.get("turns") or R.EFFECT_TURNS[kind]
             return
-        e = {"value": R.effect_value(kind, m.depth), "left": R.EFFECT_TURNS[kind]}
+        e = {"value": max(1, round(R.effect_value(kind, m.depth) * hit.get("value_mult", 1.0))), "left": hit.get("turns") or R.EFFECT_TURNS[kind]}
         if kind == "corrode":
             e["hp"] = min(h.max_hp - 1, max(1, round(h.max_hp * R.CORRODE_HP)))
             h.max_hp -= e["hp"]
@@ -622,7 +629,9 @@ class FloorStat:
     stalls: int = 0
 
 
-def make_heroes(build: str, quality: str, trip: int, kit: Kit, size: int, depth: int) -> list[Hero]:
+def make_heroes(build: str, quality: str, trip: int, kit, size: int, depth: int) -> list[Hero]:
+    if "+" in build:                        # 混编两人队：每人一种打法、一份自己的升级进度
+        return [h for b, k in zip(build.split("+"), kit) for h in make_heroes(b, quality, trip, k, 1, depth)]
     heroes = []
     for _ in range(size):
         ws = melee_weapons(build, trip)
@@ -638,15 +647,15 @@ def make_heroes(build: str, quality: str, trip: int, kit: Kit, size: int, depth:
         else:
             ws = [(n, d + (wp[k] if k < len(wp) else 0)) for k, (n, d) in enumerate(ws)]
         armor = [d for _, d in ARMOR[quality][trip]]
-        guard = 0
+        guard, block = 0, 0.0
         if build == "sword_shield":
             armor.append(SHIELD[trip][1])
-            guard = SHIELD[trip][2]
+            guard, block = SHIELD[trip][2], SHIELD[trip][3]
         defense = sum(d + (kit.armor_plus[k] if k < len(kit.armor_plus) else 0) * R.UPGRADE_STEP["defense"]
                       for k, d in enumerate(armor))
         hp = endurance_hp(depth)
         perks = {"bookmark", "tome", "flask", "drug"} if quality == "fav" else set()
-        heroes.append(Hero(hp, hp, 2, defense, ws, r, guard_ranged=guard,
+        heroes.append(Hero(hp, hp, 2, defense, ws, r, guard_ranged=guard, block=block,
                            potions=kit.potions, perks=perks))
     return heroes
 
@@ -825,11 +834,16 @@ def main() -> None:
                 + (("mcb_sword",) if q == "fav" else ()):
             for size in (1, 2):
                 combos.append((q, b, size))
+        if q != "poor":
+            combos.append((q, "sword_shield+bow", 2))
     table, room_log = {}, {}
     for q, b, size in combos:
         random.seed(f"{args.seed}-{q}-{b}-{size}")
         stats: dict[int, FloorStat] = {}
-        eco = [economy(q, b) for _ in range(30)]
+        if "+" in b:
+            eco = [list(zip(*(economy(q, part) for part in b.split("+")))) for _ in range(30)]
+        else:
+            eco = [economy(q, b) for _ in range(30)]
         for t in range(START_TRIP.get(b, 0), 4):
             for n in range(args.trips):
                 run_trip(b, q, t, eco[n % len(eco)][t], size, stats,

@@ -167,6 +167,7 @@ items:
     defense: 3
     props:
       price: 45
+      block: 0.15                # 格挡：几率完全挡下一击（跟闪避合计最多 30%）
       effects:
         - {when: hurt, do: guard, value: 2, vs: [ranged]}
 
@@ -328,6 +329,7 @@ items:
     defense: 3
     props:
       price: 33
+      block: 0.15
       effects:
         - {when: passive, do: resist, kind: prone, value: 0.5}
   foreman_mattock:             #头目掉落

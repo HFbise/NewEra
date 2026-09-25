@@ -19,6 +19,7 @@ SMOKE_ROUNDS = 2                        # 烟能撑几轮（敌人动几次）
 ENEMY_RANGED_HIT = {0: 0.5, 1: 0.75, 2: 0.85, 3: 0.85, 4: 0.75}
 RANGED_COVER = 0.15
 RANGED_BACKS = 2                        # 远程怪一场最多往后跳两次，再贴上去它就"背后撞上了石壁"，跳不开了
+AVOID_CAP = 0.30                        # 闪避（影步靴）和盾的格挡（props.block）合计最多这么多，免得叠太高
 RELOAD_BACKS = 2                        # 只给模拟试用：装填时被贴身顺势退一步（试过没用，近战怪当轮就跟上来，没上线）
 HEALER_BELOW = 0.6
 HEALER_CHANCE = 0.5                     # 有同伴要治时一半几率治疗（另一半照常出手）。治疗量按本层普通怪的血量 × props.healer，不看治的是谁
