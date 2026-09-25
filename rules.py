@@ -94,9 +94,15 @@ NPC_EFFECT_TURNS = {"poison": 3, "bleed": 3, "blind": 2, "corrode": 3}
 NPC_BLIND_HIT, NPC_CORRODE_DEF = 0.25, 2 * SCALE
 
 
+def steps(depth: int, n: int) -> float:
+    """"每 n 层涨 1"的连续版：以前是 depth // n，每 n 层跳一截（锯齿）；
+    现在每层都涨一点，平均跟整除一样（整除平均少 (n-1)/2n），浅层不为负"""
+    return max(0.0, (depth - (n - 1) / 2) / n)
+
+
 def effect_value(kind: str, depth: int) -> int:
     """怪打上来的效果有多重：中毒、流血每次掉的血，腐蚀扣的防御，跟着层数涨"""
-    return (1 + depth // 6 if kind == "corrode" else 1 + depth // 5) * SCALE
+    return round((1 + steps(depth, 6) if kind == "corrode" else 1 + steps(depth, 5)) * SCALE)
 
 
 # ============ 回血、扎营、酒劲 ============
@@ -238,8 +244,8 @@ ELITE_HP = 1.5                          # 精英的血（以前 1.8，现在每�
 def monster_stats(depth: int, mods: dict, rank: str = "normal") -> tuple[int, int, int]:
     """(血, 攻, 防)：随层数涨，mods 是这种怪的倍数和加减（dungeon.yaml），精英、头目再加"""
     hp = (6 + depth) * SCALE * mods.get("hp", 1.0)
-    atk = (2 + depth // 3 + depth // 12) * SCALE + mods.get("atk", 0)
-    df = (1 + depth // 4) * SCALE + mods.get("def", 0)
+    atk = round((2 + steps(depth, 3) + steps(depth, 12)) * SCALE) + mods.get("atk", 0)
+    df = round((1 + steps(depth, 4)) * SCALE) + mods.get("def", 0)
     if rank == "elite":
         hp, atk = hp * ELITE_HP, atk + SCALE
     elif rank == "boss":

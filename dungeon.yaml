@@ -103,7 +103,7 @@ themes:
       description: 比别的狗头人高出一头，披着用矿车铁皮敲成的护甲，手里拎着一把沾满血锈的鹤嘴锄。
       persona: 暴躁，嗓门大，把闯进矿坑的人当成偷矿的贼，会先吼叫着让手下围上来。
       on_hit: {kind: prone, chance: 0.3, label: 被鹤嘴锄撞翻在地}
-      hp: 0.9
+      hp: 0.8
       atk: 0
       def: 10
       # 技能按层数解锁（rules.unlocked_skills）：第 5 层只会第一招，第 10 层两招，第 15 层起全套加狂暴
@@ -266,8 +266,8 @@ themes:
       description: 一个穿着整套黑铁甲的高大身影，头盔的缝隙里透出两点红光，腰间挂着一大串钥匙。
       persona: 冷酷，一板一眼，把闯进来的人都当成越狱的犯人，一边追一边念着罪名。
       on_hit: {kind: restrained, chance: 0.3, label: 被铁链锁住了手脚, escape: 3}
-      hp: 1.2
-      atk: 30
+      hp: 1.3
+      atk: 25
       def: 10
       immune: [restrained]
       weak: poison
@@ -346,7 +346,7 @@ themes:
       persona: 缓慢而愤怒，把闯进森林的人都当作砍树的贼，枝条抽过来又重又狠。
       on_hit: {kind: prone, chance: 0.35, label: 被枝条抽倒在地}
       hp: 1.6
-      atk: 10
+      atk: 5
       def: 10
       immune: [prone]                 # 扎着根，撞不倒
       weak: fire
@@ -423,15 +423,15 @@ themes:
       name: 沼泽女巫
       description: 一个佝偻的老妇人，下半身和一株巨大的蘑菇长在了一起，手里拄着一根挂满骨头的拐杖。
       persona: 阴沉又爱笑，喜欢用甜言蜜语引人走进泥沼深处，发起怒来尖啸着召唤毒雾。
-      on_hit: {kind: poison, chance: 0.3, turns: 2, value_mult: 0.5, label: 被毒雾呛得喘不过气}
+      on_hit: {kind: poison, chance: 0.3, turns: 2, value_mult: 0.6, label: 被毒雾呛得喘不过气}
       hp: 1.0
-      atk: 10
+      atk: 13
       def: 0
       immune: [poison]
       weak: fire
       skills:
         - {when: every, value: 4, do: telegraph, label: 举起骨杖念念有词，绿色的毒雾在她脚下翻涌（下一次出手全场中毒；这一轮狠狠砍她一下能打断）,
-           then: {do: effect_all, kind: poison, turns: 2, value_mult: 0.5, label: 毒雾轰地炸开，灌满了整个房间}}
+           then: {do: effect_all, kind: poison, turns: 2, value_mult: 0.6, label: 毒雾轰地炸开，灌满了整个房间}}
         - {when: hp_below, value: 0.5, do: summon, kind: bog_toad, count: 1, label: 尖叫一声，泥水里拱出了一只巨蟾}
 
   library:

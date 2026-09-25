@@ -711,7 +711,7 @@ def _npc_affect(cur: Cursor, player: Player, npc: Npc, kind: str, label: str) ->
         npc.status = st
         return [f"{npc.name}{label}" if label else f"{npc.name}{st.describe()}"]
     depth = npc.template.props.get("dungeon", {}).get("depth", 1)
-    value = NPC_CORRODE_DEF if kind == "corrode" else (1 + depth // 5) * SCALE
+    value = NPC_CORRODE_DEF if kind == "corrode" else round((1 + steps(depth, 5)) * SCALE)
     npc.effects = [e for e in npc.effects if e.kind != kind] + [
         Effect(kind=kind, value=value, left=NPC_EFFECT_TURNS[kind], label=(label or EFFECT_NAMES[kind])[:20], source=player.name)]
     _save_npc_effects(cur, npc)
@@ -984,7 +984,7 @@ def _road_event(cur: Cursor, player: Player, view: RoomView, to: str) -> list[st
         ok, rolled = _check(cur, player, view, "perception", max(1, 2 + depth // 3 - (_prop(sense, "trap_sense") if sense else 0)))
         if ok:
             return [f"路上{trap}"] + rolled + [f"{player.name}{'想起陷阱图上画过这种地方，' if sense else ''}及时察觉，躲了过去"]
-        dmg = (2 + depth // 3) * SCALE
+        dmg = round((2 + steps(depth, 3)) * SCALE)
         hurt, down = _hurt_player(cur, player, dmg, "other", "陷阱")
         return [f"路上{trap}"] + rolled + [f"{player.name}没能躲开，受到 {dmg} 点伤害"] + hurt             + ([] if down else _toughen(cur, player))
     if r < ROAD_COINS:
