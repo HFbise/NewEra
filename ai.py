@@ -228,7 +228,7 @@ class AIAction(BaseModel):
     action: Literal["move", "look", "take", "drop", "use", "equip", "unequip", "attack", "talk", "give", "sell", "pay", "say",
                     "upgrade", "respawn", "stand", "rest", "camp", "teleport", "revive", "uncurse", "leave_party", "kick", "follow", "unfollow", "challenge", "accept_duel",
                     "decline_duel", "flee", "stunt", "struggle",
-                    "maneuver", "dodge", "tame", "reload", "refill", "transfer", "reroll", "rename", "write", "socket", "unsocket", "refine", "hide", "search", "freeform", "reject"]
+                    "maneuver", "dodge", "tame", "reload", "refill", "transfer", "reroll", "rename", "write", "socket", "unsocket", "refine", "donate", "take_donated", "hide", "search", "freeform", "reject"]
     direction: Optional[str] = None
     item: Optional[str] = None
     target: Optional[str] = None
@@ -323,6 +323,8 @@ INTENT_SYSTEM = """你是文字 MUD 游戏的指令解析器。读玩家的输�
 - write: item（纸条 ref），message（要写的字，照玩家原话）。在纸条上写字、留言
 - socket: item（装备 ref），gem（背包里宝石的 ref），target（铁匠的 ref）。找铁匠把宝石镶到装备上
 - unsocket: item（装备 ref），gem（要取的宝石名字，只有一颗可不填），target（铁匠的 ref）。找铁匠把装备上的宝石取下来
+- donate: item（背包里武器或护具的 ref），target（武器桶的 ref）。把用不上的装备放进武器桶留给新人（强化清零，宝石退回）
+- take_donated: name（桶里那件东西的名字），target（武器桶的 ref）。从武器桶里拿别人放的装备（不是桶本来就有的锈剑，那个用 take）
 - refine: item（背包里宝石的 ref），catalyst（说了拿同种宝石当垫子就填 true），target（诺艾尔的 ref）。找诺艾尔刷宝石的品质
 - tame: target（野兽的 ref），description（怎么安抚的）。安抚、驯服、哄走野兽，让它不打了自己走开（只对野兽有用，引擎判驯兽）；
   扔骨头给野兽、拿肉骨头引开它也是 tame（身上的肉骨头引擎会先扔一根）

@@ -12,6 +12,7 @@
 import math
 import random
 import re
+from collections import defaultdict
 from datetime import datetime, timezone
 from typing import Any, Callable, Optional
 from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
@@ -28,7 +29,7 @@ from schema import (
     ActionResult, Attack, Drop, Equip, Feature, Follow, Freeform, Give, ItemInstance, LeaveParty, Kick, Look,
     Move, Npc, OtherPlayer, Player, PlayerAction, Reject, Revive, Room, RoomExit, RoomView, Say, Status, Struggle,
     Stunt, Take, Talk, Unfollow, Unequip, Use, dir_name, Dispenser, SLOT_CHOICES, SLOT_NAMES, Dodge, Hide, Maneuver, Search, Stealth, Tame,
-    Uncurse, Reload, Refill, Transfer, Reroll, Rename, Write, Socket, Unsocket, Refine,
+    Uncurse, Reload, Refill, Transfer, Reroll, Rename, Write, Socket, Unsocket, Refine, Donate, TakeDonated,
     AcceptDuel, Challenge, DeclineDuel, Duel, Flee, SKILL_NAMES, Upgrade, Respawn, Stand, Rest, Pay, Camp, Teleport, Sell,
     Effect,
 )
@@ -177,11 +178,17 @@ def load_dispensers(cur: Cursor, room: Room, player_id: UUID) -> list[Dispenser]
     owned = {r["template_id"] for r in cur.fetchall()}
     cur.execute("select key from dispenser_log where player_id = %s and room_id = %s", (player_id, room.id))
     taken = {r["key"] for r in cur.fetchall()}
+    cur.execute("""select d.id, d.container, coalesce(d.props->>'name', t.name) as name from donations d
+                   join item_templates t on t.id = d.template_id where d.room_id = %s order by d.created_at""", (room.id,))
+    donated = defaultdict(list)
+    for r in cur.fetchall():
+        donated[r["container"]].append({"id": str(r["id"]), "name": r["name"]})
     return [Dispenser(id=uuid5(NAMESPACE_URL, f"newera:dispenser:{room.id}:{key}"), room=room.id, key=key,
                       container=d["name"], description=d.get("description", ""), item=d["item"],
                       item_name=names[d["item"]], unless=d.get("unless", []), where=d.get("where", "里"),
                       once=d.get("once", False), repeat=d.get("repeat", False), skill=d.get("skill"),
                       difficulty=d.get("difficulty", 0), fail=d.get("fail", ""), fail_damage=d.get("fail_damage", 0),
+                      donate=d.get("donate", []), donated=donated.get(key, []),
                       available=(d.get("repeat") or not owned & {d["item"], *d.get("unless", [])})
                       and not (d.get("once") and key in taken))
             for key, d in cfg.items()]
@@ -3766,7 +3773,7 @@ def buy_quotes(conn: Connection, player_id: UUID, npc: Npc, items: list[ItemInst
     with conn.transaction():
         cur = _cursor(conn)
         affinity = _affinity(cur, load_player(cur, player_id), npc)
-        return [(i.name, buy_price(npc, i, affinity)) for i in items if not _precious(cur, i)]
+        return [(i.name, buy_price(npc, i, affinity)) for i in items if not _precious(cur, i) and not _prop(i, "donated")]
 
 
 def do_sell(cur: Cursor, player: Player, view: RoomView, a: Sell) -> list[str]:
@@ -3779,6 +3786,8 @@ def do_sell(cur: Cursor, player: Player, view: RoomView, a: Sell) -> list[str]:
         raise ActionError(f"点着的{item.name}{npc.name}可不收")
     if _precious(cur, item):
         raise ActionError(f"{item.name}太要紧了，{npc.name}不收")
+    if _prop(item, "donated"):
+        raise ActionError(f"{item.name}是酒馆武器桶里别人留下的，{npc.name}不收（用不上了可以放回桶里）")
     price = buy_price(npc, item, _affinity(cur, player, npc))
     cur.execute("delete from item_instances where id = %s", (item.id,))
     cur.execute("update players set gold = gold + %s where id = %s", (price, player.id))
@@ -4151,6 +4160,80 @@ def do_unsocket(cur: Cursor, player: Player, view: RoomView, a: Unsocket) -> lis
     return facts + (_sync_gear_hp(cur, player.id) if item.equipped_slot else [])
 
 
+# ============ 捐赠（酒馆武器桶）============
+# 老手把用不上的武器护具放进武器桶留给新人：强化等级清掉（伤害防御回到原样），镶的宝石退回捐的人背包；
+# 诅咒装备、礼物（NPC 回礼给的、送 NPC 的）、委托要交的东西、钥匙不能放。拿的人每人每天一件，拿到的标 donated，NPC 不收
+DONATE_TAKE_WINDOW = "1 day"
+UPGRADE_PROPS = ("plus", "damage", "defense", "name", "gems", "gem_fx", "gem_light")
+
+
+def _gift_templates(cur: Cursor) -> set[str]:
+    """NPC 回礼送的东西（连同弩空着、装好的另一个模板）"""
+    cur.execute("""select g.value->>'item' as item from npc_templates t, jsonb_each(coalesce(t.props->'return_gifts', '{}')) g
+                   where g.value ? 'item'""")
+    ids = {r["item"] for r in cur.fetchall()}
+    cur.execute("""select id from item_templates where props->>'loads' = any(%(i)s) or props->>'unloaded' = any(%(i)s)
+                   or props->>'refill_to' = any(%(i)s)""", {"i": list(ids)})
+    return ids | {r["id"] for r in cur.fetchall()}
+
+
+def _donation_box(view: RoomView, ref: Optional[str]) -> Dispenser:
+    boxes = [d for d in view.dispensers if d.donate]
+    if ref:
+        uid = view.resolve(ref)
+        if box := next((d for d in boxes if d.id == uid), None):
+            return box
+    if len(boxes) == 1:
+        return boxes[0]
+    raise ActionError("这里没有能放东西的地方（酒馆门边的武器桶可以）" if not boxes else "要放进哪里？")
+
+
+def do_donate(cur: Cursor, player: Player, view: RoomView, a: Donate) -> list[str]:
+    box = _donation_box(view, a.target)
+    item = _inv_item(cur, view, player, a.item)
+    if item.template.type not in box.donate:
+        raise ActionError(f"{box.container}只收武器和护具，{item.name}放不进去")
+    if item.equipped_slot:
+        raise ActionError(f"{item.name}还装备在身上，先卸下来再放")
+    if _prop(item, "cursed"):                   # 没穿上时诅咒不发作，但也不能坑新人
+        raise ActionError(f"{item.name}被诅咒了，不能留给别人（先找诺艾尔解咒）")
+    if _precious(cur, item) or _prop(item, "gift") or item.template.id in _gift_templates(cur):
+        raise ActionError(f"{item.name}是别人的心意或者要交的东西，不能放进{box.container}")
+    facts = []
+    if item.props.get("plus"):
+        facts.append(f"{item.name}的强化没了，放进去的是一把普通的{item.template.name}")
+    for g in item.props.get("gems") or []:
+        cur.execute("insert into item_instances (template_id, player_id, props) values (%s, %s, %s)",
+                    (g["id"], player.id, Jsonb(dungeon.gem_props(cur, g["id"], g["tier"]))))
+        facts.append(f"镶在上面的{g['name']}撬下来，退回了{player.name}的背包")
+    props = {k: v for k, v in item.props.items() if k not in UPGRADE_PROPS + ("donated",)}
+    cur.execute("insert into donations (room_id, container, template_id, props, donor) values (%s, %s, %s, %s, %s)",
+                (box.room, box.key, item.template.id, Jsonb(props), player.id))
+    cur.execute("delete from item_instances where id = %s", (item.id,))
+    return [f"{player.name}把{item.template.name}放进了{box.container}，留给缺家伙的人"] + facts
+
+
+def do_take_donated(cur: Cursor, player: Player, view: RoomView, a: TakeDonated) -> list[str]:
+    box = _donation_box(view, a.target)
+    want = a.name.strip()
+    pick = next((d for d in box.donated if d["name"] == want), None) or next((d for d in box.donated if want and want in d["name"]), None)
+    if pick is None:
+        raise ActionError(f"{box.container}里没有{want}" + (f"（里面有：{'、'.join(d['name'] for d in box.donated)}）" if box.donated else "（里面没有别人放的东西）"))
+    cur.execute(f"""select 1 from dispenser_log where player_id = %s and room_id = %s and key = %s
+                    and taken_at > now() - interval '{DONATE_TAKE_WINDOW}'""", (player.id, box.room, f"{box.key}#donated"))
+    if cur.fetchone():
+        raise ActionError(f"{player.name}今天已经从{box.container}拿过一件了，留点给别人（明天再来）")
+    cur.execute("delete from donations where id = %s returning template_id, props", (pick["id"],))
+    row = cur.fetchone()
+    if row is None:
+        raise ActionError(f"{pick['name']}刚被别人拿走了")
+    cur.execute("insert into item_instances (template_id, player_id, props) values (%s, %s, %s)",
+                (row["template_id"], player.id, Jsonb(row["props"] | {"donated": True})))
+    cur.execute("""insert into dispenser_log (player_id, room_id, key) values (%s, %s, %s)
+                   on conflict (player_id, room_id, key) do update set taken_at = now()""", (player.id, box.room, f"{box.key}#donated"))
+    return [f"{player.name}从{box.container}{box.where}挑了一件{pick['name']}（别人留下的，店里不收）"]
+
+
 def do_refine(cur: Cursor, player: Player, view: RoomView, a: Refine) -> list[str]:
     """诺艾尔刷宝石品质：只升不降（loot.yaml gems.refine），宝石得在背包里、没镶上去；最深层数不够时封顶，封顶了不收钱"""
     npc = _room_npc(cur, view, player, a.target)
@@ -4307,7 +4390,7 @@ HANDLERS: dict[str, Callable[..., list[str]]] = {
     "say": do_say, "revive": do_revive, "stunt": do_stunt, "struggle": do_struggle,
     "follow": do_follow, "unfollow": do_unfollow, "leave_party": do_leave_party, "kick": do_kick,
     "maneuver": do_maneuver, "dodge": do_dodge, "tame": do_tame, "uncurse": do_uncurse, "reload": do_reload, "refill": do_refill,
-    "transfer": do_transfer, "reroll": do_reroll, "rename": do_rename, "write": do_write, "socket": do_socket, "unsocket": do_unsocket, "refine": do_refine, "hide": do_hide, "search": do_search, "reject": do_reject,
+    "transfer": do_transfer, "reroll": do_reroll, "rename": do_rename, "write": do_write, "socket": do_socket, "unsocket": do_unsocket, "refine": do_refine, "donate": do_donate, "take_donated": do_take_donated, "hide": do_hide, "search": do_search, "reject": do_reject,
     "upgrade": do_upgrade, "pay": do_pay, "sell": do_sell, "respawn": do_respawn, "stand": do_stand, "rest": do_rest, "camp": do_camp, "teleport": do_teleport, "challenge": do_challenge, "accept_duel": do_accept_duel, "decline_duel": do_decline_duel, "flee": do_flee,
 }
 
@@ -4581,6 +4664,25 @@ def npc_menu(cur: Cursor, player_id: UUID, npc: Npc) -> Optional[dict]:
     if npc.template.hostile:
         return None
     name, services = npc.name, []
+    if p.get("leaderboard"):
+        services += [{"text": "看排行榜", "fill": f"看{name}"},
+                     {"text": "在地窖里说「传送到第 N 层」，直接去到过的传送石（每 5 层一块）", "fill": "传送到第 层"}]
+    cur.execute("""select q.goal, q.done_flag, r.name as reward from quests q
+                   left join item_templates r on r.id = q.reward_item
+                   left join player_quests pq on pq.quest_id = q.id and pq.player_id = %s
+                   where q.giver = %s and not q.hidden and coalesce(pq.status, '') <> 'rewarded' order by q.id""",
+                (player_id, npc.template.id))
+    for q in cur.fetchall():
+        cur.execute("select flags ? %s as done from players where id = %s", (q["done_flag"] or "", player_id))
+        done = bool(q["done_flag"]) and cur.fetchone()["done"]
+        services.append({"text": f"委托：{q['goal']}" + (f"（奖励{q['reward']}）" if q["reward"] else "")
+                         + ("，做完了，跟她说一声领奖" if done else ""), "fill": f"对{name} "})
+    if likes := p.get("gift_likes"):
+        services.append({"text": "喜欢收到：" + "、".join(LIKE_WORDS.get(k, k) for k in likes), "fill": f"给{name}"})
+    cur.execute("""select t.name from item_instances i join item_templates t on t.id = i.template_id
+                   where i.player_id = %s and t.props->>'refill_by' = %s""", (player_id, npc.template.id))
+    if empties := [r["name"] for r in cur.fetchall()]:
+        services.append({"text": f"续杯：{'、'.join(empties)}空了，找她灌满（不收钱）", "fill": f"对{name} 续杯"})
     if buys := p.get("buys"):
         services.append({"text": "收东西：" + "、".join(LIKE_WORDS.get(k, k) for k in buys.get("likes", [])) + "给价高",
                          "fill": f"把 卖给{name}"})
@@ -5039,7 +5141,7 @@ def item_detail(item: ItemInstance, curse_sense: bool = False) -> str:
     head = item.name + f"（{USE_KINDS[_use_kind(item)] if t.type == 'consumable' else TYPE_NAMES.get(t.type, t.type)}"
     if t.slot:
         head += f" · {'双手' if _prop(item, 'two_handed') else PART_NAMES.get(t.slot, t.slot)}"
-    lines = [head + "）"]
+    lines = [head + "）"] + (["酒馆武器桶里别人留下的：店里不收，用不上了可以放回桶里"] if item.props.get("donated") else [])
     stats = []
     if item.damage:
         stats.append(f"伤害 {stat_text(item.damage)}")

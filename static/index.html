@@ -235,6 +235,10 @@ function render(s) {
     ${s.npcs.filter(n => n.menu).map(n => `${foldHead("menu:" + n.name, `${esc(n.name)}这儿`)}
       <ul class="menu fold-body">${n.menu.services.map(v => `<li data-name="${esc(v.fill)}">${esc(v.text)}</li>`).join("")}
       ${n.menu.goods.map(g => `<li data-name="${esc(g.fill)}">${esc(g.name)}<span class="tag">${g.price} 金币${g.rare ? " · 稀罕货，只有一件" : ""}</span></li>`).join("")}</ul>`).join("")}
+    ${(s.boxes || []).map(b => `${foldHead("box:" + b.name, `${esc(b.name)}里`)}
+      <ul class="menu fold-body"><li data-name="把 放进${esc(b.name)}">放进去：用不上的武器、护具留给新人（强化清零，镶的宝石退回你背包）</li>
+      ${b.items.map(n => `<li data-name="从${esc(b.name)}里拿${esc(n)}">${esc(n)}<span class="tag">别人留下的 · 每人每天拿一件 · 店里不收</span></li>`).join("")
+        || `<li class="sys">还没有人放东西</li>`}</ul>`).join("")}
     ${s.others.length ? `<h2>其他玩家</h2><ul>${s.others.map(o => o.hp <= 0
       ? `<li data-name="对${esc(o.name)} ">${esc(o.name)}<span class="tag">倒下了</span></li>`
       : `<li data-name="对${esc(o.name)} ">${esc(o.name)}<span class="tag">${o.status ? esc(o.status) : o.awake ? "HP " + o.hp : "睡着了"}</span></li>`).join("")}</ul>` : ""}

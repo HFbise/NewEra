@@ -157,6 +157,8 @@ def state(conn, view: RoomView, after: Optional[int] = None) -> dict:
         "attack_total": totals[0],
         "defense_total": totals[1],
         "others": others,
+        # 能捐东西的地方（酒馆武器桶）：别人放进去的装备，点一下填"从武器桶里拿…"
+        "boxes": [{"name": d.container, "items": [x["name"] for x in d.donated]} for d in view.dispensers if d.donate],
         "party": party,
         "following": view.following,
         "stealth": ai.stealth_text(view),

@@ -9,6 +9,7 @@ start_room: square
 #     武器默认 hand、护甲默认 chest；双持时普通攻击两把武器伤害相加，所有装备的防御相加
 #   房间 dispensers: {key: {name, description, item, unless, where, once}}，武器桶这类取用处：身上有 item 或 unless 里的东西就不能拿；
 #     once: true 是每人一辈子只能拿一次（丢了也不能再拿）；where 是"里"（桶里）或"上"（桌上）
+#     donate: [weapon, armor] 玩家能把这些类型的装备放进来留给别人（engine.do_donate / do_take_donated）
 
 rooms:
   square:
@@ -54,6 +55,7 @@ rooms:
         item: rusty_sword
         unless: [shiny_sword]
         once: true              # 每人只能拿一把，丢了、交给莉娜了也不能再拿
+        donate: [weapon, armor] # 老手用不上的武器护具可以放进来留给新人（强化清零、宝石退回；拿的人每天一件，NPC 不收）
     features:
       spit: {name: 壁炉上的铁叉, max_tier: heavy, uses: 1, respawn: 120}
 

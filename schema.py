@@ -83,6 +83,20 @@ class Rename(BaseModel):
     name: str
 
 
+class Donate(BaseModel):
+    """把用不上的武器、护具放进酒馆武器桶这类地方留给新人：强化清零，镶的宝石退回自己背包"""
+    action: Literal["donate"]
+    item: str                           # 背包里装备的 ref
+    target: Optional[str] = None        # 武器桶的 ref；这里只有一个能放东西的就不用填
+
+
+class TakeDonated(BaseModel):
+    """从武器桶里拿一件别人捐的装备（每人每天一件）"""
+    action: Literal["take_donated"]
+    name: str                           # 桶里那件东西的名字
+    target: Optional[str] = None        # 武器桶的 ref
+
+
 class Socket(BaseModel):
     """找铁匠把宝石镶到带孔的装备上（免费；只有地牢里掉的装备带孔）"""
     action: Literal["socket"]
@@ -355,7 +369,7 @@ class Reject(BaseModel):
 
 PlayerAction = Annotated[
     Union[Move, Look, Take, Drop, Use, Equip, Unequip, Attack, Talk, Give, Sell, Pay, Upgrade, Say, Revive, Respawn, Stand, Rest, Camp, Teleport, LeaveParty, Kick,
-          Follow, Unfollow, Challenge, AcceptDuel, DeclineDuel, Flee, Stunt, Struggle, Maneuver, Dodge, Tame, Uncurse, Reload, Refill, Transfer, Reroll, Rename, Write, Socket, Unsocket, Refine, Hide, Search,
+          Follow, Unfollow, Challenge, AcceptDuel, DeclineDuel, Flee, Stunt, Struggle, Maneuver, Dodge, Tame, Uncurse, Reload, Refill, Transfer, Reroll, Rename, Write, Socket, Unsocket, Refine, Donate, TakeDonated, Hide, Search,
           Freeform, Reject],
     Field(discriminator="action"),
 ]
@@ -397,6 +411,8 @@ class Dispenser(BaseModel):
     where: str = "里"                   # 东西放在"桶里""桌上"
     once: bool = False                  # 每人一辈子只能拿一次（丢了也不能再拿），记在 dispenser_log
     repeat: bool = False                # 身上已经有同样的东西也能拿（地牢里挖矿石、接泉水）
+    donate: list[str] = []              # 能往里放的装备类型（weapon / armor），空的就不收
+    donated: list[dict] = []            # 别人捐进来的：[{"id", "name"}]
     skill: Optional[str] = None         # 拿之前要过的技能判定（挖矿要运动、挑没坏的酒要自然），过了才拿得到
     difficulty: int = 0
     fail: str = ""                      # 判定失败时发生的事

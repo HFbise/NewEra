@@ -265,6 +265,18 @@ create table dispenser_log (
   primary key (player_id, room_id, key)
 );
 
+-- 捐进武器桶这类地方的装备（dispensers 配了 donate 的）：放进去时清掉强化、宝石退回原主人；拿走时新建实例，标 props.donated（NPC 不收）
+create table donations (
+  id           uuid primary key default gen_random_uuid(),
+  room_id      text not null references rooms(id) on delete cascade,
+  container    text not null,                    -- dispensers 的 key（weapon_barrel）
+  template_id  text not null references item_templates(id) on delete cascade,
+  props        jsonb not null default '{}',
+  donor        uuid references players(id) on delete set null,
+  created_at   timestamptz not null default now()
+);
+create index on donations (room_id, container);
+
 -- 搜索找到东西的记录：每个人各算各的冷却，不再先到先得
 create table forage_log (
   player_id   uuid not null references players(id) on delete cascade,

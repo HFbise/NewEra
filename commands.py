@@ -218,6 +218,19 @@ def _parse_one(view: RoomView, t: str) -> dict:
         if (up := upgrade_request(view, t, smith.name)) is not None:
             return up | {"target": {uid: ref for ref, uid in view.refs.items()}[smith.id]}
 
+    # 捐赠（武器桶这类配了 donate 的地方）："把铁斧放进武器桶""捐铁斧""把旧皮甲留给新人"；
+    # 拿别人放的："从武器桶里拿铁斧""拿武器桶里的铁斧"（不是桶本来就有的锈剑）
+    if box := next((d for d in view.dispensers if d.donate), None):
+        ref = {uid: r for r, uid in view.refs.items()}[box.id]
+        if m := re.fullmatch(rf"把\s*(.+?)\s*(?:放进|放到|放回|扔进|丢进|塞进|捐到|捐给|留在|留给)\s*(?:{re.escape(box.container)}|桶|新人)(?:里)?", t) \
+                or re.fullmatch(r"(?:捐|捐掉|捐出)\s*(.+)", t):
+            return {"action": "donate", "item": _find(view, m[1], "inv"), "target": ref}
+        if m := re.fullmatch(rf"(?:从\s*{re.escape(box.container)}\s*(?:里|中)?\s*(?:拿|取|挑|拿走)\s*(?:一件|一把)?\s*(.+)|"
+                             rf"(?:拿|取|挑)\s*{re.escape(box.container)}\s*(?:里|中)?的\s*(.+))", t):
+            want = (m[1] or m[2]).strip()
+            if any(want in d["name"] or d["name"] in want for d in box.donated) and want not in box.item_name:
+                return {"action": "take_donated", "name": want, "target": ref}
+
     # 解咒（找诺艾尔）："解咒""解除诅咒""对诺艾尔说 帮我解咒""找诺艾尔解开饮血双刃剑的诅咒"
     if seller := next((n for n in view.npcs if n.template.props.get("uncurse")), None):
         if m := re.fullmatch(rf"(?:(?:对|跟|找|向)\s*{re.escape(seller.name)}\s*(?:说|讲)?[:：]?\s*)?(?:帮我|请|我要|我想)?\s*"
