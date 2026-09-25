@@ -301,13 +301,13 @@ items:
     description: 一支正烧得旺的火把，火光能照亮周围一大片。只能拿在手上，收起来就灭了。
     type: weapon
     damage: 2
-    props: {light: 35, burning: torch_dim}   # 光亮 +35；到地牢下一层换成 torch_dim
+    props: {light: 35, burning: torch_dim, fire: true}   # 光亮 +35；到地牢下一层换成 torch_dim
   torch_dim:
     name: 火把（弱光）
     description: 一支快烧到头的火把，火苗缩成了一小簇，只能照亮脚边。再往下走一层就要灭了。
     type: weapon
     damage: 2
-    props: {light: 20, burning: ""}   # 光亮 +20；到地牢下一层就烧完
+    props: {light: 20, burning: "", fire: true}   # 光亮 +20；到地牢下一层就烧完
   tent:
     name: 帐篷
     description: 卷成一捆的帆布小帐篷，在野外或地牢里扎营时能睡得安稳些。

@@ -5,6 +5,7 @@
 """
 import math
 import random
+from typing import Optional
 
 # ============ 命中 ============
 # 近战按距离（格）：贴身、一步之遥、几步开外；够不着的格数是 0
@@ -227,13 +228,16 @@ ROOM_CAP = 6
 BOSS_PARTY_HP = 0.8
 
 
+ELITE_HP = 1.5                          # 精英的血（以前 1.8，现在每只精英带一个词缀，血降下来补偿）
+
+
 def monster_stats(depth: int, mods: dict, rank: str = "normal") -> tuple[int, int, int]:
     """(血, 攻, 防)：随层数涨，mods 是这种怪的倍数和加减（dungeon.yaml），精英、头目再加"""
     hp = (6 + depth) * mods.get("hp", 1.0)
     atk = 2 + depth // 3 + depth // 12 + mods.get("atk", 0)
     df = 1 + depth // 4 + mods.get("def", 0)
     if rank == "elite":
-        hp, atk = hp * 1.8, atk + 1
+        hp, atk = hp * ELITE_HP, atk + 1
     elif rank == "boss":
         hp, atk, df = hp * 2, atk + 1, df + 1
     return max(2, round(hp)), max(1, atk), max(0, df)
@@ -268,3 +272,66 @@ def treasure_gold(depth: int, dark: float, size: int) -> int:
 def stash_gold(depth: int, size: int) -> int:
     """空房里藏着的古币（调查判定，难度 2 + 层数/3）"""
     return max(2, round(random.randint(4, 8) * 1.2 ** depth)) * size
+
+
+# ============ 精英词缀 ============
+# 每只精英从这里随机抽一个，名字前缀跟着变。同一只狗头人矿工，这次是迅捷的，下次是坚甲的，打法就不一样
+ELITE_AFFIXES = {
+    "swift": {"name": "迅捷的", "attacks": 2, "dmg_mult": 0.7, "note": "一轮出手两次，每下轻一点"},
+    "armored": {"name": "坚甲的", "def": 2, "hp_mult": 0.8, "note": "防御高、血少一点"},
+    "frenzied": {"name": "狂暴的", "frenzy": 2, "note": "血量低于一半时攻击 +2"},
+    "bloodthirsty": {"name": "嗜血的", "lifesteal": 1, "note": "打中人就回 1 点血"},
+    "commanding": {"name": "号令的", "minions": 1, "note": "带着一只同类小怪（小怪不掉东西）"},
+    "thorny": {"name": "荆棘的", "thorns": 1, "note": "近战砍它会被扎回 1 点"},
+    "keen": {"name": "警觉的", "keen": True, "note": "一进门就发现人，偷袭不了"},
+    "plagued": {"name": "瘟疫的", "plague": 0.2, "note": "打中人 20% 附带这一带的毒害"},
+}
+# 瘟疫的精英附带什么：跟着主题走（主题头目那一手）
+THEME_PLAGUE = {"mine": "prone", "graveyard": "corrode", "castle": "restrained", "forest": "prone",
+                "swamp": "poison", "library": "blind"}
+
+
+def scale_damage(dmg: int, mult: float) -> int:
+    """伤害乘个倍数（迅捷的精英每下 ×0.7），小数按几率进位，最少 1"""
+    if mult == 1:
+        return dmg
+    x = dmg * mult
+    return max(1, int(x) + (random.random() < x - int(x)))
+
+
+# ============ 头目技能 ============
+# 头目的技能写在 dungeon.yaml 的 boss.skills 里，跟玩家装备一样是 when / do：
+#   when：hp_below（血掉到这条线，每条线一次）/ every（每出手 N 次一次）/ fight_start（第一次出手）
+#   do：summon（叫帮手）/ status_all（全场上状态）/ effect_all（全场中毒、腐蚀……）/ telegraph（预告，下一次出手放 then 里的招）
+#       / mark（判罪：标记一个人，打他 +bonus，打中一次就消）/ self_heal（回血）/ silence（禁声：几次出手之内不能念书、卷轴）
+# 技能按层数解锁：第 5 层的头目只会第一招，第 10 层两招，第 15 层起全套，外加血少时狂暴。
+# 放技能就是这一次出手（mark 除外，标完照样打）。技能换数值：加了技能的头目，血或攻击要相应扣一点（dungeon.yaml 里调）
+SUMMON_MAX = 2                          # 场上同时最多几只召唤来的小怪
+SUMMON_HP = 0.5                         # 召唤的小怪血量：本层普通怪的一半，不掉钱也不掉东西，不召治疗怪
+SUMMON_DMG = 0.5                        # 召唤的小怪下手也只有一半（全额的话场上一下多出两个人出手，太容易打出爆发）
+INTERRUPT_SHARE = 0.15                  # 预告大招那一轮对它打出这么多（血量上限的比例）就打断了：打断靠重创，不算控制
+ENRAGE_FROM, ENRAGE_BELOW, ENRAGE_ATK = 15, 0.3, 2      # 第 15 层起的头目血量低于三成狂暴，攻击 +2
+WEAK_MULT = 1.5                         # 打中弱点（火、破甲、圣水、强光……）伤害 ×1.5
+
+
+def unlocked_skills(skills: list[dict], depth: int) -> list[dict]:
+    """这一层的头目会哪几招（按顺序解锁）"""
+    n = 1 if depth < 10 else 2 if depth < ENRAGE_FROM else len(skills)
+    return skills[:n]
+
+
+def due_skill(skills: list[dict], hp_ratio: float, acts: int, used: set) -> Optional[int]:
+    """这一次出手该放哪一招（技能的下标），没有就是 None。acts 是这一场已经出手过几次，used 是放过的一次性技能"""
+    for i, s in enumerate(skills):
+        when = s.get("when")
+        if when == "hp_below" and hp_ratio < s["value"] and i not in used:
+            return i
+        if when == "fight_start" and acts == 0 and i not in used:
+            return i
+        if when == "every" and acts > 0 and acts % s["value"] == 0:
+            return i
+    return None
+
+
+def enraged(depth: int, hp_ratio: float) -> bool:
+    return depth >= ENRAGE_FROM and hp_ratio < ENRAGE_BELOW

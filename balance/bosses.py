@@ -1,6 +1,6 @@
 """
 六个主题的头目拉平用：伤害 ×1.5、正常装备、剑盾、单人、满血不喝血药，第 5 / 10 / 15 层各打 N 场。
-目标线：挨的伤害 45%–55%，团灭率 5% 以内。
+目标线（盾格挡上线后定的）：挨的伤害 35%–50%，团灭率 5% 以内。
 用法：python balance/bosses.py [--n 600] [--dmg 1.5] [--build sword_shield]
 """
 import argparse
@@ -26,7 +26,7 @@ def main() -> None:
         cells = []
         for depth in (5, 10, 15):
             a, w, _ = sim.fight_test(args.build, "normal", (depth - 1) // sim.TRIP, depth, [("boss", "boss")], key, n=args.n)
-            flag = "" if 0.45 <= a <= 0.55 and w <= 0.05 else " ✗"
+            flag = "" if 0.35 <= a <= 0.50 and w <= 0.05 else " ✗"
             cells.append(f"{a:.0%} / {w:.0%}{flag}")
         print(f"| {th['boss']['name']} | " + " | ".join(cells) + " |")
 

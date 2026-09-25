@@ -17,7 +17,8 @@ import yaml
 from psycopg import Cursor
 from psycopg.types.json import Jsonb
 
-from rules import (BOSS_EVERY, BOSS_PARTY_HP, ROOM_CAP, TREASURE_GUARD, UPGRADE_STEP, elite_chance, max_groups,  # noqa: F401
+from rules import (BOSS_EVERY, BOSS_PARTY_HP, ELITE_AFFIXES, ROOM_CAP, SUMMON_DMG, SUMMON_HP, THEME_PLAGUE, TREASURE_GUARD,  # noqa: F401
+                   UPGRADE_STEP, elite_chance, max_groups, unlocked_skills,
                    monster_gold, monster_stats, party_copies, stash_gold, treasure_gold)
 
 GATE = "dungeon_gate"                   # 地窖的入口、楼梯间往下都连到这个占位房间，引擎走到这里改由 through_gate 决定去哪
@@ -290,32 +291,58 @@ def parse_room(room_id: str) -> tuple[UUID, int]:
 # 每种怪再按 dungeon.yaml 的倍率、加减调整。精英血 ×1.8 攻 +1，头目血 ×2 攻 +1 防 +1
 
 def _template(cur: Cursor, depth: int, kind: str, rank: str, theme: str, share: int = 1, hp_mult: float = 1.0,
-              minion: bool = False, attacks: int = 1) -> str:
+              minion: bool = False, attacks: int = 1, affix: Optional[str] = None) -> str:
     """这一层这种怪的 NPC 模板，没有就建。share：钱分给几只（组队多刷的同一群）；hp_mult：血的倍数；
-    minion：头目带的小怪，不掉钱；attacks：战斗回合里一轮出手几次（房间满了折成血的，出手也跟着多）"""
+    minion：头目叫来的、精英带着的小怪，不掉钱也不掉东西；attacks：战斗回合里一轮出手几次（房间满了折成血的，出手也跟着多）；
+    affix：精英的词缀（rules.ELITE_AFFIXES）"""
     # 头目按主题分（每个主题的头目不一样），别的按怪的种类
     tid = (f"dg_{theme + '_' if rank == 'boss' else ''}{kind}_{depth}" + ("" if rank == "normal" else f"_{rank}")
+           + (f"_{affix}" if affix else "")
            + (f"_g{share}" if share > 1 else "") + (f"_h{round(hp_mult * 10)}" if hp_mult != 1 else "")
            + ("_m" if minion else "") + (f"_a{attacks}" if attacks > 1 else ""))
     m = data()["themes"][theme]["boss"] if rank == "boss" else data()["monsters"][kind]
     hp, atk, df = monster_stats(depth, m, rank)
-    hp = max(2, round(hp * hp_mult))
-    name = m["name"] if rank != "elite" else f"凶悍的{m['name']}"
+    fx = ELITE_AFFIXES.get(affix, {}) if rank == "elite" else {}
+    hp = max(2, round(hp * hp_mult * fx.get("hp_mult", 1)))
+    df += fx.get("def", 0)
+    name = m["name"] if rank != "elite" else f"{fx.get('name', '凶悍的')}{m['name']}"
     description = m["description"] + ("它比同类更壮、更凶，身上带着好几道旧伤。" if rank == "elite" else "")
     gold = [max(1, round(g / share)) for g in monster_gold(depth, rank)]
-    props = {"on_death": {} if minion else {"gold": gold}, "dungeon": {"depth": depth, "rank": rank}}
+    props = {"on_death": {} if minion else {"gold": gold}, "dungeon": {"depth": depth, "rank": rank, "theme": theme}}
+    attacks *= fx.get("attacks", 1)
     if attacks > 1:
         props["attacks"] = attacks
+    if affix:
+        props["affix"] = affix
+        for key in ("dmg_mult", "frenzy", "lifesteal", "thorns"):
+            if fx.get(key):
+                props[key] = fx[key]
+    if rank == "boss":
+        # 技能按层数解锁（第 5 层一招、第 10 层两招、第 15 层全套），免疫、弱点
+        if skills := unlocked_skills(m.get("skills") or [], depth):
+            props["skills"] = skills
+        for key in ("immune", "weak"):
+            if m.get(key):
+                props[key] = m[key]
     for flag in ("animal", "light_averse", "undead", "keen", "ranged"):
         if m.get(flag):
             props[flag] = True
     for key in ("healer", "verb", "guard_allies"):   # 治疗的比例、出手的说法（"甩出一颗石子"）、盾卫护同伴的几率
         if m.get(key):
             props[key] = m[key]
-    if rank == "boss":
-        props["keen"] = True                    # 头目都是警觉的：一进门就发现人，偷袭不了
+    if rank == "boss" or fx.get("keen"):
+        props["keen"] = True                    # 头目、警觉的精英：一进门就发现人，偷袭不了
     if m.get("on_hit"):
         props["on_hit"] = m["on_hit"]           # 打中时几率附带的效果（engine._on_hit）
+    if plague := fx.get("plague"):
+        # 瘟疫的精英：打中附带这一带的毒害；本来就有附带效果的，几率再加上去
+        props["on_hit"] = ({**props["on_hit"], "chance": props["on_hit"].get("chance", 0.25) + plague} if props.get("on_hit")
+                           else {"kind": THEME_PLAGUE.get(theme, "poison"), "chance": plague})
+    if minion:
+        props["minion"] = True
+        props["dmg_mult"] = props.get("dmg_mult", 1) * SUMMON_DMG      # 小怪：血一半、下手一半
+        if props.get("on_hit"):                                       # 附带的中毒、流血也减半
+            props["on_hit"] = {**props["on_hit"], "value_mult": props["on_hit"].get("value_mult", 1) * SUMMON_DMG}
     # 已经有了也按现在的数值更新：不然改了 dungeon.yaml、rules.monster_stats，以前生成过的层数、种类还是旧数值
     cur.execute(
         """insert into npc_templates (id, name, description, persona, hostile, max_hp, attack, defense, props)
@@ -351,24 +378,37 @@ def _spawn_group(cur: Cursor, room: str, depth: int, kind: str, rank: str, theme
     """放一群同种的怪：一个人一只，组队时"人数"只（这个房间一共 groups 群，总数不超过 ROOM_CAP，多的折成血）。
     钱按只数分，东西只有第一只带"""
     copies = party_copies(size, groups)
+    affix = random.choice(list(ELITE_AFFIXES)) if rank == "elite" else None      # 同一群精英同一个词缀
     for i in range(copies):
         _spawn(cur, room, depth, kind, rank, theme, share=copies, hp_mult=size / copies, loot=i == 0,
-               attacks=max(1, round(size / copies)))
+               attacks=max(1, round(size / copies)), affix=affix)
 
 
 def _spawn_boss(cur: Cursor, room: str, depth: int, kind: str, rank: str, theme: str, size: int) -> None:
     """头目、楼梯间守卫：只有一只，组队时多些血、一轮多动几次（不召小怪：组队时场面已经够乱）"""
-    _spawn(cur, room, depth, kind, rank, theme, hp_mult=1 + BOSS_PARTY_HP * (size - 1), attacks=size, stair=True)
+    _spawn(cur, room, depth, kind, rank, theme, hp_mult=1 + BOSS_PARTY_HP * (size - 1), attacks=size, stair=True,
+           affix=random.choice(list(ELITE_AFFIXES)) if rank == "elite" else None)
+
+
+def spawn_minions(cur: Cursor, room: str, depth: int, kind: str, theme: str, count: int) -> list[str]:
+    """头目叫来的、号令的精英带着的小怪：本层普通怪一半的血，不掉钱也不掉东西。返回名字"""
+    names = []
+    for _ in range(count):
+        _spawn(cur, room, depth, kind, "normal", theme, hp_mult=SUMMON_HP, minion=True, loot=False)
+        names.append(data()["monsters"][kind]["name"])
+    return names
 
 
 def _spawn(cur: Cursor, room: str, depth: int, kind: str, rank: str, theme: str, share: int = 1, hp_mult: float = 1.0,
-           minion: bool = False, loot: bool = True, attacks: int = 1, stair: bool = False) -> None:
-    tid = _template(cur, depth, kind, rank, theme, share, hp_mult, minion, attacks)
+           minion: bool = False, loot: bool = True, attacks: int = 1, stair: bool = False, affix: Optional[str] = None) -> None:
+    tid = _template(cur, depth, kind, rank, theme, share, hp_mult, minion, attacks, affix)
     cur.execute("insert into npcs (template_id, room_id, hp) select id, %s, max_hp from npc_templates where id = %s"
                 " returning id", (room, tid))
     npc_id = cur.fetchone()["id"]
     for item in _drops(kind, rank, theme, depth, stair) if loot else []:     # 身上带的东西，打死了掉在地上
         _put_item(cur, item, depth, npc=npc_id, boss=rank == "boss")
+    for _ in range(ELITE_AFFIXES.get(affix, {}).get("minions", 0)):
+        spawn_minions(cur, room, depth, kind, theme, 1)             # 号令的精英：带着一只同类小怪
 
 
 # ============ 地图 ============
@@ -438,6 +478,8 @@ def _make_floor(cur: Cursor, run: UUID, depth: int, above: Optional[str], size: 
         light = (STONE_LIGHT if kind == "entry" and is_stone(depth)
                  else theme.get("light", 35) + LIGHT_OFFSET.get(text.get("light", "dim"), 0))
         props = {"dungeon": {"depth": depth, "theme": theme_key, "kind": kind},
+                 # 头目层：楼梯间隔壁的房间是休息点，能多扎一次营（engine.do_camp）
+                 **({"rest": True} if depth % BOSS_EVERY == 0 and kind != "stairs" and frozenset((cell, stairs)) in edges else {}),
                  "env": {"light": max(0, min(100, light)), "ground": text.get("ground", "normal"),
                          "cover": bool(text.get("cover"))}}
         if kind == "entry" and is_stone(depth):

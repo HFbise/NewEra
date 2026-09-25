@@ -235,6 +235,7 @@ items:
     props:
       price: 3
       ammo: arrow
+      fire: true                 # 带火：打怕火的头目（古树守卫、沼泽女巫）伤害 ×1.5
       effects:
         - {when: hit, do: bonus, value: 2}
         - {when: hit, do: bonus, value: 2, vs: [light_averse], label: 火苗一沾身，它尖叫着往后缩}
@@ -705,6 +706,7 @@ items:
     props:
       price: 55
       light: 15
+      fire: true
       effects:
         - {when: hit, do: bonus, value: 2, vs: [light_averse]}
   cursed_twinblade:            #诅咒：卸不下来，找诺艾尔解咒

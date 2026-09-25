@@ -103,9 +103,15 @@ themes:
       description: 比别的狗头人高出一头，披着用矿车铁皮敲成的护甲，手里拎着一把沾满血锈的鹤嘴锄。
       persona: 暴躁，嗓门大，把闯进矿坑的人当成偷矿的贼，会先吼叫着让手下围上来。
       on_hit: {kind: prone, chance: 0.3, label: 被鹤嘴锄撞翻在地}
-      hp: 1.2
-      atk: 0
+      hp: 0.9
+      atk: -1
       def: 1
+      # 技能按层数解锁（rules.unlocked_skills）：第 5 层只会第一招，第 10 层两招，第 15 层起全套加狂暴
+      immune: [prone]                 # 免疫：玩家打不上去的状态、效果
+      weak: pierce                    # 弱点：破甲的打它伤害 ×1.5（rules.WEAK_MULT）
+      skills:
+        - {when: hp_below, value: 0.6, do: summon, kind: kobold, count: 2, label: 把铜哨塞进嘴里猛吹一声，巷道深处跑来了两个帮手}
+        - {when: every, value: 3, do: status_all, kind: prone, escape: 2, label: 抡起鹤嘴锄砸向地面，震得所有人站不稳}
 
   graveyard:
     name: 地下坟场
@@ -175,9 +181,14 @@ themes:
       description: 一具身披破烂法袍的高大骸骨，胸口嵌着一块发着幽光的石头，手里的长柄镰刀比人还高。
       persona: 沉默，动作缓慢而精准，把一切活人都当作要被安葬的东西，从不追出墓室。
       on_hit: {kind: corrode, chance: 0.3, label: 被镰刃带走了一股生气}
-      hp: 1.2
-      atk: 1
+      hp: 0.8
+      atk: 0
       def: 0
+      immune: [bleed]                 # 一身骸骨，不会流血
+      weak: holy
+      skills:
+        - {when: hp_below, value: 0.5, do: summon, kind: skeleton, count: 2, label: 把镰刀插进坟土，两具骷髅兵从地下爬了出来}
+        - {when: every, value: 3, do: effect_all, kind: corrode, turns: 2, label: 镰刃贴地一扫，一股寒气钻进了每个人的伤口}
 
   castle:
     name: 城堡地牢
@@ -255,9 +266,14 @@ themes:
       description: 一个穿着整套黑铁甲的高大身影，头盔的缝隙里透出两点红光，腰间挂着一大串钥匙。
       persona: 冷酷，一板一眼，把闯进来的人都当成越狱的犯人，一边追一边念着罪名。
       on_hit: {kind: restrained, chance: 0.3, label: 被铁链锁住了手脚, escape: 3}
-      hp: 1.3
-      atk: 2
+      hp: 1.2
+      atk: 3
       def: 1
+      immune: [restrained]
+      weak: poison
+      skills:
+        - {when: every, value: 3, do: status_all, kind: restrained, escape: 2, label: 甩出铁链横扫一圈}
+        - {when: fight_start, do: mark, bonus: 2, label: 用钥匙串指着人冷冷地宣判：你，有罪}
 
   forest:
     name: 地底森林
@@ -329,9 +345,14 @@ themes:
       description: 一棵会走路的古树，树皮上长着一张沉睡般的人脸，枝条像手臂一样垂着，每走一步地面都在颤。
       persona: 缓慢而愤怒，把闯进森林的人都当作砍树的贼，枝条抽过来又重又狠。
       on_hit: {kind: prone, chance: 0.35, label: 被枝条抽倒在地}
-      hp: 1.4
+      hp: 1.6
       atk: 1
       def: 1
+      immune: [prone]                 # 扎着根，撞不倒
+      weak: fire
+      skills:
+        - {when: every, value: 3, do: status_all, kind: restrained, escape: 2, label: 地下窜出一片藤蔓，缠住了所有人的脚}
+        - {when: hp_below, value: 0.5, do: self_heal, heal: 0.2, label: 根须扎得更深，树液顺着裂开的树皮流回伤口}
 
   swamp:
     name: 蘑菇沼泽
@@ -403,9 +424,15 @@ themes:
       description: 一个佝偻的老妇人，下半身和一株巨大的蘑菇长在了一起，手里拄着一根挂满骨头的拐杖。
       persona: 阴沉又爱笑，喜欢用甜言蜜语引人走进泥沼深处，发起怒来尖啸着召唤毒雾。
       on_hit: {kind: poison, chance: 0.3, turns: 2, value_mult: 0.5, label: 被毒雾呛得喘不过气}
-      hp: 1.0
+      hp: 0.85
       atk: 1
       def: 0
+      immune: [poison]
+      weak: fire
+      skills:
+        - {when: every, value: 3, do: telegraph, label: 举起骨杖念念有词，绿色的毒雾在她脚下翻涌（下一次出手全场中毒；这一轮狠狠砍她一下能打断）,
+           then: {do: effect_all, kind: poison, turns: 2, value_mult: 0.5, label: 毒雾轰地炸开，灌满了整个房间}}
+        - {when: hp_below, value: 0.5, do: summon, kind: bog_toad, count: 2, label: 尖叫一声，泥水里拱出了两只巨蟾}
 
   library:
     name: 巨大图书馆
@@ -475,9 +502,14 @@ themes:
       description: 一个披着长袍的半透明老人，眼眶里是两团墨水般的黑暗，身边环绕着飞舞的书页。
       persona: 严厉又偏执，认定每个闯进来的人都是偷书贼，一边念着馆规一边用书页割人。
       on_hit: {kind: blind, chance: 0.35, label: 被飞舞的书页遮住了视线}
-      hp: 1.4
+      hp: 1.3
       atk: 2
       def: 1
+      immune: [poison, bleed]         # 幽灵，毒和血口子都没用
+      weak: light                     # 怕光：光亮 70 以上打它伤害 ×1.5
+      skills:
+        - {when: every, value: 4, do: silence, turns: 2, label: 竖起一根手指「嘘——」，书页和卷轴上的字一下子全暗了}
+        - {when: hp_below, value: 0.5, do: summon, kind: animated_tome, count: 2, label: 一挥手，书架上扑棱棱飞下来两本书}
 
 # 传送石：打完头目（每 BOSS_EVERY 层）之后下一层的入口。摸一下能回到酒馆地窖；到过这里的人以后能从地窖直接传送过来
 stone:

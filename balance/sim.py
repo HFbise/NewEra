@@ -286,6 +286,15 @@ class Mon:
     held: int = 0                       # 这一场被控过几次（头目只吃一次）
     backs: int = 0
     heals: int = 0
+    theme: str = ""
+    skills: list = field(default_factory=list)      # 头目这一层解锁的招（rules.unlocked_skills）
+    acts: int = 0
+    used: set = field(default_factory=set)
+    pending: Optional[dict] = None      # 预告了的大招
+    mark: Optional[object] = None       # 判了罪的人
+    mark_bonus: int = 0
+    silence: int = 0
+    minion: bool = False
 
 
 @dataclass
@@ -330,20 +339,42 @@ def hero_def(h: Hero) -> int:
     return max(0, h.defense - (c["value"] if c else 0))
 
 
-def spawn(depth: int, kind: str, rank: str, theme_key: str, size: int, groups: int, boss_room: bool) -> list[Mon]:
-    """一群怪（dungeon._spawn_group / _spawn_boss）"""
+def spawn(depth: int, kind: str, rank: str, theme_key: str, size: int, groups: int, boss_room: bool,
+          minion: bool = False) -> list[Mon]:
+    """一群怪（dungeon._spawn_group / _spawn_boss / spawn_minions）：精英抽一个词缀，头目带上这一层解锁的招"""
     m = THEMES[theme_key]["boss"] if rank == "boss" else MONSTERS[kind]
     hp, atk, df = R.monster_stats(depth, m, rank)
-    props = {k: m[k] for k in ("animal", "light_averse", "undead", "keen", "ranged", "healer", "on_hit", "guard_allies")
-             if m.get(k)}
-    name = m["name"] if rank != "elite" else f"凶悍的{m['name']}"
+    props = {k: m[k] for k in ("animal", "light_averse", "undead", "keen", "ranged", "healer", "on_hit", "guard_allies",
+                               "immune", "weak") if m.get(k)}
+    affix = random.choice(list(R.ELITE_AFFIXES)) if rank == "elite" else None
+    fx = R.ELITE_AFFIXES.get(affix, {})
+    hp *= fx.get("hp_mult", 1) * (R.SUMMON_HP if minion else 1)
+    df += fx.get("def", 0)
+    for key in ("dmg_mult", "frenzy", "lifesteal", "thorns"):
+        if fx.get(key):
+            props[key] = fx[key]
+    if plague := fx.get("plague"):
+        props["on_hit"] = ({**props["on_hit"], "chance": props["on_hit"].get("chance", 0.25) + plague} if props.get("on_hit")
+                           else {"kind": R.THEME_PLAGUE.get(theme_key, "poison"), "chance": plague})
+    if minion:                              # 小怪：血一半、下手一半，附带的中毒流血也减半
+        props["dmg_mult"] = props.get("dmg_mult", 1) * R.SUMMON_DMG
+        if props.get("on_hit"):
+            props["on_hit"] = {**props["on_hit"], "value_mult": props["on_hit"].get("value_mult", 1) * R.SUMMON_DMG}
+    name = m["name"] if rank != "elite" else f"{fx.get('name', '凶悍的')}{m['name']}"
+    skills = R.unlocked_skills(m.get("skills") or [], depth) if rank == "boss" else []
     if boss_room:
         mult = 1 + R.BOSS_PARTY_HP * (size - 1)
-        return [Mon(name, max(2, round(hp * mult)), max(2, round(hp * mult)), atk, df, depth, props, rank, attacks=size)]
-    copies = R.party_copies(size, groups)
-    mult = size / copies
-    return [Mon(name, max(2, round(hp * mult)), max(2, round(hp * mult)), atk, df, depth, props, rank,
-                attacks=max(1, round(size / copies))) for _ in range(copies)]
+        out = [Mon(name, max(2, round(hp * mult)), max(2, round(hp * mult)), atk, df, depth, props, rank,
+                   attacks=size * fx.get("attacks", 1), theme=theme_key, skills=skills)]
+    else:
+        copies = 1 if minion else R.party_copies(size, groups)
+        mult = size / copies if not minion else 1
+        out = [Mon(name, max(2, round(hp * mult)), max(2, round(hp * mult)), atk, df, depth, props, rank,
+                   attacks=max(1, round(size / copies)) * fx.get("attacks", 1), theme=theme_key, minion=minion)
+               for _ in range(copies)]
+    for _ in range(fx.get("minions", 0)):
+        out += spawn(depth, kind, "normal", theme_key, 1, 1, False, minion=True)        # 号令的：带一只同类小怪
+    return out
 
 
 def pick_target(mon: Mon, heroes: list[Hero], hits: dict) -> Hero:
@@ -465,6 +496,8 @@ class Fight:
             live = self.alive()
             # 回礼：诺艾尔的书（每层一次，全场定住）、一口倒（每趟一次，放倒一只）
             ok = [m for m in live if m.rank != "boss" or not m.held]
+            if any(x.silence for x in live):
+                ok = []                          # 馆长禁了声，书念不了
             if "tome" in h.perks and "tome" not in h.floor_used and ok and (len(ok) >= 2 or ok[0].rank == "boss"):
                 h.floor_used.add("tome")
                 for m in ok:
@@ -525,7 +558,12 @@ class Fight:
         dmg = R.hurt_npc_by(power(h, shooter) + bonus, m.df - pierce)
         if "bleed" in h.effects:
             dmg = max(1, math.floor(dmg * R.BLEED_DAMAGE))
+        weak = m.props.get("weak")
+        if (weak == "pierce" and pierce) or (weak == "light" and self.light() >= R.LIGHT_BRIGHT):
+            dmg = math.ceil(dmg * R.WEAK_MULT)
         m.hp -= dmg
+        if not shooter and m.hp > 0 and (thorns := m.props.get("thorns")):
+            self.hurt_hero(h, thorns)
         self.hits[id(m)] = h
         # 被定住、迷倒的挨打时掷一次挣脱（engine._npc_counter）
         if m.hp > 0 and m.status and not m.status.get("freed"):
@@ -535,11 +573,61 @@ class Fight:
                 m.status["attempts"] += 1
 
     # ---- 怪 ----
+    def boss_turn(self, m: Mon) -> bool:
+        """engine._boss_turn：该放技能就放，返回这次出手是不是用掉了"""
+        targets = [h for h in self.heroes if not h.down]
+        if not m.skills or not targets:
+            return False
+        acts = m.acts
+        m.acts += 1
+        if m.silence:
+            m.silence -= 1
+        if m.pending is not None:
+            pend, m.pending = m.pending, None
+            if pend["hp"] - m.hp >= math.ceil(m.max_hp * R.INTERRUPT_SHARE):
+                return True                     # 被打断了
+            self.skill_effect(m, m.skills[pend["i"]]["then"], targets)
+            return True
+        i = R.due_skill(m.skills, m.hp / m.max_hp, acts, m.used)
+        if i is None:
+            return False
+        sk = m.skills[i]
+        if sk.get("when") in ("hp_below", "fight_start"):
+            m.used.add(i)
+        if sk["do"] == "telegraph":
+            m.pending = {"i": i, "hp": m.hp}
+            return True
+        if sk["do"] == "mark":
+            m.mark, m.mark_bonus = random.choice(targets), sk.get("bonus", 2)
+            return False
+        if sk["do"] == "silence":
+            m.silence = sk.get("turns", 2)
+            return True
+        self.skill_effect(m, sk, targets)
+        return True
+
+    def skill_effect(self, m: Mon, sk: dict, targets: list) -> None:
+        do = sk["do"]
+        if do == "summon":
+            room = R.SUMMON_MAX - sum(1 for x in self.alive() if x.minion)
+            for _ in range(max(0, min(sk.get("count", 1), room))):
+                for x in spawn(m.depth, sk["kind"], "normal", m.theme, 1, 1, False, minion=True):
+                    self.mons.append(x)
+                    for h in self.heroes:
+                        self.dist[(id(h), id(x))] = 2
+        elif do in ("status_all", "effect_all"):
+            for h in targets:
+                self.afflict(h, sk["kind"], m.depth, sk)
+        elif do == "self_heal":
+            m.hp = min(m.max_hp, m.hp + math.ceil(m.max_hp * sk.get("heal", 0.2)))
+
     def enemies_turn(self) -> None:
         for m in self.alive():
             if m.status:
                 if m.status.get("freed") or m.rank == "boss":      # 刚挣开的这轮来不及还手；头目只困一轮
                     m.status = None
+                continue
+            if self.boss_turn(m):
                 continue
             for _ in range(m.attacks):
                 if all(h.down for h in self.heroes):
@@ -581,11 +669,28 @@ class Fight:
             return                              # 用盾挡下了这一击
         light = self.light()
         atk = m.atk + R.dark_attack(light) - (1 if m.props.get("light_averse") and light >= R.LIGHT_BRIGHT else 0)
+        ratio = m.hp / m.max_hp
+        if m.props.get("frenzy") and ratio < 0.5:
+            atk += m.props["frenzy"]
+        if m.rank == "boss" and R.enraged(m.depth, ratio):
+            atk += R.ENRAGE_ATK
+        marked = m.mark is h
+        if marked:
+            atk += m.mark_bonus
         dmg = R.hurt_player_by(atk, hero_def(h), m.depth, guard=h.guard_ranged if ranged else 0)
-        self.hurt_hero(h, dmg)
+        self.hurt_hero(h, R.scale_damage(dmg, m.props.get("dmg_mult", 1)))
+        if marked:
+            m.mark = None
+        if (steal := m.props.get("lifesteal")):
+            m.hp = min(m.max_hp, m.hp + steal)
         if h.down or not (hit := m.props.get("on_hit")) or random.random() >= hit.get("chance", 0.25):
             return
-        kind = hit["kind"]
+        self.afflict(h, hit["kind"], m.depth, hit)
+
+    def afflict(self, h: Hero, kind: str, depth: int, hit: dict) -> None:
+        """怪打中附带的、头目全场放的效果（engine._inflict）"""
+        if h.down:
+            return
         if kind in ("restrained", "prone", "stun"):
             if not h.status:
                 h.status = {"kind": "incapacitated" if kind == "stun" else kind, "escape": hit.get("escape", 2), "attempts": 0}
@@ -593,7 +698,7 @@ class Fight:
         if kind in h.effects:
             h.effects[kind]["left"] = hit.get("turns") or R.EFFECT_TURNS[kind]
             return
-        e = {"value": max(1, round(R.effect_value(kind, m.depth) * hit.get("value_mult", 1.0))), "left": hit.get("turns") or R.EFFECT_TURNS[kind]}
+        e = {"value": max(1, round(R.effect_value(kind, depth) * hit.get("value_mult", 1.0))), "left": hit.get("turns") or R.EFFECT_TURNS[kind]}
         if kind == "corrode":
             e["hp"] = min(h.max_hp - 1, max(1, round(h.max_hp * R.CORRODE_HP)))
             h.max_hp -= e["hp"]
@@ -711,8 +816,12 @@ def run_trip(build: str, quality: str, trip: int, kit: Kit, size: int, stats: di
                 break
             if kind == "stairs":
                 # 楼梯间守着头目或精英：血量低于七成先整备，这层还没扎营就扎营，再不够就喝药
-                if not camped and any(not h.down and h.hp < h.max_hp * PREP_BELOW for h in heroes):
-                    camped = True
+                # 头目层：楼梯间隔壁是休息点，能多扎一次营（不算这一层的次数，engine.do_camp）
+                rests = ["floor"] * (not camped) + ["rest"] * (depth % R.BOSS_EVERY == 0)
+                for which in rests:
+                    if not any(not h.down and h.hp < h.max_hp * PREP_BELOW for h in heroes):
+                        break
+                    camped = camped or which == "floor"
                     ok = random.random() < R.skill_chance(SURVIVAL_LEVEL, 1 + depth // 3)
                     share = (R.CAMP_BASE + (R.CAMP_SURVIVAL if ok else 0)) * R.CAMP_EMPTY
                     for h in heroes:
