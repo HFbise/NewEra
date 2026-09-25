@@ -93,6 +93,21 @@
   #tip .btns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px; }
   #tip button { padding: 6px 16px; }
   #tip button.close { background: var(--border); color: var(--text); }
+  /* 新手教程：新角色进来自动弹，信息栏"新手教程"随时再打开；一页一步，上一步/下一步翻 */
+  #tutorial { position: fixed; inset: 0; z-index: 15; background: rgba(0, 0, 0, .6); display: flex;
+              align-items: center; justify-content: center; padding: 16px; }
+  #tutorial[hidden] { display: none; }
+  #tutorial .box { background: var(--panel); border: 1px solid var(--accent); border-radius: 10px; width: 100%;
+                   max-width: 480px; max-height: 100%; overflow-y: auto; padding: 18px 20px; }
+  #tutorial h3 { margin: 0 0 4px; font-size: 17px; }
+  #tutorial .step { color: var(--dim); font-size: 12px; margin-bottom: 10px; }
+  #tutorial .body { font-size: 14px; line-height: 1.8; }
+  #tutorial .body p { margin: 0 0 8px; }
+  #tutorial code { background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 0 5px;
+                   color: var(--you); font-family: inherit; white-space: nowrap; }
+  #tutorial .btns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
+  #tutorial button { padding: 8px 16px; }
+  #tutorial button.plain { background: var(--border); color: var(--text); margin-right: auto; }
   #login { position: fixed; inset: 0; z-index: 20; background: var(--bg); display: flex; align-items: center; justify-content: center; }
   #login form { border: 1px solid var(--border); border-radius: 8px; flex-direction: column; width: 300px; padding: 20px; }
   #login button { padding: 10px; }
@@ -140,6 +155,7 @@
   </div>
   <aside id="side"></aside>
 </div>
+<div id="tutorial" hidden><div class="box"></div></div>
 
 <script>
 const $ = s => document.querySelector(s);
@@ -191,7 +207,7 @@ function render(s) {
     ${s.stealth ? `<div class="sys">${esc(s.stealth)}</div>` : ""}
     ${p.status ? `<div class="sys">你${esc(p.status.label)}，${p.status.kind === "incapacitated" ? "说什么都算挣扎着醒来" : p.status.kind === "prone" ? "输入“站起来”爬起来" : "动不了，试试挣脱"}</div>` : ""}
     ${(p.effects || []).map(e => e.kind === "whet" ? `<div class="sys">磨利：普通攻击伤害 +${e.value}（这一层）</div>` :
-      e.kind === "cheer" ? `<div class="sys">浑身是劲（回头见❤）：攻击 +${e.value}%（还剩 ${e.left} 层）</div>` : `<div class="sys">${{poison: "中毒", bleed: "流血", blind: "看不清", corrode: "腐蚀"}[e.kind]}：${esc(e.label)}（还剩 ${e.left} ${e.kind === "bleed" ? "个动作" : "回合"}）</div>`).join("")}
+      e.kind === "cheer" ? `<div class="sys">浑身是劲（麦琪的私酿）：攻击 +${e.value}%（这一层）</div>` : `<div class="sys">${{poison: "中毒", bleed: "流血", blind: "看不清", corrode: "腐蚀"}[e.kind]}：${esc(e.label)}（还剩 ${e.left} ${e.kind === "bleed" ? "个动作" : "回合"}）</div>`).join("")}
     ${Object.keys(p.flags).length ? `<div class="tag">标记：${Object.keys(p.flags).map(esc).join("、")}</div>` : ""}
     ${s.combat ? `<div class="combat"><b>⚔ 战斗中 · 第 ${s.combat.round} 轮</b>${s.combat.resolving ? " · 结算中…" : ""}
       <div>已出手：${s.combat.acted.map(esc).join("、") || "还没人"}</div>
@@ -234,6 +250,7 @@ function render(s) {
     <ul>${s.inventory.map(i => li(i.ref, i.name,
       i.quantity > 1 ? `<span class="tag">x${i.quantity}</span>` : "", i.name, i.detail)).join("") || '<li class="sys">空</li>'}</ul>
     <h2>命令</h2>
+    <a href="#" id="open-tutorial">📖 新手教程</a>
     <div id="help">
       看 · 北 南 东 西 上 下<br>
       拿 · 扔 · 装备 · 卸下 · 吃 · 喂 · 给 · 给钱（给麦琪5金币）· 买 · 卖（把药草卖给麦琪）· 升级（找莉娜）· 住店（酒馆）<br>
@@ -381,7 +398,7 @@ $("#login-form").onsubmit = async e => {
   e.preventDefault();
   try {
     const code = $("#login-code").value;
-    const { player_id } = await api("/api/login", {
+    const { player_id, created } = await api("/api/login", {
       name: $("#login-name").value, password: $("#login-password").value, access_code: code,
     });
     try { localStorage.setItem("newera.code", code); } catch {}
@@ -392,6 +409,7 @@ $("#login-form").onsubmit = async e => {
     $("#log").innerHTML = "";
     await enter();
     $("#cmd").focus();
+    if (created) showTutorial();        // 新角色第一次进来先看教程
   } catch (err) { alert(err.message); }
 };
 
@@ -535,7 +553,56 @@ $("#cmd-form").addEventListener("pointerdown", e => {
   form.addEventListener("pointercancel", up, { once: true });
 });
 
+// 新手教程：新建角色后自动弹一次，信息栏"新手教程"随时再打开。内容只讲怎么下命令，不剧透
+const TUTORIAL = [
+  ["欢迎来到新世纪", `
+    <p>这是一个文字冒险游戏。你在下面的输入框里写想做的事，游戏判定结果，再由 AI 写成一段故事。</p>
+    <p>${innerWidth > 720 ? "右边" : "下面"}的信息栏是你现在的状态：血量、金币、所在的地方、能去的出口、这里的人和东西、背包。</p>
+    <p>村子很小：<b>广场</b>在中间，北边是麦琪的<b>酒馆</b>，东边是莉娜的<b>铁匠铺</b>，西边是诺艾尔的<b>杂货铺</b>，南边的小路通向森林。</p>`],
+  ["走路和观察", `
+    <p>输入方向就走：<code>北</code> <code>南</code> <code>东</code> <code>西</code> <code>上</code> <code>下</code>。一次只能走到隔壁，想去酒馆要先回到广场再往北。</p>
+    <p><code>看</code> 看看周围，<code>看麦琪</code> 看一个人，<code>看面包</code> 看一样东西。</p>
+    <p>点信息栏里的出口、人、东西，会把名字填进输入框，还要按<b>发送</b>才算数。</p>`],
+  ["跟人说话", `
+    <p>说话要带上内容：<code>对麦琪说 你好</code>，或者 <code>对麦琪 来杯黑啤</code>。</p>
+    <p>点 NPC 的名字只会填上“对麦琪 ”，后面接着写你想说的、想做的再发送。光发“对麦琪”她不知道你要干什么。</p>
+    <p>NPC 记得你，跟她们聊天、照顾生意、送她们喜欢的东西，好感会慢慢涨。</p>`],
+  ["东西和买卖", `
+    <p>地上的东西先拿起来：<code>拿面包</code>，再 <code>吃面包</code>。点背包里的东西能看详情和效果。</p>
+    <p>穿戴：<code>装备皮甲</code> <code>卸下皮甲</code>。金币在信息栏最上面。</p>
+    <p>买东西直接跟店主说：<code>对莉娜 有什么卖</code> <code>对诺艾尔 来一捆麻绳</code>。卖东西：<code>把药草卖给麦琪</code>。</p>
+    <p>麦琪卖吃喝、能住店（<code>住店</code> 回满血）；莉娜卖武器护甲、帮你 <code>升级</code> 装备；诺艾尔卖冒险用品。</p>`],
+  ["冒险和战斗", `
+    <p>酒馆地窖里有通往远古地牢的入口，地窖的钥匙要先帮麦琪办件事才拿得到，去问问她。</p>
+    <p>打架：<code>打哥布林</code>。有敌人时是回合制：队里的人都出完手，一起结算。</p>
+    <p>野兽可以 <code>安抚</code> 避开一仗。血少了吃东西、喝药；倒下了等别人 <code>急救</code>，或者输入 <code>复活</code> 被抬回酒馆。</p>`],
+  ["想做什么就写", `
+    <p>没列在命令里的事也能做，直接写：<code>推倒大石头砸哥布林</code> <code>躲到吧台后面</code> <code>在纸条上写：明天地牢门口见</code>。游戏会判定能不能成。</p>
+    <p>和朋友一起玩：<code>跟着寒风</code> 就是加入他的队伍，<code>离队</code> 退出。</p>
+    <p>信息栏“命令”下面有常用命令，这个教程随时能从那里的 <b>📖 新手教程</b> 再打开。祝你好运！</p>`],
+];
+let tutorialPage = 0;
+function showTutorial(page = 0) {
+  tutorialPage = page;
+  const [title, body] = TUTORIAL[page];
+  const last = page === TUTORIAL.length - 1;
+  const box = $("#tutorial .box");
+  box.innerHTML = `<h3>${title}</h3><div class="step">${page + 1} / ${TUTORIAL.length}</div><div class="body">${body}</div>
+    <div class="btns"><button class="plain" data-t="close">关闭</button>
+      ${page ? `<button class="plain" data-t="prev" style="margin-right:0">上一步</button>` : ""}
+      <button data-t="${last ? "close" : "next"}">${last ? "开始冒险" : "下一步"}</button></div>`;
+  $("#tutorial").hidden = false;
+  box.scrollTop = 0;
+}
+$("#tutorial").onclick = e => {
+  const t = e.target.dataset.t || (e.target.id === "tutorial" ? "close" : null);
+  if (t === "next") showTutorial(tutorialPage + 1);
+  else if (t === "prev") showTutorial(tutorialPage - 1);
+  else if (t === "close") { $("#tutorial").hidden = true; $("#cmd").focus(); }
+};
+
 $("#side").onclick = e => {
+  if (e.target.id === "open-tutorial") { e.preventDefault(); showTutorial(); return; }
   if (e.target.id === "logout") { e.preventDefault(); logout(); return; }
   if (e.target.id === "delete") { e.preventDefault(); deleteCharacter(); return; }
   const head = e.target.closest("h2[data-fold]");

@@ -203,7 +203,7 @@ def login(req: LoginReq):
                    values (%s, %s, %s, 20, 20, 2, 0, %s)""",
                 (pid, name, engine.START_ROOM, _hash_password(req.password)),
             )
-        return {"player_id": pid}
+        return {"player_id": pid, "created": True}      # 新角色：前端自动弹新手教程
 
 
 @app.get("/api/state")
