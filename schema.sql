@@ -357,7 +357,8 @@ create table combat_rounds (
   room_id      text primary key references rooms(id) on delete cascade,
   round        int not null default 1,
   deadline     timestamptz,                     -- 这一轮到点结算的时间；null 是还没人出手（或上一轮的叙事还在写）
-  resolving    boolean not null default false   -- 正在结算、写叙事，这时候出手的算下一轮
+  resolving    boolean not null default false,  -- 正在结算、写叙事，这时候出手的算下一轮
+  resolving_at timestamptz                       -- 开始结算的时间：卡太久（服务器中途重启）就收掉（engine.unstick_rounds）
 );
 create table combat_queue (
   room_id      text not null references rooms(id) on delete cascade,

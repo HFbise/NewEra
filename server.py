@@ -35,6 +35,14 @@ from db import pool
 from schema import SKILL_NAMES, SLOT_NAMES, ActionResult, PlayerAction, RoomView, dir_name
 
 app = FastAPI()
+
+
+@app.on_event("startup")
+def _unstick_on_start() -> None:
+    """重新部署、重启时正在结算的回合会卡在"结算中"（线程跟着进程没了）：启动时全部收掉，进下一轮"""
+    with pool.connection() as conn:
+        if rooms := engine.unstick_rounds(conn):
+            print("收掉卡住的战斗回合：", rooms)
 app.include_router(admin.router)
 
 # 这些动作的回合不调叙事 AI：facts 已经说清楚了，AI 反而容易替别的玩家编动作

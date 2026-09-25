@@ -2785,8 +2785,27 @@ def queue_round(conn: Connection, player_id: UUID, room_id: str, text: str, acti
                  where not combat_rounds.resolving""", (room_id,))
 
 
+ROUND_STUCK = "3 minutes"               # 结算（连写叙事）超过这么久还没收尾，当成卡住了（服务器中途重启、出错）
+
+
+def unstick_rounds(conn: Connection, room_id: Optional[str] = None) -> list[str]:
+    """卡在"结算中"的回合收掉进下一轮：room_id 给了只看这个房间、超过 ROUND_STUCK 的；
+    不给就是服务器刚启动，所有还在结算中的都是上一个进程没做完的，全收掉。返回收掉的房间"""
+    with conn.transaction():
+        rows = conn.execute(
+            f"""select room_id from combat_rounds where resolving
+                and (%(room)s::text is null or (room_id = %(room)s
+                     and coalesce(resolving_at, deadline, now() - interval '1 day') < now() - interval '{ROUND_STUCK}'))""",
+            {"room": room_id}).fetchall()
+    rooms = [r[0] for r in rows]
+    for r in rooms:
+        end_round(conn, r)
+    return rooms
+
+
 def round_due(conn: Connection, room_id: str) -> bool:
     """这一轮该结算了：有人出了手，而且在场（在线、没倒下）的人都出手了"""
+    unstick_rounds(conn, room_id)
     with conn.transaction():
         cur = _cursor(conn)
         cur.execute("select 1 from combat_rounds where room_id = %s and not resolving and deadline is not null", (room_id,))
@@ -2801,8 +2820,8 @@ def claim_round(conn: Connection, room_id: str) -> Optional[tuple[int, list[dict
     """开始结算这一轮：(第几轮, 按出手先后排好的命令)。别的线程已经在结算了就是 None"""
     with conn.transaction():
         cur = _cursor(conn)
-        cur.execute("update combat_rounds set resolving = true where room_id = %s and not resolving and deadline is not null "
-                    "returning round", (room_id,))
+        cur.execute("update combat_rounds set resolving = true, resolving_at = now() "
+                    "where room_id = %s and not resolving and deadline is not null returning round", (room_id,))
         row = cur.fetchone()
         if row is None:
             return None
