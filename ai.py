@@ -830,6 +830,9 @@ def npc_line(db, view: RoomView, text: str, results: list[ActionResult], npc: Np
                "但你是有礼貌的人，最后一定要真心道谢（比如“……但、但还是谢谢你”），不能怪他</important>"
                if any(engine.RELUCTANT_FACT in f for r in results if r.success for f in r.facts) else "")
             + (f"\n\n<important>{FEELINGS[feeling]}</important>" if (feeling := engine.affinity_word(affinity)) in FEELINGS else "")
+            + (f"\n\n<important>这回合已经成交：{'；'.join(sold)}。台词里当成已经卖给他了（递过去、收下钱），"
+               "不要再问要不要买、确不确定；要提价钱就说实际收的数</important>"
+               if (sold := [f for r in results if r.success and r.action == "npc_sell" for f in r.facts if "收了" in f]) else "")
             + (f"\n\n<important>这回合没做成：{'；'.join(failed)}。台词要照这个说（回绝他、说明为什么），不能答应、不能报价</important>"
                if (failed := [f for r in results if not r.success and r.action in ("npc_create", "npc_sell", "npc_give") for f in r.facts]) else "")
             + (f"\n\n<important>他要的{other[0]}你这儿不卖，是{other[1]['npc']}（{other[1]['room']}）卖的："

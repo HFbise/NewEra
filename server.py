@@ -111,6 +111,15 @@ def state(conn, view: RoomView, after: Optional[int] = None) -> dict:
     totals = engine.gear_totals(view.player.attack, view.player.defense, view.inventory)
     unlocked = engine.perks(engine._cursor(conn), view.player.id)                    # 回礼解锁的本事
     sense = "curse_sense" in unlocked
+    menus = {n.id: engine.npc_menu(engine._cursor(conn), view.player.id, n) for n in view.npcs}   # 店主能办的事、货和标价
+    party = []                                  # 队友在哪、醒着没有（侧栏队伍一栏）
+    if view.player.party_id:
+        cur.execute(f"""select p.name, r.name, p.room_id = %s, p.hp,
+                               coalesce(p.last_active_at > now() - interval '{engine.ONLINE_WINDOW}', false)
+                        from players p join rooms r on r.id = p.room_id
+                        where p.party_id = %s and p.id <> %s order by p.name""",
+                    (view.room.id, view.player.party_id, view.player.id))
+        party = [{"name": n, "room": rn, "here": here, "hp": hp, "awake": awake} for n, rn, here, hp, awake in cur.fetchall()]
     conn.commit()
     return {
         "player": view.player.model_dump(mode="json"),
@@ -129,7 +138,8 @@ def state(conn, view: RoomView, after: Optional[int] = None) -> dict:
                                 and n.template.props.get("dungeon", {}).get("rank") != "boss"),
                   "status": n.status and n.status.label,
                   # 诺艾尔的怪物图鉴（回礼）：点一下看怪的习性
-                  "detail": engine.monster_notes(n) if "bestiary" in unlocked and n.template.hostile else ""}
+                  "detail": engine.monster_notes(n) if "bestiary" in unlocked and n.template.hostile else "",
+                  "menu": menus[n.id]}
                  for n in view.npcs]
                 # 武器桶这类物件跟 NPC 列在一起，点一下填"拿…"
                 + [{"ref": by_id[d.id], "name": d.container, "status": f"{d.where}面有{d.item_name}",
@@ -147,7 +157,7 @@ def state(conn, view: RoomView, after: Optional[int] = None) -> dict:
         "attack_total": totals[0],
         "defense_total": totals[1],
         "others": others,
-        "party": view.party,
+        "party": party,
         "following": view.following,
         "stealth": ai.stealth_text(view),
         "duel": view.duel and view.duel.model_dump(),
@@ -207,13 +217,14 @@ def login(req: LoginReq):
 
 
 @app.get("/api/state")
-def get_state(player_id: UUID, after: Optional[int] = None):
+def get_state(player_id: UUID, after: Optional[int] = None, active: bool = False):
     with pool.connection() as conn:
         try:
             view = engine.load_view(conn, player_id)
         except engine.ActionError as e:
             raise HTTPException(404, str(e))
-        engine.touch(conn, player_id)      # 页面每 3 秒拉一次，顺便当心跳
+        if active:
+            engine.touch(conn, player_id)  # 页面每 3 秒拉一次，最近 5 分钟有操作才算心跳（挂机的人睡着）
         _kick_round(conn, view.room.id)    # 战斗回合：等的人掉线了就不等他，结算（没有后台定时器，靠轮询推一把）
         return state(conn, view, after)
 
@@ -690,6 +701,7 @@ def _resolve_round(room_id: str) -> None:
                 return                                  # 别的线程已经在结算了
             rnd, entries = claimed
             turns, done, hits, healers = [], {}, {}, set()
+            parsed = []                         # 后台看：每人的原话、规则还是 AI 解析的、解析出的动作（含 AI 判的难度档位）
             for e in entries:
                 try:
                     view = engine.load_view(conn, e["player_id"])
@@ -713,6 +725,8 @@ def _resolve_round(room_id: str) -> None:
                     if a.action == "revive" or a.action == "use" and getattr(a, "target", None) and a.target not in view.refs:
                         healers.add(view.player.id)                            # 头目先打给人用药、急救的
                 turns.append((view.player.name, e["text"], [f for r in results for f in r.facts]))
+                parsed.append({"name": view.player.name, "input": e["text"], "source": e.get("source"),
+                               "actions": e["actions"], "notes": e.get("notes") or []})
                 after = engine.load_view(conn, view.player.id)
                 if after.room.id != room_id:            # 逃出去了：那边的人看到他进来
                     with conn.transaction():
@@ -723,7 +737,7 @@ def _resolve_round(room_id: str) -> None:
             with conn.transaction():
                 conn.execute("insert into events (room_id, kind, facts, observer, meta) values (%s, 'combat', %s, %s, %s)",
                              (room_id, Jsonb(lines), "\n".join(lines),
-                              Jsonb({"round": rnd, "inputs": [(n, t) for n, t, _ in turns]})))
+                              Jsonb({"round": rnd, "inputs": [(n, t) for n, t, _ in turns], "players": parsed})))
             room = engine.load_room(engine._cursor(conn), room_id)
             conn.commit()
         story = None

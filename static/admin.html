@@ -314,6 +314,10 @@ function renderEvent(e) {
     ${e.narrative ? `<div>${esc(e.narrative)}</div>` : ""}
     ${e.observer ? `<div class="other">旁人：${esc(e.observer)}</div>` : ""}
     ${(m.notes || []).map(n => `<div class="warn">${esc(n)}</div>`).join("")}
+    ${(m.players || []).map(p => `<div class="meta">${esc(p.name)} · ${p.source === "ai" ? "AI 解析" : "规则解析"}</div>
+      <div class="input">&gt; ${esc(p.input)}</div>
+      ${p.actions && p.actions.length ? `<pre>${esc(p.actions.map(a => JSON.stringify(a)).join("\n"))}</pre>` : ""}
+      ${(p.notes || []).map(n => `<div class="warn">${esc(n)}</div>`).join("")}`).join("")}
   </div>`;
 }
 

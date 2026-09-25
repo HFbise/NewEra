@@ -661,7 +661,7 @@ items:
       price: 85
       two_handed: true
       effects:
-        - {when: hit, do: bonus, value: 4, if: {target_hp_below: 0.3}, label: 方头大剑重重落下，像是在行刑}
+        - {when: hit, do: bonus, value: 40, if: {target_hp_below: 0.3}, label: 方头大剑重重落下，像是在行刑}
   ambush_knife:                #先手
     name: 伏击者短刀
     description: 一把刀身涂黑的短刀，刀柄缠着吸汗的细绳，拔出来的时候没有一点反光。
@@ -697,7 +697,7 @@ items:
     props:
       price: 50
       effects:
-        - {when: hit, do: bonus, value: 3, if: {ally_down: true}}
+        - {when: hit, do: bonus, value: 30, if: {ally_down: true}}
   ember_sword:                 #光源兼打怕光
     name: 余烬长剑
     description: 剑身里像是封着一块没烧完的炭，裂纹里透出暗红的光，砍在身上会发出滋滋的声响。
@@ -738,7 +738,7 @@ items:
     props:
       price: 40
       effects:
-        - {when: attack, do: bonus, value: 3, if: {hp_below: 0.3}}
+        - {when: attack, do: bonus, value: 30, if: {hp_below: 0.3}}
   bramble_mail:                #反伤
     name: 荆棘软甲
     description: 皮甲外面缝满了晒干的荆棘，谁扑上来都得先扎一手。

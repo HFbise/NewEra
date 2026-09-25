@@ -93,7 +93,7 @@
   #tip .btns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 10px; }
   #tip button { padding: 6px 16px; }
   #tip button.close { background: var(--border); color: var(--text); }
-  /* 新手教程：新角色进来自动弹，信息栏"新手教程"随时再打开；一页一步，上一步/下一步翻 */
+  /* 新手教程：新角色进来自动弹，信息栏"ⓘ 新手教程"按钮随时再打开；上面一排标题标签直接跳，下面上一步/下一步翻 */
   #tutorial { position: fixed; inset: 0; z-index: 15; background: rgba(0, 0, 0, .6); display: flex;
               align-items: center; justify-content: center; padding: 16px; }
   #tutorial[hidden] { display: none; }
@@ -105,6 +105,10 @@
   #tutorial .body p { margin: 0 0 8px; }
   #tutorial code { background: var(--bg); border: 1px solid var(--border); border-radius: 4px; padding: 0 5px;
                    color: var(--you); font-family: inherit; white-space: nowrap; }
+  #tutorial .tabs { display: flex; flex-wrap: wrap; gap: 6px; margin-bottom: 12px; }
+  #tutorial .tabs button { padding: 4px 10px; font-size: 13px; background: var(--border); color: var(--text); }
+  #tutorial .tabs button.on { background: var(--accent); color: var(--bg); }
+  #side .tut-open { display: block; margin: 6px 0; padding: 6px 14px; }
   #tutorial .btns { display: flex; gap: 8px; justify-content: flex-end; margin-top: 14px; }
   #tutorial button { padding: 8px 16px; }
   #tutorial button.plain { background: var(--border); color: var(--text); margin-right: auto; }
@@ -228,11 +232,15 @@ function render(s) {
       (n.max_hp ? `<span class="tag">${n.hp}/${n.max_hp}</span>` : "") +
       (n.beast ? `<span class="tag">野兽·可安抚</span>` : "") +
       (n.status ? `<span class="tag">${esc(n.status)}</span>` : ""), n.fill || `对${n.name} `, n.detail)).join("")}</ul>` : ""}
+    ${s.npcs.filter(n => n.menu).map(n => `${foldHead("menu:" + n.name, `${esc(n.name)}这儿`)}
+      <ul class="menu fold-body">${n.menu.services.map(v => `<li data-name="${esc(v.fill)}">${esc(v.text)}</li>`).join("")}
+      ${n.menu.goods.map(g => `<li data-name="${esc(g.fill)}">${esc(g.name)}<span class="tag">${g.price} 金币${g.rare ? " · 稀罕货，只有一件" : ""}</span></li>`).join("")}</ul>`).join("")}
     ${s.others.length ? `<h2>其他玩家</h2><ul>${s.others.map(o => o.hp <= 0
       ? `<li data-name="对${esc(o.name)} ">${esc(o.name)}<span class="tag">倒下了</span></li>`
       : `<li data-name="对${esc(o.name)} ">${esc(o.name)}<span class="tag">${o.status ? esc(o.status) : o.awake ? "HP " + o.hp : "睡着了"}</span></li>`).join("")}</ul>` : ""}
     ${s.following ? `<div class="sys">正跟着${esc(s.following)}（输入"停止跟随"不跟了）</div>` : ""}
-    ${s.party.length ? `<h2>队伍</h2><ul>${s.party.map(n => `<li>${esc(n)}</li>`).join("")}</ul>` : ""}
+    ${s.party.length ? `<h2>队伍</h2><ul>${s.party.map(m => `<li data-name="对${esc(m.name)} ">${esc(m.name)}<span class="tag">${
+      m.here ? "在这里" : "在" + esc(m.room)}${m.hp <= 0 ? " · 倒下了" : m.awake ? "" : " · 睡着了（不会跟着走）"}</span></li>`).join("")}</ul>` : ""}
     ${s.duel ? `<h2>决斗</h2><div class="sys">正和${esc(s.duel.opponent)}决斗，相隔 ${s.duel.distance} 格。${s.duel.challenger
       ? "你是发起者，要离开得先输入“逃跑”并成功" : "你是被挑战的一方，随时可以走开，走开决斗就结束"}</div>` : ""}
     ${s.challenges.length ? `<h2>决斗申请</h2><ul>${s.challenges.map(n => `<li data-name="接受${esc(n)}的决斗">${esc(n)}<span class="tag">向你申请决斗</span></li>`).join("")}</ul>
@@ -250,7 +258,7 @@ function render(s) {
     <ul>${s.inventory.map(i => li(i.ref, i.name,
       i.quantity > 1 ? `<span class="tag">x${i.quantity}</span>` : "", i.name, i.detail)).join("") || '<li class="sys">空</li>'}</ul>
     <h2>命令</h2>
-    <a href="#" id="open-tutorial">📖 新手教程</a>
+    <button id="open-tutorial" class="tut-open">ⓘ 新手教程</button>
     <div id="help">
       看 · 北 南 东 西 上 下<br>
       拿 · 扔 · 装备 · 卸下 · 吃 · 喂 · 给 · 给钱（给麦琪5金币）· 买 · 卖（把药草卖给麦琪）· 升级（找莉娜）· 住店（酒馆）<br>
@@ -332,7 +340,7 @@ async function showHistory() {
 async function enter() {
   if (!playerId) return;            // 重试期间已经退出了
   try {
-    const s = await api(`/api/state?player_id=${playerId}`);
+    const s = await api(`/api/state?player_id=${playerId}&active=1`);
     trackRound(s);
     lastEventId = s.last_event_id;   // 进来之前的动态不补，历史记录里有看过的
     await showHistory();
@@ -357,12 +365,20 @@ let offline = false;                // 连接中断时只提示一次
 let inCombat = false;
 function trackRound(s) { inCombat = !!s.combat; }
 
+// 挂机：最近 IDLE_MS 里没打字、没点、没触屏，轮询就不算心跳（以前开着页面就一直算醒着），
+// 过一会儿（服务器那边 ONLINE_WINDOW）角色在原地睡着：跟不上队伍走、战斗回合不等他
+const IDLE_MS = 5 * 60 * 1000;
+let lastInput = Date.now();
+for (const ev of ["keydown", "pointerdown", "touchstart", "wheel"])
+  addEventListener(ev, () => { lastInput = Date.now(); }, { passive: true, capture: true });
+const activeParam = () => Date.now() - lastInput < IDLE_MS ? "&active=1" : "";
+
 let lastRefresh = 0;
 async function refresh() {
   if (!playerId || !entered) return;
   lastRefresh = Date.now();
   try {
-    const s = await api(`/api/state?player_id=${playerId}` + (lastEventId != null ? `&after=${lastEventId}` : ""));
+    const s = await api(`/api/state?player_id=${playerId}` + (lastEventId != null ? `&after=${lastEventId}` : "") + activeParam());
     trackRound(s);
     if (offline) { offline = false; log(`<div class="sys">已经重新连上了</div>`); }
     showEvents(s);
@@ -580,7 +596,7 @@ const TUTORIAL = [
   ["想做什么就写", `
     <p>没列在命令里的事也能做，直接写：<code>推倒大石头砸哥布林</code> <code>躲到吧台后面</code> <code>在纸条上写：明天地牢门口见</code>。游戏会判定能不能成。</p>
     <p>和朋友一起玩：<code>跟着寒风</code> 就是加入他的队伍，<code>离队</code> 退出。</p>
-    <p>信息栏“命令”下面有常用命令，这个教程随时能从那里的 <b>📖 新手教程</b> 再打开。祝你好运！</p>`],
+    <p>信息栏“命令”下面有常用命令，这个教程随时能从那里的 <b>ⓘ 新手教程</b> 按钮再打开。祝你好运！</p>`],
 ];
 let tutorialPage = 0;
 function showTutorial(page = 0) {
@@ -588,7 +604,9 @@ function showTutorial(page = 0) {
   const [title, body] = TUTORIAL[page];
   const last = page === TUTORIAL.length - 1;
   const box = $("#tutorial .box");
-  box.innerHTML = `<h3>${title}</h3><div class="step">${page + 1} / ${TUTORIAL.length}</div><div class="body">${body}</div>
+  // 每页的标题做成一排标签，点哪个直接跳到哪一页；下面照样有上一步、下一步
+  const tabs = TUTORIAL.map(([t], i) => `<button data-p="${i}"${i === page ? ' class="on"' : ""}>${t}</button>`).join("");
+  box.innerHTML = `<div class="tabs">${tabs}</div><h3>${title}</h3><div class="step">${page + 1} / ${TUTORIAL.length}</div><div class="body">${body}</div>
     <div class="btns"><button class="plain" data-t="close">关闭</button>
       ${page ? `<button class="plain" data-t="prev" style="margin-right:0">上一步</button>` : ""}
       <button data-t="${last ? "close" : "next"}">${last ? "开始冒险" : "下一步"}</button></div>`;
@@ -597,7 +615,8 @@ function showTutorial(page = 0) {
 }
 $("#tutorial").onclick = e => {
   const t = e.target.dataset.t || (e.target.id === "tutorial" ? "close" : null);
-  if (t === "next") showTutorial(tutorialPage + 1);
+  if (e.target.dataset.p !== undefined) showTutorial(+e.target.dataset.p);
+  else if (t === "next") showTutorial(tutorialPage + 1);
   else if (t === "prev") showTutorial(tutorialPage - 1);
   else if (t === "close") { $("#tutorial").hidden = true; $("#cmd").focus(); }
 };

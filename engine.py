@@ -928,6 +928,7 @@ def do_move(cur: Cursor, player: Player, view: RoomView, a: Move) -> list[str]:
     room = load_room(cur, to)
     dungeon.mark_seen(cur, to)
     facts.append(f"{player.name}往{dir_name(a.direction)}走，来到了{room.name}")
+    stride = _stride(cur, player, view, "walk", 1)          # 走路也练运动（攒满了这条消息末尾报熟练）
     if heal := sum(int(e.get("value", 0)) for e in _fire(cur, player, "enter", "heal")):
         facts += _heal_player(cur, player, heal)
     facts += arrived + (_torch_floor(cur, [player.name], to) if arrived else [])
@@ -960,7 +961,7 @@ def do_move(cur: Cursor, player: Player, view: RoomView, a: Move) -> list[str]:
         facts += _bow_nudge(cur, player, npc)           # 拿着弓进酒馆：麦琪提一句找人挡在前面
     if room.props.get("rest"):
         facts.append(REST_TEXT)
-    return facts + _beast_hint(cur, to)
+    return facts + _beast_hint(cur, to) + stride
 
 
 def _keen_spotted(cur: Cursor, room_id: str) -> list[str]:
@@ -1899,6 +1900,25 @@ def _gain_skill(cur: Cursor, player: Player, skill: str) -> list[str]:
     return facts
 
 
+# 运动也靠跑动练：战斗里靠近、退开每满 STRIDE["fight"] 格，平时走路每满 STRIDE["walk"] 个房间，熟练 +1
+# （以前只有判定成功才涨，自由动作用得少以后运动几乎不涨）。攒的步数记在 players.flags 的 _stride_*，满了扣掉接着攒
+STRIDE = {"fight": 6, "walk": 25}
+
+
+def _stride(cur: Cursor, player: Player, view: RoomView, kind: str, n: int) -> list[str]:
+    if n <= 0:
+        return []
+    key = f"_stride_{kind}"
+    have = int(player.flags.get(key, 0)) + n
+    gained = have >= STRIDE[kind] and "athletics" not in view.trained
+    if gained:
+        have -= STRIDE[kind]
+        view.trained.append("athletics")
+    player.flags[key] = have
+    cur.execute("update players set flags = flags || jsonb_build_object(%s::text, %s::int) where id = %s", (key, have, player.id))
+    return _gain_skill(cur, player, "athletics") if gained else []
+
+
 def _toughen(cur: Cursor, player: Player, chance: float = 1.0) -> list[str]:
     """扛住了一下（挨了打还站着、喝了毒还活着、扛住酒劲）：按几率涨一次耐性熟练"""
     return _gain_skill(cur, player, "endurance") if player.hp > 0 and _roll(chance) else []
@@ -2395,13 +2415,14 @@ def do_maneuver(cur: Cursor, player: Player, view: RoomView, a: Maneuver) -> lis
         d = max(0, min(MAX_DISTANCE, duel["distance"] - steps))
         cur.execute("update duels set distance = %s where challenger = %s", (d, duel["challenger"]))
         how = f"朝{other.name}靠近了 {steps} 格" if steps > 0 else f"从{other.name}身边退开了 {-steps} 格" if steps else f"在{other.name}附近挪了挪"
-        return [f"{player.name}{how}，现在离{other.name} {distance_word(d)}"]
+        return [f"{player.name}{how}，现在离{other.name} {distance_word(d)}"]             + _stride(cur, player, view, "fight", abs(duel["distance"] - d))
     npc = _room_npc(cur, view, player, a.target)
     st = _stealth(player)
-    d = _set_distance(st, npc, _distance(st, npc) - steps)
+    before = _distance(st, npc)
+    d = _set_distance(st, npc, before - steps)
     _save_stealth(cur, player, st)
     how = f"朝{npc.name}靠近了 {steps} 格" if steps > 0 else f"从{npc.name}身边退开了 {-steps} 格" if steps else f"在{npc.name}附近挪了挪"
-    return [f"{player.name}{how}，现在离{npc.name} {distance_word(d)}"]
+    return [f"{player.name}{how}，现在离{npc.name} {distance_word(d)}"]         + (_stride(cur, player, view, "fight", abs(before - d)) if npc.template.hostile else [])
 
 
 # 驯兽：野兽（怪标了 animal）可以安抚，避开这一仗。难度 1 + 层数/6，精英 +1，头目安抚不了。
@@ -3135,9 +3156,9 @@ def _choose_weapons(weapons: list[ItemInstance], d: int, want: Optional[ItemInst
             raise ActionError(f"{want.name}还没装填，射不了（先说「装填」）")
         if _prop(want, "ranged"):
             return [], want
-        if want not in melee and want.id not in {w.id for w in melee}:
-            raise ActionError(f"{want.name}没拿在手上")
-        return [w for w in melee if w.id == want.id], None
+        # 说了用哪把近战武器也按面板打：双持两把都算；AI 解析时指了背包里没拿着的那把，也照手上的打
+        # （以前报"没拿在手上"，这一轮白白浪费）
+        return melee, None
     if loaded and (d > 0 or not melee or _prop(loaded[0], "steady")):
         return [], loaded[0]
     return melee, None
@@ -3300,8 +3321,10 @@ def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]
                 and (a.consume or a.status == "restrained" and not feature) else None)
     if material and _precious(cur, material):
         raise ActionError(f"{material.name}太要紧了，不能拿来这么用")
-    # 拿武器做花样比空手能打得狠：上限放到重伤，打中了再加一半武器伤害
-    weapon = item if item and item.template.type == "weapon" else None
+    # 拿武器做花样比空手能打得狠：上限放到重伤，打中了再加一半武器伤害。武器按面板算：手上拿着的都算
+    # （双持副手按比例），AI 没写用哪件、只要手上有近战武器、这一下没借地形也没用别的东西，也算拿武器做的
+    held = [w for w in _weapons(cur, player) if not _prop(w, "ranged") and not _prop(w, "loads")]
+    weapon = held or ([item] if item and item.template.type == "weapon" else [])         if (item and item.template.type == "weapon") or (not item and not feature) else []
     if weapon and not feature:
         cap = WEAPON_MAX_TIER
     tier = _cap(a.tier, cap, TIERS)
@@ -3408,7 +3431,7 @@ def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]
     lethal_blow = finisher and tier == "lethal"
     if dmg := (0 if harmless_prank else poison.harm if poison else target.hp if lethal_blow
                else _bled(player, random.randint(*TIER_RANGE[tier])
-                          + (int(weapon.damage * WEAPON_STUNT_SHARE) if weapon and tier != "none" else 0))):
+                          + (int(weapon_damage(weapon) * WEAPON_STUNT_SHARE) if weapon and tier != "none" else 0))):
         if is_npc:
             hurt, down = _hurt_npc(cur, player, target, dmg)
             hurt += _assassinated(cur, player, view, target, down, not _stealth(player).detected)
@@ -4523,6 +4546,49 @@ def sellable(conn: Connection, npc: Npc, rare: Optional[str] = None, player_id: 
                 for r in cur.fetchall()]
 
 
+LIKE_WORDS = {"food": "吃的", "drink": "酒水", "herb": "草药", "wine": "酒", "weapon": "武器", "armor": "护甲", "ore": "矿石",
+              "misc": "杂物", "book": "书"}
+
+
+def npc_menu(cur: Cursor, player_id: UUID, npc: Npc) -> Optional[dict]:
+    """侧栏里店主下面的提示：这儿能办的事、墙上的货和标价（不用每次去问）。点一下把命令填进输入框。
+    稀罕货只有问出来以后才列（问货时才判有没有），回礼解锁的本事和货也列上"""
+    p = npc.template.props
+    if npc.template.hostile:
+        return None
+    name, services = npc.name, []
+    if buys := p.get("buys"):
+        services.append({"text": "收东西：" + "、".join(LIKE_WORDS.get(k, k) for k in buys.get("likes", [])) + "给价高",
+                         "fill": f"把 卖给{name}"})
+    if inn := p.get("inn"):
+        services.append({"text": f"住店 {inn.get('price', 0)} 金币：回满血、醒酒", "fill": "住店"})
+    if p.get("upgrades"):
+        services += [{"text": "升级武器、防具（最多 +10）", "fill": f"对{name} 升级"},
+                     {"text": "镶宝石 · 取宝石（地牢里掉的装备才带孔）", "fill": "把 镶到 上"}]
+    if p.get("refine"):
+        services.append({"text": "刷宝石品质（20 / 60 / 150 金币，宝石要先取下来）", "fill": "刷"})
+    if p.get("uncurse"):
+        services.append({"text": "解除装备上的诅咒", "fill": f"对{name} 解咒"})
+    if p.get("lore"):
+        services.append({"text": "讲地牢怪物的习性和打法", "fill": f"对{name} 怎么打"})
+    table = p.get("return_gifts") or {}
+    mine = perks(cur, player_id, npc.template.id)
+    services += [{"text": g["text"], "fill": f"对{name} "} for g in table.values()
+                 if g.get("perk") in mine and g.get("text") and g["perk"] not in ("map_scrap",)]
+    ids = p.get("sells", []) + perk_sells(cur, player_id, npc)
+    rare = _rare_now(cur, player_id, npc)
+    goods = []
+    if ids or rare:
+        cur.execute("select id, name, damage, defense, heal, props->'price' as price from item_templates where id = any(%s)",
+                    (ids + ([rare] if rare else []),))
+        rows = {r["id"]: r for r in cur.fetchall()}
+        for i in dict.fromkeys(ids + ([rare] if rare else [])):
+            if r := rows.get(i):
+                price = _rare_price(npc, r) if i == rare else clamp_price(r, base_price(r), markup(npc, i))
+                goods.append({"name": r["name"], "price": price, "rare": i == rare, "fill": f"对{name} 买{r['name']}"})
+    return {"services": services, "goods": goods} if services or goods else None
+
+
 OFFER_WINDOW = "10 minutes"             # NPC 报的价多久内有效
 
 # 偶尔进的稀罕货（world.yaml rare_sells）：客人问有什么卖的时判一次，不管中没中这段时间里不再判
@@ -4666,7 +4732,10 @@ def npc_hand(conn: Connection, player_id: UUID, npc: Npc, key: str, price: int, 
                     patron = _pay(cur, player, price, npc)
                     return ActionResult(action="npc_sell", success=True,
                                         facts=_sell_rare(cur, player, npc, key, name, price) + patron)
-            price = 0 if price <= 0 and can_gift(affinity) else clamp_price(stats, price if price > 0 else base_price(stats), markup(npc, key))
+            listed = clamp_price(stats, base_price(stats), markup(npc, key))
+            price = 0 if price <= 0 and can_gift(affinity) else (
+                min(listed, clamp_price(stats, price, markup(npc, key))) if price > 0 and not key.startswith("made:")
+                else clamp_price(stats, price if price > 0 else base_price(stats), markup(npc, key)))       # 墙上的货不超过标价
             patron = _pay(cur, player, price, npc)
             if key.startswith("made:"):
                 _make(cur, player_id, stats)
@@ -4703,10 +4772,13 @@ def npc_sell(conn: Connection, player_id: UUID, npc: Npc, template_id: str, pric
         with conn.transaction():
             cur = _cursor(conn)
             if offer is None:
+                # 墙上的货直接下单：按标价收；AI 这回合给的价只能往下（交情好打个折），不能往上抬
+                # （以前限在标价的两倍：诺艾尔嘴上说 20，交易那步收了 40）
                 cur.execute("select damage, defense, heal, props->'price' as price from item_templates where id = %s",
                             (template_id,))
                 stats = cur.fetchone()
-                offer = {"price": clamp_price(stats, price or base_price(stats), markup(npc, template_id))}
+                listed = clamp_price(stats, base_price(stats), markup(npc, template_id))
+                offer = {"price": min(listed, clamp_price(stats, price or listed, markup(npc, template_id)))}
             player = load_player(cur, player_id, lock=True)
             count = max(1, min(SELL_MAX_COUNT, count))
             patron = _pay(cur, player, offer["price"] * count, npc)
@@ -4845,7 +4917,7 @@ def _effect_line(e: dict) -> str:
     if e.get("do") == "bonus" and not float(v).is_integer():
         what += f"（小数部分按几率多打 1 点）"
     cond = e.get("if") or {}
-    pre = [WHEN_NAMES.get(e.get("when"), "")]
+    pre = []                                # 条件在前，"什么时候"贴着效果：有队友倒下时，打中时伤害 +30
     if vs := e.get("vs"):
         pre.append("对" + "、".join(TAG_NAMES.get(t, t) for t in vs))
     if "hp_below" in cond:
@@ -4856,7 +4928,8 @@ def _effect_line(e: dict) -> str:
         pre.append("有队友倒下时")
     tail = (f"（{round(e['chance'] * 100)}% 几率）" if e.get("chance", 1) < 1 else "") \
         + ("（每层一次）" if e.get("once") == "per_floor" else "")
-    return "，".join(p for p in pre if p) + ("：" if any(pre) else "") + what + tail
+    when = WHEN_NAMES.get(e.get("when"), "")
+    return "，".join(p for p in pre + [when + ("：" if when and not pre else "") + what] if p) + tail
 
 
 # 诺艾尔（props.lore）平时就能口头讲地牢怪物的打法：客人问起怪物怎么打，她照这个说；60 好感的图鉴解锁的是侧栏里的数字
