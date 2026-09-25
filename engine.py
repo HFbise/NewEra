@@ -849,7 +849,14 @@ def _hit_extras(cur: Cursor, player: Player, npc: Npc, dmg: int, dead: bool, fir
     return facts
 
 
+def _heal_scale(player: Player, amount: int) -> int:
+    """重伤（wound）：受到的治疗 × value%（药草、绷带解不了）"""
+    w = next((e for e in player.effects if e.kind == "wound"), None)
+    return round(amount * w.value / 100) if w else amount
+
+
 def _heal_player(cur: Cursor, player: Player, amount: int) -> list[str]:
+    amount = _heal_scale(player, amount)
     hp = min(player.max_hp, player.hp + amount)
     if hp == player.hp:
         return []
@@ -930,6 +937,8 @@ def do_move(cur: Cursor, player: Player, view: RoomView, a: Move) -> list[str]:
             if n.template.props.get("dungeon", {}).get("rank") in ("elite", "boss")
             and (n.status is None or n.status.kind == "prone")]):
         raise ActionError(f"{'、'.join(guards)}守在楼梯口，不打倒它（或者把它定住、捆住）下不去")
+    if _room_env(cur, player.room_id).get("sealed") and _enemies(cur, player.room_id):
+        raise ActionError("门被封死了，打完之前谁也出不去")
     # 被敌人发现、正在交手：得先逃跑成功（甩开了就不算被发现）才能离开
     if _stealth(player).detected and (foes := [n.name for n in _enemies(cur, player.room_id) if n.status is None]):
         raise ActionError(f"{'、'.join(foes)}正缠着{player.name}，得先逃跑成功才能离开")
@@ -1474,7 +1483,7 @@ def _antidote(cur: Cursor, player: Player, item: ItemInstance) -> list[str]:
         player.effects.remove(poison)
         _save_effects(cur, player)
         facts.append(f"{player.name}身上的中毒好了")
-    heal = heal_amount(int(_prop(item, "antidote")), player.max_hp)
+    heal = _heal_scale(player, heal_amount(int(_prop(item, "antidote")), player.max_hp))
     hp = min(player.max_hp, player.hp + heal)
     cur.execute("update players set hp = %s where id = %s", (hp, player.id))
     return facts + [f"{player.name}恢复 {hp - player.hp} 点 HP，当前 HP {hp}/{player.max_hp}", f"{_empty(cur, item)}，回酒馆找麦琪续杯"]
@@ -1706,7 +1715,7 @@ def _eat_effect(cur: Cursor, eater: Player, item: ItemInstance, user: Player) ->
                 eater.effects.append(Effect(kind="poison", value=1, left=EFFECT_TURNS["poison"], label="吃坏了肚子",
                                             source=item.name))
                 _save_effects(cur, eater)
-    hp = max(0, min(eater.max_hp, eater.hp + heal - harm))
+    hp = max(0, min(eater.max_hp, eater.hp + _heal_scale(eater, heal) - harm))
     cur.execute("update players set hp = %s, updated_at = now() where id = %s", (hp, eater.id))
     cures = [_prop(item, "cure")] + (["poison", "bleed"] if medic and medic_level >= MEDIC_CURE_LEVEL else [])
     for cure in dict.fromkeys(c for c in cures if c):
@@ -2027,6 +2036,10 @@ def _pvp_target(cur: Cursor, player: Player, name: str) -> Player:
 
 def _hurt_npc(cur: Cursor, player: Player, npc: Npc, dmg: int) -> tuple[list[str], bool]:
     """扣 NPC 血，返回 (facts, 是否死了)。死了掉东西，击杀标记算整支队伍的"""
+    if npc.template.props.get("skills") and dmg > 0:
+        cur.execute("""update npcs set tally = jsonb_set(tally || jsonb_build_object('threat', coalesce(tally->'threat', '{}'::jsonb)),
+                         array['threat', %s], to_jsonb(coalesce((tally->'threat'->>%s)::int, 0) + %s)) where id = %s""",
+                    (str(player.id), str(player.id), dmg, npc.id))
     hp = max(0, npc.hp - dmg)
     facts = [f"{npc.name} HP {hp}/{npc.template.max_hp}"]
     if hp > 0:
@@ -2186,6 +2199,8 @@ def _npc_strike(cur: Cursor, player: Player, npc: Npc, verb: str, chance: float 
         atk += props["frenzy"]                  # 狂暴的精英：血量一半以下
     if props.get("dungeon", {}).get("rank") == "boss" and enraged(depth, ratio):
         atk += ENRAGE_ATK                       # 深层头目血少了狂暴
+    if props.get("skills"):
+        atk += int(_tallies(cur, npc).get("phase_atk", 0))     # 转阶段加的攻击
     marked = props.get("skills") and _tallies(cur, npc).get("mark") == str(player.id)
     if marked:
         atk += int(_tallies(cur, npc).get("mark_bonus", 2))     # 典狱长判了罪的人
@@ -2254,7 +2269,8 @@ def _set_distance(st: Stealth, npc: Npc, d: int) -> int:
 # 中毒：每回合（每条消息）掉血、命中和判定 -POISON_HIT；流血：每个动作掉血、打出的伤害 ×BLEED_DAMAGE；
 # 看不清：光亮算 0（命中只剩 5%）；腐蚀：防御 -value、血量上限临时扣 hp（消退还回来）。
 # 同一种再中一次只刷新时间。住店、扎营、被扶起来、急救都会清掉
-EFFECT_NAMES = {"poison": "中毒", "bleed": "流血", "blind": "看不清", "corrode": "腐蚀", "whet": "磨利", "cheer": "浑身是劲"}
+EFFECT_NAMES = {"poison": "中毒", "bleed": "流血", "blind": "看不清", "corrode": "腐蚀", "whet": "磨利", "cheer": "浑身是劲",
+                "wound": "重伤"}
 # 住店、扎营、被扶起来清掉的只是坏效果，磨利、浑身是劲这种好的留着（那几处 update 里直接写了 jsonb 过滤）
 # 清掉所有效果时把腐蚀扣的血量上限还回去（SQL 片段，用在 update players set ... 里，得在改 hp 之前算）
 RESTORE_MAX_HP = "coalesce((select sum((e->>'hp')::int) from jsonb_array_elements(effects) e), 0)"
@@ -2298,7 +2314,8 @@ def _on_hit(cur: Cursor, player: Player, npc: Npc, base: Optional[int] = None) -
 
 
 def _inflict(cur: Cursor, player: Player, kind: str, label: str, depth: int, source: str, escape: int = 2,
-             turns: Optional[int] = None, value_mult: float = 1.0, base: Optional[float] = None) -> list[str]:
+             turns: Optional[int] = None, value_mult: float = 1.0, base: Optional[float] = None,
+             heal_mult: Optional[float] = None) -> list[str]:
     """给玩家上一个效果：怪打中时附带的（_on_hit），决斗里对手装备触发的（_pvp_hit_extras）。
     base：挂上它的那一下打出的伤害（中毒、流血按它的比例跳，rules.dot_value）"""
     if kind in ("restrained", "prone", "stun"):
@@ -2316,7 +2333,7 @@ def _inflict(cur: Cursor, player: Player, kind: str, label: str, depth: int, sou
                                             else "，失去战斗能力")]
     label = label or EFFECT_NAMES[kind]
     # 中毒、流血按那一下的伤害算（value_mult：这只怪的毒、血口子轻一点）；腐蚀、看不清照旧
-    value = dot_value(kind, base, depth, value_mult)
+    value = dot_value(kind, base, depth, value_mult) if kind != "wound" else round(100 * (0.5 if heal_mult is None else heal_mult))
     old = _effect(player, kind)
     if old:
         full = turns or EFFECT_TURNS[kind]
@@ -2329,6 +2346,7 @@ def _inflict(cur: Cursor, player: Player, kind: str, label: str, depth: int, sou
     what = {"poison": f"接下来 {e.left} 回合每回合掉 {value} 点血，出手也不准了",
             "bleed": f"接下来 {e.left} 个动作每动一下掉 {value} 点血，使不上劲",
             "blind": "这一回合什么都看不清",
+            "wound": f"接下来 {e.left} 回合受到的治疗" + ("全都不起作用" if value == 0 else f"只剩 {value}%") + "，药草、绷带解不了",
             "corrode": ""}[kind]
     if kind == "corrode":
         e.hp = min(player.max_hp - 1, max(1, round(player.max_hp * CORRODE_HP)))
@@ -2741,13 +2759,13 @@ def enemy_turn(conn: Connection, player_id: UUID, actions: list[PlayerAction],
                 # 挨打那一下刚摆脱状态的，这回合来不及还手
                 if any(f.startswith(f"{npc.name}摆脱了") for r in results for f in r.facts):
                     continue
-                skill, acted = _boss_turn(cur, npc, [player])
+                skill, acted = _boss_turn(cur, npc, [player], {player.id} if dodge else set())
                 facts += skill
-                if acted:
-                    continue
                 props = npc.template.props
-                for k in range(props.get("attacks", 1)):
+                for k in range(props.get("attacks", 1) + _extra_acts(cur, npc)):
                     extra = k >= props.get("base_attacks", 99)
+                    if acted and not extra:
+                        continue                    # 主动作放了技能，副动作照打
                     if extra and not _roll(props.get("extra_chance", 1.0)):
                         continue                    # 迅捷的：多出来的那一下这回没赶上
                     facts += _enemy_act(cur, player, st, npc, dodge_bonus, pinned,
@@ -2986,12 +3004,14 @@ def round_enemies(conn: Connection, room_id: str, done: dict[UUID, list[tuple[Pl
             if any(f.startswith(f"{npc.name}摆脱了") for f in freed):
                 continue                                # 挨打那一下刚摆脱状态的，这一轮来不及还手
             # 头目：该放技能就放（放技能就是这一次出手；判罪标完照样打）
-            skill, acted = _boss_turn(cur, npc, [c["p"] for c in cands if c["p"].hp > 0 and "close" not in c])
+            skill, acted = _boss_turn(cur, npc, [c["p"] for c in cands if c["p"].hp > 0 and "close" not in c],
+                                      {c["p"].id for c in cands if c["dodge"] > 0})
             facts += skill
-            if acted:
-                continue
-            # 一轮出手几次：一般一次；组队时房间怪满了、折成血的那些多打几次（dungeon._spawn_group）
-            for k in range(npc.template.props.get("attacks", 1)):
+            # 一轮出手几次：一般一次；组队时房间怪满了、折成血的那些多打几次（dungeon._spawn_group）；
+            # 深层头目主动作放了技能，副动作照打
+            for k in range(npc.template.props.get("attacks", 1) + _extra_acts(cur, npc)):
+                if acted and k < npc.template.props.get("base_attacks", 99):
+                    continue
                 # 躲起来的人只有贴身、早发现他的怪够得着（摸黑乱挥，命中减半）
                 live = [c for c in cands if c["p"].hp > 0 and ("close" not in c or npc.id in c["close"])]
                 if not live:
@@ -3028,7 +3048,7 @@ def _tally_merge(cur: Cursor, npc: Npc, values: dict) -> None:
     cur.execute("update npcs set tally = tally || %s where id = %s", (Jsonb(values), npc.id))
 
 
-def _boss_turn(cur: Cursor, npc: Npc, targets: list[Player]) -> tuple[list[str], bool]:
+def _boss_turn(cur: Cursor, npc: Npc, targets: list[Player], dodging: Optional[set] = None) -> tuple[list[str], bool]:
     """头目这一次出手前：该放技能就放（rules.due_skill），返回 (facts, 这次出手是不是已经用掉了)。
     预告过的大招这一次结算：预告以后挨了血量上限 INTERRUPT_SHARE 以上的伤害就被打断（打断靠重创，不算控制）"""
     props = npc.template.props
@@ -3042,19 +3062,30 @@ def _boss_turn(cur: Cursor, npc: Npc, targets: list[Player]) -> tuple[list[str],
         upd["silence"] = t["silence"] - 1
     info = props.get("dungeon", {})
     depth, theme = info.get("depth", 1), info.get("theme", "mine")
+    dodging = dodging or set()
+    regen_facts = []
+    if regen := t.get("regen"):
+        # 扎根（古树守卫转阶段）：每轮回血，被火打中的那一轮不回
+        if t.get("singed"):
+            upd["singed"] = False
+            regen_facts.append(f"{npc.name}身上被火燎过的地方冒着烟，这一轮没能长回来")
+        elif npc.hp < npc.template.max_hp:
+            npc.hp = min(npc.template.max_hp, npc.hp + math.ceil(npc.template.max_hp * regen))
+            cur.execute("update npcs set hp = %s where id = %s", (npc.hp, npc.id))
+            regen_facts.append(f"{npc.name}的根须吸着地底的水，伤口慢慢合上（HP {npc.hp}/{npc.template.max_hp}）")
     if (pend := t.get("pending")) is not None:
         upd["pending"] = None
         s = skills[pend["i"]]
         if pend["hp"] - npc.hp >= math.ceil(npc.template.max_hp * INTERRUPT_SHARE):
             upd["interrupted"] = t.get("interrupted", 0) + 1
             _tally_merge(cur, npc, upd)
-            return [f"{npc.name}挨了这一下重的，聚起来的招一下子散了（打断了）"], True
+            return regen_facts + [f"{npc.name}挨了这一下重的，聚起来的招一下子散了（打断了）"], True
         _tally_merge(cur, npc, upd)
-        return _skill_effect(cur, npc, s["then"], targets, depth, theme), True
-    i = due_skill(skills, npc.hp / npc.template.max_hp, acts, used)
+        return regen_facts + _skill_effect(cur, npc, s["then"], targets, depth, theme, dodging), True
+    i = due_skill(skills, npc.hp / npc.template.max_hp, acts, used, bool(t.get("phased")))
     if i is None:
         _tally_merge(cur, npc, upd)
-        return [], False
+        return regen_facts, False
     s = skills[i]
     upd["casts"] = t.get("casts", []) + [s["do"]]
     if s.get("when") in ("hp_below", "fight_start"):
@@ -3062,7 +3093,8 @@ def _boss_turn(cur: Cursor, npc: Npc, targets: list[Player]) -> tuple[list[str],
     if s["do"] == "telegraph":
         upd["pending"] = {"i": i, "hp": npc.hp}
         _tally_merge(cur, npc, upd)
-        return [f"{npc.name}{s.get('label', '在蓄一招大的')}"], True
+        hint = STRIKE_HINT if (s.get("then") or {}).get("do") == "strike" else ""
+        return regen_facts + [f"{npc.name}{s.get('label', '在蓄一招大的')}{hint}"], True
     if s["do"] == "mark":
         target = random.choice(targets)
         upd |= {"mark": str(target.id), "mark_bonus": s.get("bonus", 2)}
@@ -3074,20 +3106,114 @@ def _boss_turn(cur: Cursor, npc: Npc, targets: list[Player]) -> tuple[list[str],
         _tally_merge(cur, npc, upd)
         return [f"{npc.name}{s.get('label', '禁了声')}（它接下来出手 {s.get('turns', 2)} 次之内，谁都念不了书和卷轴）"], True
     _tally_merge(cur, npc, upd)
-    return _skill_effect(cur, npc, s, targets, depth, theme), True
+    return regen_facts + _skill_effect(cur, npc, s, targets, depth, theme, dodging), True
 
 
-def _skill_effect(cur: Cursor, npc: Npc, s: dict, targets: list[Player], depth: int, theme: str) -> list[str]:
-    """头目技能真正起作用的那一下：叫帮手、全场上状态、全场中毒腐蚀、回血"""
-    facts = [f"{npc.name}{s.get('label', '')}"]
+STRIKE_HINT = "（这一轮狠狠砍它一下能打断；被它盯上的人「闪避」能躲开一半）"
+HARD_CONTROL = {"restrained", "prone", "stun"}
+
+
+def _boss_targets(cur: Cursor, npc: Npc, mode: str, targets: list[Player]) -> list[Player]:
+    """蓄力重击、组合技打谁：all 全场、highest_threat 这一场打它最多的人、marked 被判罪的人、lowest_hp 血量比例最低的人"""
+    live = [p for p in targets if p.hp > 0]
+    if not live or mode == "all":
+        return live
+    t = _tallies(cur, npc)
+    if mode == "marked" and (m := next((p for p in live if str(p.id) == t.get("mark")), None)):
+        return [m]
+    if mode == "lowest_hp":
+        return [min(live, key=lambda p: p.hp / max(1, p.max_hp))]
+    threat = t.get("threat") or {}
+    return [max(live, key=lambda p: threat.get(str(p.id), 0))]
+
+
+def _skill_effect(cur: Cursor, npc: Npc, s: dict, targets: list[Player], depth: int, theme: str,
+                  dodging: Optional[set] = None) -> list[str]:
+    """头目技能真正起作用的那一下：叫帮手、全场上状态、全场中毒腐蚀、回血、蓄力重击、组合技、转阶段"""
+    facts = [f"{npc.name}{s.get('label', '')}"] if s.get("label") else []
     do = s["do"]
+    dodging = dodging or set()
+    if do == "strike":
+        # 蓄力重击：被瞄准的人闪避减半，写了 cover_halves 的全场大招躲在掩体后面减半
+        cover = bool(_room_env(cur, npc.room_id).get("cover"))
+        atk = npc.template.attack + int(_tallies(cur, npc).get("phase_atk", 0))
+        for p in _boss_targets(cur, npc, s.get("target", "highest_threat"), targets):
+            dmg = round(hurt_player_by(atk, _defense(cur, p), depth) * s.get("mult", 2.0))
+            note = ""
+            if p.id in dodging:
+                dmg, note = dmg // 2, f"，{p.name}闪开了大半"
+            elif s.get("cover_halves") and cover:
+                dmg, note = dmg // 2, f"，{p.name}躲在掩体后面挡掉了一半"
+            hurt, _ = _hurt_player(cur, p, max(SCALE, dmg), "npc", npc.name)
+            facts += [f"{npc.name}这一击落在{p.name}身上，造成 {max(SCALE, dmg)} 点伤害{note}"] + hurt
+        if s.get("target") == "marked":
+            _tally_merge(cur, npc, {"mark": None})
+        return facts
+    if do == "combo":
+        # 组合技：一招同时挂几个效果，一次最多一个硬控（硬控照样受"挣脱后免疫一轮"保护，持续伤害按比例）
+        for p in _boss_targets(cur, npc, s.get("target", "all"), targets):
+            hard = False
+            for e in s.get("effects", []):
+                k = e["kind"]
+                if k in HARD_CONTROL:
+                    if hard:
+                        continue
+                    hard = True
+                if k == "silence":
+                    _tally_merge(cur, npc, {"silence": e.get("turns", 2)})
+                    facts.append(f"（{npc.name}接下来出手 {e.get('turns', 2)} 次之内，谁都念不了书和卷轴）")
+                    continue
+                if k == "mark":
+                    _tally_merge(cur, npc, {"mark": str(p.id), "mark_bonus": e.get("bonus", 2 * SCALE)})
+                    facts.append(f"（{p.name}被盯上了：挨{npc.name}的打 +{e.get('bonus', 2 * SCALE)}，直到它打中一次）")
+                    continue
+                resist = gear_resist(cur, p, k)
+                if resist <= 0 or (resist < 1 and not _roll(resist)):
+                    facts.append(f"{p.name}扛住了{EFFECT_NAMES.get(k, STATE_NAMES.get(k, k))}")
+                    continue
+                facts += _inflict(cur, p, k, e.get("label", ""), depth, npc.name, e.get("escape", 2), e.get("turns"),
+                                  e.get("value_mult", 1.0), expected_hit(npc.template.attack, _defense(cur, p), depth),
+                                  e.get("heal_mult"))
+        return facts
+    if do == "phase":
+        # 转阶段：头目多一动、攻击加、扎根回血；房间变暗、变积水、封门；之后 phase: true 的招才放
+        upd: dict = {"phased": True}
+        t = _tallies(cur, npc)
+        if n := s.get("actions"):
+            upd["extra_acts"] = t.get("extra_acts", 0) + n
+            facts.append(f"（{npc.name}的动作快了，一轮多出手 {n} 次）")
+        if n := s.get("atk"):
+            upd["phase_atk"] = t.get("phase_atk", 0) + n
+        if r := s.get("regen"):
+            upd["regen"] = r
+            facts.append(f"（{npc.name}扎下了根：每轮回 {round(r * 100)}% 的血，被火打中的那一轮回不了）")
+        _tally_merge(cur, npc, upd)
+        env = s.get("env") or {}
+        if env:
+            room_env = _room_env(cur, npc.room_id)
+            new = {}
+            if "light" in env:
+                new["light"] = max(0, min(100, int(room_env.get("light", 50)) + env["light"]))
+                facts.append(f"（房间{'暗' if env['light'] < 0 else '亮'}了下来，光亮 {new['light']}）")
+            if env.get("ground"):
+                new["ground"] = env["ground"]
+                facts.append("（脚下变成了积水，行动不便）")
+            if env.get("sealed"):
+                new["sealed"] = True
+                facts.append("（门被封死了，打完之前谁也出不去）")
+            cur.execute("update rooms set props = jsonb_set(props, '{env}', coalesce(props->'env', '{}'::jsonb) || %s) where id = %s",
+                        (Jsonb(new), npc.room_id))
+        if then := s.get("then"):
+            facts += _skill_effect(cur, npc, then, targets, depth, theme, dodging)
+        return facts
     if do == "summon":
         cur.execute("""select count(*) as n from npcs n join npc_templates t on t.id = n.template_id
                        where n.room_id = %s and n.alive and (t.props->>'minion')::boolean""", (npc.room_id,))
         room = max(0, SUMMON_MAX - cur.fetchone()["n"])
         if room <= 0:
             return facts + ["可是这一回没人应声（场上的帮手已经够多了）"]
-        names = dungeon.spawn_minions(cur, npc.room_id, depth, s["kind"], theme, min(summon_count(s, depth), room))
+        names = dungeon.spawn_minions(cur, npc.room_id, depth, s["kind"], theme, min(summon_count(s, depth), room),
+                                      elite=bool(s.get("elite")))
         return facts + [f"{'、'.join(names)}加入了战斗（这些是跟着{npc.name}来的，它一倒下就会跑）"]
     if do in ("status_all", "effect_all"):
         for p in targets:
@@ -3098,7 +3224,8 @@ def _skill_effect(cur: Cursor, npc: Npc, s: dict, targets: list[Player], depth: 
                 facts.append(f"{p.name}扛住了")
                 continue
             facts += _inflict(cur, p, s["kind"], "", depth, npc.name, s.get("escape", 2), s.get("turns"),
-                              s.get("value_mult", 1.0), expected_hit(npc.template.attack, _defense(cur, p), depth))
+                              s.get("value_mult", 1.0), expected_hit(npc.template.attack, _defense(cur, p), depth),
+                              s.get("heal_mult"))
         return facts
     if do == "self_heal":
         gain = math.ceil(npc.template.max_hp * s.get("heal", 0.2))
@@ -3111,6 +3238,11 @@ def _skill_effect(cur: Cursor, npc: Npc, s: dict, targets: list[Player], depth: 
 def _silenced(cur: Cursor, room_id: str) -> Optional[str]:
     """房间里有头目禁了声：返回它的名字"""
     return next((n.name for n in _enemies(cur, room_id) if n.template.props.get("skills") and _tallies(cur, n).get("silence")), None)
+
+
+def _extra_acts(cur: Cursor, npc: Npc) -> int:
+    """转阶段多出来的副动作"""
+    return int(_tallies(cur, npc).get("extra_acts", 0)) if npc.template.props.get("skills") else 0
 
 
 def _tally(cur: Cursor, npc: Npc, key: str) -> int:
@@ -3264,6 +3396,8 @@ def do_attack(cur: Cursor, player: Player, view: RoomView, a: Attack) -> list[st
     weak = _weak_spot(cur, player, npc, melee, shooter, loaded, fired)
     if weak:
         dmg = math.ceil(dmg * WEAK_MULT)
+        if npc.template.props.get("weak") == "fire" and npc.template.props.get("skills"):
+            _tally_merge(cur, npc, {"singed": True})     # 扎根的古树守卫：被火燎过这一轮长不回来
     # 会心一击（锋墨石）：身上几件只取几率最高的一件掷一次，不叠加
     crits = _fire(cur, player, "hit", "crit", npc, roll=False)
     crit = max(crits, key=lambda e: e.get("chance", 0), default=None)
@@ -3825,6 +3959,10 @@ def _nudge_mark(cur: Cursor, player: Player, key: str) -> None:
 # 更新告示：改了玩法就往 NEWS 前面加一条（版本号、麦琪的八卦、更新说明），玩家上线后第一次进酒馆听到最新那条
 # （不然玩家只觉得"被热补丁削弱了"）。看过的版本记在 players.flags._news
 NEWS = [
+    ("2026-09-25b", "地牢深处的东西醒了。",
+     "第 16 层起的头目一轮出手两次，会预告大招（这一轮狠狠砍它能打断，被盯上的人闪避能躲开一半）、"
+     "一招挂好几个效果，血掉到一半会变阵：灯灭了、泥水涨上来、牢门封死、古树扎根回血……"
+     "新的负面效果「重伤」：受到的治疗打折，药草、绷带解不了；第 11 层往下，防御堆得越高，挡的比例涨得越慢"),
     ("2026-09-25", "听说地牢里的东西最近变机灵了……",
      "躲起来时贴在身边、早发现你的怪还会摸黑乱挥；被发现过就偷袭不了，警觉的怪面前藏不住；"
      "中毒、流血按那一下打出的伤害算，防御也挡得住了，再中只多挂一回合；"
@@ -3836,13 +3974,18 @@ NEWS_SEEN = "_news"
 
 def _news(cur: Cursor, player: Player, npc: Npc) -> list[str]:
     """麦琪在酒馆里八卦最近的更新（每个版本每人一次）"""
-    if not npc.template.props.get("inn") or not NEWS or player.flags.get(NEWS_SEEN) == NEWS[0][0]:
+    seen = player.flags.get(NEWS_SEEN)
+    if not npc.template.props.get("inn") or not NEWS or seen == NEWS[0][0]:
         return []
-    version, gossip, notes = NEWS[0]
-    player.flags[NEWS_SEEN] = version
+    fresh = []                                  # 没看过的几条（新的在前，看到上次看过的那条为止）
+    for entry in NEWS:
+        if entry[0] == seen:
+            break
+        fresh.append(entry)
+    player.flags[NEWS_SEEN] = NEWS[0][0]
     cur.execute("update players set flags = flags || jsonb_build_object(%s::text, %s::text) where id = %s",
-                (NEWS_SEEN, version, player.id))
-    return [f"{npc.name}一边擦杯子一边压低声音：“{gossip}”", f"（更新告示：{notes}）"]
+                (NEWS_SEEN, NEWS[0][0], player.id))
+    return [f"{npc.name}一边擦杯子一边压低声音：“{fresh[0][1]}”"] + [f"（更新告示：{notes}）" for _, _, notes in fresh]
 
 
 ARMOR_NUDGE, GEM_NUDGE, POTION_NUDGE = "_armor_nudge", "_gem_nudge", "_potion_nudge"

@@ -18,7 +18,7 @@ from psycopg import Cursor
 from psycopg.types.json import Jsonb
 
 from rules import (BOSS_EVERY, BOSS_PARTY_HP, ELITE_AFFIXES, GEM_TIER_PREFIX, ROOM_CAP, SCALE, SUMMON_DMG, SUMMON_HP,  # noqa: F401
-                   THEME_PLAGUE, TREASURE_GUARD, UPGRADE_STEP, BOSS_DEEP_FROM, BOSS_EXTRA_MULT, ELITE_MINIONS_FROM, elite_chance, gem_category, gem_tier, max_groups, roll_groups, gold_scale,
+                   THEME_PLAGUE, TREASURE_GUARD, UPGRADE_STEP, BOSS_DEEP_FROM, boss_actions, BOSS_EXTRA_MULT, ELITE_MINIONS_FROM, elite_chance, gem_category, gem_tier, max_groups, roll_groups, gold_scale,
                    roll_sockets, unlocked_skills,
                    monster_gold, monster_stats, party_copies, stash_gold, treasure_gold)
 
@@ -390,9 +390,10 @@ def _template(cur: Cursor, depth: int, kind: str, rank: str, theme: str, share: 
         props["extra_chance"], props["base_attacks"] = fx["extra_chance"], attacks     # 迅捷的：多出来的那几下有几率落空
     attacks *= fx.get("attacks", 1)
     if rank == "boss" and depth >= BOSS_DEEP_FROM:
-        # 深层头目一轮两动：每人多一下，多出来的那几下伤害 ×BOSS_EXTRA_MULT
+        # 深层头目一轮多动（16 层 2、31 层 3）：第一动是主动作（到点的技能，没有就普通攻击），后面是副动作 ×BOSS_EXTRA_MULT；
+        # 组队时本来一人一动，副动作也按人数加
         props["base_attacks"], props["extra_chance"], props["extra_mult"] = attacks, 1.0, BOSS_EXTRA_MULT
-        attacks *= 2
+        attacks *= boss_actions(depth)
     if m.get("pack"):
         props["pack"] = kind                    # 成群的：头领死了同种的其余逃跑
     if leader:
@@ -491,13 +492,13 @@ def _spawn_boss(cur: Cursor, room: str, depth: int, kind: str, rank: str, theme:
     # 深层头目一轮两动（第二下 ×BOSS_EXTRA_MULT）：组队时本来就一人一动，再各多一下
 
 
-def spawn_minions(cur: Cursor, room: str, depth: int, kind: str, theme: str, count: int) -> list[str]:
-    """头目叫来的、号令的精英带着的小怪：本层普通怪一半的血，不掉钱也不掉东西。返回名字"""
+def spawn_minions(cur: Cursor, room: str, depth: int, kind: str, theme: str, count: int, elite: bool = False) -> list[str]:
+    """头目叫来的、号令的精英带着的小怪：本层普通怪一半的血，不掉钱也不掉东西。elite：叫来的是精英（深层头目转阶段）。返回名字"""
     names = []
-    rank = "elite" if depth >= ELITE_MINIONS_FROM else "normal"     # 第 20 层起头目叫来的是精英
+    rank = "elite" if elite or depth >= ELITE_MINIONS_FROM else "normal"
     for _ in range(count):
         _spawn(cur, room, depth, kind, rank, theme, hp_mult=SUMMON_HP, minion=True, loot=False)
-        names.append(data()["monsters"][kind]["name"])
+        names.append(("凶悍的" if rank == "elite" else "") + data()["monsters"][kind]["name"])
     return names
 
 

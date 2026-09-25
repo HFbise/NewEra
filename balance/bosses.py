@@ -18,6 +18,7 @@ def main() -> None:
     ap.add_argument("--dmg", type=float, default=1.5)
     ap.add_argument("--build", default="sword_shield")
     ap.add_argument("--focus-boss", action="store_true", help="召唤战先打头目")
+    ap.add_argument("--quality", default="normal", help="normal 正常装备 / cap 上限档（照玩家A）")
     ap.add_argument("--depths", default="5,10,15,20,25,30", help="测哪几层（深层头目 16 层起按房间怪数涨血、一轮两动）")
     args = ap.parse_args()
     sim.VARIANT["dmg"] = args.dmg
@@ -29,7 +30,7 @@ def main() -> None:
         random.seed(key)
         cells = []
         for depth in depths:
-            a, w, _ = sim.fight_test(args.build, "normal", (depth - 1) // sim.TRIP, depth, [("boss", "boss")], key, n=args.n)
+            a, w, _ = sim.fight_test(args.build, args.quality, (depth - 1) // sim.TRIP, depth, [("boss", "boss")], key, n=args.n)
             flag = "" if 0.35 <= a <= 0.50 and w <= 0.05 else " ✗"
             cells.append(f"{a:.0%} / {w:.0%}{flag}")
         print(f"| {th['boss']['name']} | " + " | ".join(cells) + " |")

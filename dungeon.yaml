@@ -104,6 +104,7 @@ themes:
       persona: 暴躁，嗓门大，把闯进矿坑的人当成偷矿的贼，会先吼叫着让手下围上来。
       on_hit: {kind: prone, chance: 0.3, label: 被鹤嘴锄撞翻在地}
       hp: 0.9
+      deep_hp: 1.0                 # 第 16 层起的血量倍率（默认 1.3，模拟对线调的）
       atk: 0
       def: 10
       # 技能按层数解锁（rules.unlocked_skills）：第 5 层只会第一招，第 10 层两招，第 15 层起全套加狂暴
@@ -112,6 +113,9 @@ themes:
       skills:
         - {waves: [0.75, 0.5], do: summon, kind: kobold, label: 把铜哨塞进嘴里猛吹一声，巷道深处跑来了一个帮手}      # 分两次叫，每次一只（两只一起上团灭 6–9%）
         - {when: every, value: 3, do: status_all, kind: prone, escape: 2, label: 抡起鹤嘴锄砸向地面，震得所有人站不稳}
+        - {when: every, value: 4, min_depth: 16, do: combo, target: all, label: 一镐砸塌了头顶的矿道，碎石劈头盖脸砸下来, effects: [{kind: prone, escape: 2, label: 被碎石砸倒在地}, {kind: bleed, label: 被碎石划开了口子}]}
+        - {when: every, value: 5, min_depth: 16, do: telegraph, label: 把鹤嘴锄高高抡过头顶，死死盯着打它最狠的人, then: {do: strike, mult: 2.5, target: highest_threat, label: 鹤嘴锄带着风声砸了下来}}
+        - {when: hp_below, value: 0.5, min_depth: 16, do: phase, label: 一镐砸断了撑着矿道的木梁，火把一支接一支灭了, env: {light: -15}, then: {do: summon, kind: kobold, count: 1, label: 巷道深处冲出一个满身伤疤的老矿工}}
 
   graveyard:
     name: 地下坟场
@@ -189,6 +193,10 @@ themes:
       skills:
         - {when: hp_below, value: 0.5, do: summon, kind: skeleton, count: 2, label: 把镰刀插进坟土，两具骷髅兵从地下爬了出来}      # 试过分两次：第 10、15 层压力掉太多，团灭又不是两只一起上造成的
         - {when: every, value: 3, do: effect_all, kind: corrode, turns: 2, label: 镰刃贴地一扫，一股寒气钻进了每个人的伤口}
+        - {when: every, value: 4, min_depth: 16, do: combo, target: highest_threat, label: 念起安葬的祷词，坟土从地下翻上来裹住了人, effects: [{kind: restrained, escape: 2, label: 被坟土裹住了}, {kind: corrode, label: 伤口沾上了坟土}, {kind: silence, turns: 2}]}
+        - {when: every, value: 5, min_depth: 16, do: telegraph, label: 把镰刀拖在身后，绕着人慢慢转了半圈, then: {do: strike, mult: 1.5, target: all, cover_halves: true, label: 镰刀横着扫过整间墓室}}
+        - {when: hp_below, value: 0.5, min_depth: 16, do: phase, label: 一脚踩开了墓穴的石板，阴风卷灭了一半的灯火, env: {light: -10}}
+        - {when: every, value: 3, min_depth: 16, phase: true, do: summon, kind: skeleton, count: 1, label: 洞开的墓穴里又爬出一具骷髅兵}
 
   castle:
     name: 城堡地牢
@@ -274,6 +282,9 @@ themes:
       skills:
         - {when: every, value: 3, do: status_all, kind: restrained, escape: 2, label: 甩出铁链横扫一圈}
         - {when: fight_start, do: mark, bonus: 20, label: 用钥匙串指着人冷冷地宣判：你，有罪}
+        - {when: every, value: 4, min_depth: 16, do: combo, target: highest_threat, label: 铁链一甩锁住了人，开始一条一条念罪状, effects: [{kind: restrained, escape: 2, label: 被镣铐锁住了}, {kind: mark, bonus: 20}, {kind: bleed, label: 被铁链勒出了血}]}
+        - {when: every, value: 5, min_depth: 16, do: telegraph, label: 举起行刑的大斧，对准了被判罪的人, then: {do: strike, mult: 2.5, target: marked, label: 行刑斧落了下来}}
+        - {when: hp_below, value: 0.5, min_depth: 16, do: phase, label: 拽下墙上的铁闸，咣当一声封死了牢门, env: {sealed: true}, actions: 1}
 
   forest:
     name: 地底森林
@@ -346,6 +357,7 @@ themes:
       persona: 缓慢而愤怒，把闯进森林的人都当作砍树的贼，枝条抽过来又重又狠。
       on_hit: {kind: prone, chance: 0.35, label: 被枝条抽倒在地}
       hp: 1.6
+      deep_hp: 1.1                 # 第 16 层起的血量倍率（默认 1.3，模拟对线调的）
       atk: 5
       def: 10
       immune: [prone]                 # 扎着根，撞不倒
@@ -353,6 +365,9 @@ themes:
       skills:
         - {when: every, value: 3, do: status_all, kind: restrained, escape: 2, label: 地下窜出一片藤蔓，缠住了所有人的脚}
         - {when: hp_below, value: 0.5, do: self_heal, heal: 0.2, label: 根须扎得更深，树液顺着裂开的树皮流回伤口}
+        - {when: every, value: 4, min_depth: 16, do: combo, target: all, label: 地底翻出一片带毒刺的根须, effects: [{kind: restrained, escape: 2, label: 被毒根缠住了}, {kind: poison, label: 被毒刺扎了}]}
+        - {when: every, value: 5, min_depth: 16, do: telegraph, label: 抱住一根枯死的巨木，把它从地里连根拔了起来, then: {do: strike, mult: 2.0, target: all, cover_halves: true, label: 巨木轰隆一声砸下来}}
+        - {when: hp_below, value: 0.5, min_depth: 16, do: phase, label: 整个身子往下一沉，根须一路扎进了地底, regen: 0.05}
 
   swamp:
     name: 蘑菇沼泽
@@ -433,6 +448,8 @@ themes:
         - {when: every, value: 4, do: telegraph, label: 举起骨杖念念有词，绿色的毒雾在她脚下翻涌（下一次出手全场中毒；这一轮狠狠砍她一下能打断）,
            then: {do: effect_all, kind: poison, turns: 2, value_mult: 0.6, label: 毒雾轰地炸开，灌满了整个房间}}
         - {when: hp_below, value: 0.8, do: summon, kind: bog_toad, count: 1, label: 尖叫一声，泥水里拱出了一只巨蟾}
+        - {when: every, value: 4, min_depth: 16, do: combo, label: 骨杖一指，一团黑绿色的咒雾扑到脸上, effects: [{kind: poison, label: 吸进了咒雾}, {kind: blind, label: 眼前一片黑绿}, {kind: wound, turns: 3, label: 伤口烂得合不上}]}
+        - {when: hp_below, value: 0.5, min_depth: 16, do: phase, label: 尖啸一声，脚下的泥水开始上涨, env: {ground: water}, then: {do: summon, kind: bog_toad, elite: true, count: 1, label: 涨起来的泥水里浮出一只更大的巨蟾}}
 
   library:
     name: 巨大图书馆
@@ -503,6 +520,7 @@ themes:
       persona: 严厉又偏执，认定每个闯进来的人都是偷书贼，一边念着馆规一边用书页割人。
       on_hit: {kind: blind, chance: 0.35, label: 被飞舞的书页遮住了视线}
       hp: 1.3
+      deep_hp: 1.1                 # 第 16 层起的血量倍率（默认 1.3，模拟对线调的）
       atk: 20
       def: 10
       immune: [poison, bleed]         # 幽灵，毒和血口子都没用
@@ -510,6 +528,9 @@ themes:
       skills:
         - {when: every, value: 4, do: silence, turns: 2, label: 竖起一根手指「嘘——」，书页和卷轴上的字一下子全暗了}
         - {when: hp_below, value: 0.5, do: summon, kind: animated_tome, count: 2, label: 一挥手，书架上扑棱棱飞下来两本书}      # 两本一起没有爆发（团灭 2%），分开第 10、15 层只剩 30%
+        - {when: every, value: 4, min_depth: 16, do: combo, target: all, label: 书页像雪片一样扑过来，每一页上都写着罚抄的字, effects: [{kind: silence, turns: 2}, {kind: blind, label: 被书页糊住了眼睛}, {kind: bleed, label: 被纸边割开了口子}]}
+        - {when: every, value: 5, min_depth: 16, do: telegraph, label: 抽出一本烧着蓝火的书，高高举过头顶, then: {do: strike, mult: 1.5, target: all, cover_halves: true, label: 蓝色的火舌卷过整排书架}}
+        - {when: hp_below, value: 0.5, min_depth: 16, do: phase, label: 吹了一口气，馆里的灯一盏接一盏灭了, env: {light: -25}}
 
 # 传送石：打完头目（每 BOSS_EVERY 层）之后下一层的入口。摸一下能回到酒馆地窖；到过这里的人以后能从地窖直接传送过来
 stone:

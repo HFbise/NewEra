@@ -63,9 +63,13 @@ def dark_attack(light: int) -> int:
 DEF_K = 4 * SCALE
 
 
+DEF_K_DEEP_FROM, DEF_K_STEP = 10, 2    # 第 11 层起减伤常数每层 +2（第 15 层 50、第 25 层 70）
+
+
 def def_k(depth: int = 0) -> int:
-    """比例减伤的常数：越大防御越不顶用。先写死，以后当深层难度的旋钮（比如 4 + 层数/5）"""
-    return DEF_K
+    """比例减伤的常数：越大防御越不顶用。第 11 层起慢慢涨：防御为 0 的人不受影响，防御堆得越高受的影响越大，
+    压的是防具升得快的正常档，不会连不升防具的真人档一起压垮"""
+    return DEF_K + DEF_K_STEP * max(0, depth - DEF_K_DEEP_FROM)
 
 
 def hurt_player_by(atk: int, defense: int, depth: int = 0, pierce: int = 0, guard: int = 0) -> int:
@@ -87,7 +91,7 @@ OFFHAND_SHARE = 0.5                     # 双持时副手（左手）武器只�
 # ============ 负面效果 ============
 # 玩家身上的：中毒每回合掉血、命中和判定 -POISON_HIT；流血每个动作掉血、打出的伤害 ×BLEED_DAMAGE；
 # 看不清命中 ×BLIND_HIT；腐蚀防御 -value、血量上限临时扣 CORRODE_HP
-EFFECT_TURNS = {"poison": 3, "bleed": 4, "blind": 1, "corrode": 3}
+EFFECT_TURNS = {"poison": 3, "bleed": 4, "blind": 1, "corrode": 3, "wound": 3}      # wound 重伤：受到的治疗打折
 POISON_HIT, BLEED_DAMAGE, CORRODE_HP = 0.15, 0.85, 0.15
 BLEED_VALUE = 0.5                       # 流血按动作跳（一个敌人回合跳两次），每跳只有中毒的一半，算下来跟中毒持平
 # 怪身上的（玩家装备打上去的）
@@ -285,7 +289,9 @@ def monster_stats(depth: int, mods: dict, rank: str = "normal") -> tuple[int, in
     if rank == "elite":
         hp, atk = hp * ELITE_HP, atk + SCALE
     elif rank == "boss":
-        hp, atk, df = hp * boss_hp_mult(depth), atk + SCALE, df + SCALE
+        # 深层的血量倍率各个头目可以自己写（dungeon.yaml boss.deep_hp，默认 BOSS_DEEP_HP）
+        deep = mods.get("deep_hp", BOSS_DEEP_HP) / BOSS_DEEP_HP if depth >= BOSS_DEEP_FROM else 1
+        hp, atk, df = hp * boss_hp_mult(depth) * deep, atk + SCALE, df + SCALE
     return max(2 * SCALE, round(hp)), max(SCALE, atk), max(0, df)
 
 
@@ -295,15 +301,19 @@ def room_monsters(depth: int) -> float:
     return 1 + second + second * third
 
 
-BOSS_DEEP_FROM = 999                    # 头目从这一层起跟着房间一起涨：血 = 1 + 一个战斗房平均几只怪（至少 2 倍），一轮两动。
-                                        # 先关着（原定 16）：模拟里第 20–30 层正常装备挨 90–117%、团灭五成以上，跟真人对不上，等真人头目战数据再定
-BOSS_EXTRA_MULT = 0.6                   # 深层头目第二下的伤害
+BOSS_DEEP_FROM = 16                     # 深层头目：从这一层起一轮两动（第 31 层起三动），血量倍率 +30%，解锁深层技能（min_depth）
+BOSS_EXTRA_MULT = 0.4                   # 副动作（主动作是到点的技能，没有就普通攻击）的伤害（方案 0.6，模拟里第 16 层普通档挨 60–87%，降到 0.4）
+BOSS_DEEP_HP = 1.3
 
 
 def boss_hp_mult(depth: int) -> float:
-    """头目血量是普通怪的几倍：15 层以内 2 倍（按那时一两只怪的房间调好的）；16 层起 1 + 房间平均怪数，
-    深层一屋子两三群的时候头目不再是最轻松的一场"""
-    return 2.0 if depth < BOSS_DEEP_FROM else max(2.0, 1 + room_monsters(depth))
+    """头目血量是普通怪的几倍：15 层以内 2 倍；16 层起再 +30%。压迫感靠一轮多动、看得见的大招、组合技和转阶段，不靠堆血"""
+    return 2.0 * (BOSS_DEEP_HP if depth >= BOSS_DEEP_FROM else 1)
+
+
+def boss_actions(depth: int) -> int:
+    """头目一轮动几次（单人）：15 层以内 1，16 层起 2，31 层起 3"""
+    return 1 if depth < BOSS_DEEP_FROM else 2 if depth < 31 else 3
 
 
 def monster_gold(depth: int, rank: str) -> list[int]:
@@ -404,9 +414,11 @@ def summon_count(skill: dict, depth: int) -> int:
 def unlocked_skills(skills: list[dict], depth: int) -> list[dict]:
     """这一层的头目会哪几招（按顺序解锁）。分批叫帮手的（waves: [0.6, 0.3]）展开成几招，每次叫一只，
     免得两只同时压上来打出爆发；第 5 层的入门版只有第一波"""
-    n = 1 if depth < 10 else 2 if depth < ENRAGE_FROM else len(skills)
+    basic = [s for s in skills if not s.get("min_depth")]
+    n = 1 if depth < 10 else 2 if depth < ENRAGE_FROM else len(basic)
+    # 深层技能（min_depth）到那一层才会，接在原来的招后面
     out = []
-    for s in skills[:n]:
+    for s in basic[:n] + [s for s in skills if s.get("min_depth") and s["min_depth"] <= depth]:
         if waves := s.get("waves"):
             base = {k: v for k, v in s.items() if k != "waves"}
             out += [{**base, "when": "hp_below", "value": w, "count": 1} for w in (waves[:1] if depth < 10 else waves)]
@@ -415,9 +427,12 @@ def unlocked_skills(skills: list[dict], depth: int) -> list[dict]:
     return out
 
 
-def due_skill(skills: list[dict], hp_ratio: float, acts: int, used: set) -> Optional[int]:
-    """这一次出手该放哪一招（技能的下标），没有就是 None。acts 是这一场已经出手过几次，used 是放过的一次性技能"""
+def due_skill(skills: list[dict], hp_ratio: float, acts: int, used: set, phased: bool = False) -> Optional[int]:
+    """这一次出手该放哪一招（技能的下标），没有就是 None。acts 是这一场已经出手过几次，used 是放过的一次性技能，
+    phased：转过阶段了（写了 phase: true 的招转阶段以后才放）"""
     for i, s in enumerate(skills):
+        if s.get("phase") and not phased:
+            continue
         when = s.get("when")
         if when == "hp_below" and hp_ratio < s["value"] and i not in used:
             return i

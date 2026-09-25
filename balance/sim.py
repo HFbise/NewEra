@@ -412,6 +412,11 @@ class Mon:
     mark_bonus: int = 0
     silence: int = 0
     minion: bool = False
+    threat: dict = field(default_factory=dict)      # 每个人打了它多少（蓄力重击打最有威胁的人）
+    phased: bool = False                # 转过阶段了
+    extra_acts: int = 0                 # 转阶段多出来的副动作
+    phase_atk: int = 0
+    regen: float = 0.0                  # 扎根：每轮回血
 
 
 @dataclass
@@ -432,6 +437,8 @@ class Hero:
     herbs: int = 0
     sneak: bool = False                 # 潜行打法：进门没被警觉的怪盯上就先偷袭一下
     guard: Optional[str] = None         # 刚挣脱、爬起来的那种控制：这个敌人回合里不再中
+    dodging: bool = False               # 这一轮闪避了（被蓄力重击盯上时，普通档一半几率会这么做，上限档总会）
+    smart: float = 0.5
     stealth: int = 0                    # 隐匿等级
     perks: set = field(default_factory=set)
     effects: dict = field(default_factory=dict)     # kind -> {"value", "left", "hp"}
@@ -455,6 +462,12 @@ def power(h: Hero, shooter: Optional[Weapon]) -> int:
     base = h.atk + (shooter.damage if shooter else sum(d if k == 0 else int(d * R.OFFHAND_SHARE)
                                                          for k, (_, d) in enumerate(h.melee)))
     return int(base * (1 + R.CHEER_ATTACK / 100 if h.cheer else 1) + 0.5)
+
+
+def heal_scale(h: Hero, amount: int) -> int:
+    """重伤：受到的治疗 × value%（engine._heal_scale）"""
+    w = h.effects.get("wound")
+    return round(amount * w["value"] / 100) if w else amount
 
 
 def hero_def(h: Hero) -> int:
@@ -498,7 +511,7 @@ def spawn(depth: int, kind: str, rank: str, theme_key: str, size: int, groups: i
         if deep:                                # 深层头目一轮两动，第二下 ×BOSS_EXTRA_MULT
             props["extra_chance"], props["extra_mult"] = 1.0, R.BOSS_EXTRA_MULT
         out = [Mon(name, max(2 * R.SCALE, round(hp * mult)), max(2 * R.SCALE, round(hp * mult)), atk, df, depth, props, rank,
-                   attacks=size * fx.get("attacks", 1) * (2 if deep else 1), theme=theme_key, skills=skills,
+                   attacks=size * fx.get("attacks", 1) * (R.boss_actions(depth) if deep else 1), theme=theme_key, skills=skills,
                    base_attacks=size if fx.get("extra_chance") or deep else 99)]
     else:
         copies = 1 if minion else R.party_copies(size, groups)
@@ -586,7 +599,7 @@ class Fight:
         if h.potions:
             h.potions -= 1
             h.drank += 1
-            h.hp = min(h.max_hp, h.hp + R.heal_amount(ITEMS[POTION]["heal"], h.max_hp))
+            h.hp = min(h.max_hp, h.hp + heal_scale(h, R.heal_amount(ITEMS[POTION]["heal"], h.max_hp)))
             return True
         if "flask" in h.perks and "flask" not in h.trip_used:
             h.trip_used.add("flask")            # 麦琪的私酿：回满，这一层攻击 +25%
@@ -594,7 +607,7 @@ class Fight:
             return True
         if h.herbs:
             h.herbs -= 1
-            h.hp = min(h.max_hp, h.hp + R.heal_amount(HERB_HEAL, h.max_hp))
+            h.hp = min(h.max_hp, h.hp + heal_scale(h, R.heal_amount(HERB_HEAL, h.max_hp)))
             return True
         return False
 
@@ -609,8 +622,8 @@ class Fight:
                 b["left"] -= 1
 
     def tick_turn(self, h: Hero) -> None:
-        """中毒、看不清、腐蚀：每回合"""
-        for kind in ("poison", "blind", "corrode"):
+        """中毒、看不清、腐蚀、重伤：每回合"""
+        for kind in ("poison", "blind", "corrode", "wound"):
             e = h.effects.get(kind)
             if not e:
                 continue
@@ -622,6 +635,25 @@ class Fight:
             if kind == "poison" and not h.down:
                 self.hurt_hero(h, e["value"])
             e["left"] -= 1
+
+    def strike_on(self, h: Hero) -> bool:
+        """有头目预告了冲着他来的蓄力重击"""
+        for m in self.alive():
+            if m.pending is not None:
+                then = m.skills[m.pending["i"]].get("then") or {}
+                if then.get("do") == "strike" and h in self.boss_targets(m, then.get("target", "highest_threat")):
+                    return True
+        return False
+
+    def boss_targets(self, m: Mon, mode: str) -> list:
+        live = [h for h in self.heroes if not h.down]
+        if not live or mode == "all":
+            return live
+        if mode == "marked" and m.mark in live:
+            return [m.mark]
+        if mode == "lowest_hp":
+            return [min(live, key=lambda h: h.hp / h.max_hp)]
+        return [max(live, key=lambda h: m.threat.get(id(h), 0))]
 
     def target(self, h: Hero) -> Mon:
         """先打治疗的，再打远程的，再打血少的"""
@@ -656,6 +688,9 @@ class Fight:
                     st["attempts"] += 1
                 continue
             if h.hp < h.max_hp * DRINK_BELOW and self.drink(h):
+                continue
+            if not h.dodging and self.strike_on(h) and random.random() < h.smart:
+                h.dodging = True                 # 看见大招冲着自己来：这一下用来闪避
                 continue
             live = self.alive()
             # 回礼：诺艾尔的书（每层一次，全场定住）、一口倒（每趟一次，放倒一只）
@@ -728,6 +763,7 @@ class Fight:
         if (weak == "pierce" and pierce) or (weak == "light" and self.light() >= R.LIGHT_BRIGHT):
             dmg = math.ceil(dmg * R.WEAK_MULT)
         m.hp -= dmg
+        m.threat[id(h)] = m.threat.get(id(h), 0) + dmg
         if m.hp <= 0 and m.props.get("leader"):
             for x in self.alive():
                 if x.props.get("pack") == m.props["pack"]:
@@ -756,13 +792,15 @@ class Fight:
         m.acts += 1
         if m.silence:
             m.silence -= 1
+        if m.regen and m.hp < m.max_hp:
+            m.hp = min(m.max_hp, m.hp + math.ceil(m.max_hp * m.regen))
         if m.pending is not None:
             pend, m.pending = m.pending, None
             if pend["hp"] - m.hp >= math.ceil(m.max_hp * R.INTERRUPT_SHARE):
                 return True                     # 被打断了
             self.skill_effect(m, m.skills[pend["i"]]["then"], targets)
             return True
-        i = R.due_skill(m.skills, m.hp / m.max_hp, acts, m.used)
+        i = R.due_skill(m.skills, m.hp / m.max_hp, acts, m.used, m.phased)
         if i is None:
             return False
         sk = m.skills[i]
@@ -784,9 +822,10 @@ class Fight:
         do = sk["do"]
         if do == "summon":
             room = R.SUMMON_MAX - sum(1 for x in self.alive() if x.minion)
+            elite = sk.get("elite") or m.depth >= R.ELITE_MINIONS_FROM
             for _ in range(max(0, min(R.summon_count(sk, m.depth), room))):
-                for x in spawn(m.depth, sk["kind"], "elite" if m.depth >= R.ELITE_MINIONS_FROM else "normal", m.theme, 1, 1, False,
-                               minion=True, affix="plain" if m.depth >= R.ELITE_MINIONS_FROM else None):
+                for x in spawn(m.depth, sk["kind"], "elite" if elite else "normal", m.theme, 1, 1, False,
+                               minion=True, affix="plain" if elite else None):
                     self.mons.append(x)
                     for h in self.heroes:
                         self.dist[(id(h), id(x))] = 2
@@ -795,6 +834,39 @@ class Fight:
                 self.afflict(h, sk["kind"], m.depth, sk, R.expected_hit(m.atk, hero_def(h), m.depth))
         elif do == "self_heal":
             m.hp = min(m.max_hp, m.hp + math.ceil(m.max_hp * sk.get("heal", 0.2)))
+        elif do == "strike":
+            atk = m.atk + m.phase_atk
+            for h in self.boss_targets(m, sk.get("target", "highest_threat")):
+                dmg = round(R.hurt_player_by(atk, hero_def(h), m.depth) * sk.get("mult", 2.0))
+                if h.dodging or (sk.get("cover_halves") and self.cover):
+                    dmg //= 2
+                self.hurt_hero(h, max(R.SCALE, dmg))
+            if sk.get("target") == "marked":
+                m.mark = None
+        elif do == "combo":
+            for h in self.boss_targets(m, sk.get("target", "all")):
+                hard = False
+                for e in sk.get("effects", []):
+                    k = e["kind"]
+                    if k in ("restrained", "prone", "stun"):
+                        if hard:
+                            continue
+                        hard = True
+                    if k == "silence":
+                        m.silence = e.get("turns", 2)
+                    elif k == "mark":
+                        m.mark, m.mark_bonus = h, e.get("bonus", 2 * R.SCALE)
+                    else:
+                        self.afflict(h, k, m.depth, e, R.expected_hit(m.atk, hero_def(h), m.depth))
+        elif do == "phase":
+            m.phased = True
+            m.extra_acts += sk.get("actions", 0)
+            m.phase_atk += sk.get("atk", 0)
+            m.regen = sk.get("regen", m.regen)
+            if "light" in (sk.get("env") or {}):
+                self.base_light = max(0, min(100, self.base_light + sk["env"]["light"]))
+            if then := sk.get("then"):
+                self.skill_effect(m, then, targets)
 
     def enemies_turn(self) -> None:
         for m in self.alive():
@@ -802,9 +874,10 @@ class Fight:
                 if m.status.get("freed") or m.rank == "boss":      # 刚挣开的这轮来不及还手；头目只困一轮
                     m.status = None
                 continue
-            if self.boss_turn(m):
-                continue
-            for k in range(m.attacks):
+            acted = self.boss_turn(m)
+            for k in range(m.attacks + m.extra_acts):
+                if acted and k < m.base_attacks:
+                    continue                     # 主动作放了技能，副动作照打
                 if all(h.down for h in self.heroes):
                     return
                 if k >= m.base_attacks and random.random() >= m.props.get("extra_chance", 1):
@@ -813,6 +886,7 @@ class Fight:
                                m.props.get("extra_mult", 1.0) if k >= m.base_attacks else 1.0)
         for h in self.heroes:
             h.guard = None
+            h.dodging = False
 
     def enemy_act(self, m: Mon, h: Hero, mult: float = 1.0) -> None:
         props = m.props
@@ -854,6 +928,7 @@ class Fight:
             atk += m.props["frenzy"]
         if m.rank == "boss" and R.enraged(m.depth, ratio):
             atk += R.ENRAGE_ATK
+        atk += m.phase_atk
         marked = m.mark is h
         if marked:
             atk += m.mark_bonus
@@ -882,7 +957,8 @@ class Fight:
         if kind in h.effects:
             h.effects[kind]["left"] = min(full, h.effects[kind]["left"] + 1)
             return
-        e = {"value": R.dot_value(kind, base, depth, hit.get("value_mult", 1.0)), "left": full}
+        e = {"value": R.dot_value(kind, base, depth, hit.get("value_mult", 1.0)) if kind != "wound"
+             else round(100 * (hit.get("heal_mult") if hit.get("heal_mult") is not None else 0.5)), "left": full}
         if kind == "corrode":
             e["hp"] = min(h.max_hp - 1, max(1, round(h.max_hp * R.CORRODE_HP)))
             h.max_hp -= e["hp"]
@@ -957,6 +1033,7 @@ def make_heroes(build: str, quality: str, trip: int, kit, size: int, depth: int)
         hp = endurance_hp(depth)
         perks = {"bookmark", "tome", "flask", "drug"} if quality == "fav" else set()
         heroes.append(Hero(hp, hp, 2 * R.SCALE, defense, ws, r, sneak=build == "dual_sneak", stealth=stealth_level(depth),
+                           smart=1.0 if quality == "cap" else 0.5,
                            guard_ranged=guard, block=block, gem_bonus=kit.gem_bonus, gem_pierce=kit.gem_pierce, gem_crit=kit.gem_crit,
                            potions=kit.potions, perks=perks))
     return heroes

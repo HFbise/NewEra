@@ -552,7 +552,7 @@ class Status(BaseModel):
                                      "prone": "倒在地上，还没爬起来"}[self.kind]
 
 
-EffectKind = Literal["poison", "bleed", "blind", "corrode", "whet", "cheer"]
+EffectKind = Literal["poison", "bleed", "blind", "corrode", "whet", "cheer", "wound"]     # wound 重伤：受到的治疗 × value%
 # whet、cheer 是好的：whet 磨刀石，这一层伤害 +value；cheer 麦琪的"回头见❤"，攻击 +value%，left 是还剩几层
 
 
