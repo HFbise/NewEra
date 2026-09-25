@@ -2051,6 +2051,12 @@ def _npc_gone(cur: Cursor, player: Player, npc: Npc, tamed: bool = False) -> lis
                            returning t.name""", (npc.room_id,))
             if fled := list(dict.fromkeys(r["name"] for r in cur.fetchall())):
                 facts.append(f"{'、'.join(fled)}见{npc.name}倒下了，四散逃进了黑暗里")
+    if npc.template.props.get("leader") and (kind := npc.template.props.get("pack")):
+        cur.execute("""update npcs n set hp = 0, alive = false, died_at = now(), status = null from npc_templates t
+                       where t.id = n.template_id and n.room_id = %s and n.alive and t.props->>'pack' = %s
+                       returning t.name""", (npc.room_id, kind))
+        if fled := list(dict.fromkeys(r["name"] for r in cur.fetchall())):
+            facts.append(f"头领一倒，{'、'.join(fled)}夹着尾巴逃进了黑暗里")
     flag = npc.template.props.get("on_death", {}).get("set_flag")
     if flag:
         # 同一房间的队友一起记上标记
@@ -2150,7 +2156,7 @@ def _npc_counter(cur: Cursor, player: Player, npc: Npc) -> list[str]:
     return _npc_strike(cur, player, npc, "反击")
 
 
-def _npc_strike(cur: Cursor, player: Player, npc: Npc, verb: str, chance: float = 1.0) -> list[str]:
+def _npc_strike(cur: Cursor, player: Player, npc: Npc, verb: str, chance: float = 1.0, mult: float = 1.0) -> list[str]:
     """NPC 打玩家一下（反击、主动攻击），chance 是命中率。player.hp 跟着更新，同一回合几个敌人连着打能接上"""
     if _npc_effect(npc, "blind"):
         chance *= NPC_BLIND_HIT                 # 被墨汁糊了眼的怪
@@ -2182,7 +2188,7 @@ def _npc_strike(cur: Cursor, player: Player, npc: Npc, verb: str, chance: float 
     if marked:
         atk += int(_tallies(cur, npc).get("mark_bonus", 2))     # 典狱长判了罪的人
     guard = sum(int(e.get("value", 0)) for e in _fire(cur, player, "hurt", "guard", npc))       # 恶犬项圈
-    dmg = scale_damage(hurt_player_by(atk, _defense(cur, player), depth, guard=guard), props.get("dmg_mult", 1))
+    dmg = scale_damage(hurt_player_by(atk, _defense(cur, player), depth, guard=guard), props.get("dmg_mult", 1) * mult)
     saved = []
     if dmg >= player.hp and (mark := _carries(cur, player, "guard_once")) and _once_per_floor(cur, player, "cheat_death"):
         return [f"{npc.name}{verb}，这一下本该要了{player.name}的命",
@@ -2214,7 +2220,7 @@ def _npc_strike(cur: Cursor, player: Player, npc: Npc, verb: str, chance: float 
     if reflect := sum(int(e.get("value", 0)) for e in _fire(cur, player, "hurt", "reflect", npc)):
         hurt, _ = _hurt_npc(cur, player, npc, reflect)
         facts += [f"{npc.name}被扎了一下，受到 {reflect} 点伤害"] + hurt
-    return facts + _toughen(cur, player, ENDURE_HIT_CHANCE) + _on_hit(cur, player, npc)
+    return facts + _toughen(cur, player, ENDURE_HIT_CHANCE) + _on_hit(cur, player, npc, dmg)
 
 
 def _cheat_death_ready(cur: Cursor, player: Player) -> bool:
@@ -2276,7 +2282,7 @@ def effects_text(player: Player) -> str:
                     for e in player.effects)
 
 
-def _on_hit(cur: Cursor, player: Player, npc: Npc) -> list[str]:
+def _on_hit(cur: Cursor, player: Player, npc: Npc, base: Optional[int] = None) -> list[str]:
     """怪打中人以后按 props.on_hit 的几率附带效果：中毒、流血、看不清、腐蚀，或者缠住、撞倒（状态）"""
     hit = npc.template.props.get("on_hit")
     if not hit or player.hp <= 0:
@@ -2286,15 +2292,19 @@ def _on_hit(cur: Cursor, player: Player, npc: Npc) -> list[str]:
         return []
     depth = npc.template.props.get("dungeon", {}).get("depth", 1)
     return _inflict(cur, player, hit["kind"], hit.get("label", ""), depth, npc.name, hit.get("escape", 2), hit.get("turns"),
-                   hit.get("value_mult", 1.0))
+                   hit.get("value_mult", 1.0), base)
 
 
 def _inflict(cur: Cursor, player: Player, kind: str, label: str, depth: int, source: str, escape: int = 2,
-             turns: Optional[int] = None, value_mult: float = 1.0) -> list[str]:
-    """给玩家上一个效果：怪打中时附带的（_on_hit），决斗里对手装备触发的（_pvp_hit_extras）"""
+             turns: Optional[int] = None, value_mult: float = 1.0, base: Optional[float] = None) -> list[str]:
+    """给玩家上一个效果：怪打中时附带的（_on_hit），决斗里对手装备触发的（_pvp_hit_extras）。
+    base：挂上它的那一下打出的伤害（中毒、流血按它的比例跳，rules.dot_value）"""
     if kind in ("restrained", "prone", "stun"):
         if player.status:
             return []
+        guard = player.flags.get(CTRL_GUARD) or {}
+        if guard.get("kind") == ("incapacitated" if kind == "stun" else kind) and guard.get("left", 0) > 0:
+            return [f"{player.name}刚{'爬起来' if kind == 'prone' else '挣脱出来'}，还提防着，没再{(label if label.startswith('被') else '被' + label) if label else '被控住'}"]
         label = label or {"stun": "被打得晕头转向", "restrained": "被缠住了", "prone": "被撞倒在地"}[kind]
         st = Status(kind="incapacitated" if kind == "stun" else kind, label=label[:20], escape=escape,
                     since=datetime.now(timezone.utc).isoformat())
@@ -2303,12 +2313,16 @@ def _inflict(cur: Cursor, player: Player, kind: str, label: str, depth: int, sou
         return [f"{player.name}{label}" + ("，得先挣脱" if kind == "restrained" else "，得先爬起来" if kind == "prone"
                                             else "，失去战斗能力")]
     label = label or EFFECT_NAMES[kind]
-    value = max(SCALE, round(effect_value(kind, depth) * value_mult))      # value_mult：这只怪的毒、血口子轻一点（on_hit.value_mult）
+    # 中毒、流血按那一下的伤害算（value_mult：这只怪的毒、血口子轻一点）；腐蚀、看不清照旧
+    value = dot_value(kind, base, depth, value_mult)
     old = _effect(player, kind)
     if old:
-        old.left = turns or EFFECT_TURNS[kind]
+        full = turns or EFFECT_TURNS[kind]
+        if old.left >= full:
+            return [f"{player.name}又{label}，不过{EFFECT_NAMES[kind]}已经挂满了"]
+        old.left += 1                           # 重复中招只延长一回合，封顶到原本的持续时间
         _save_effects(cur, player)
-        return [f"{player.name}又{label}，{EFFECT_NAMES[kind]}的时间重新算"]
+        return [f"{player.name}又{label}，{EFFECT_NAMES[kind]}多挂了一回合（还剩 {old.left}）"]
     e = Effect(kind=kind, value=value, left=turns or EFFECT_TURNS[kind], label=label[:20], source=source)     # turns：这只怪自己的持续轮数（on_hit.turns）
     what = {"poison": f"接下来 {e.left} 回合每回合掉 {value} 点血，出手也不准了",
             "bleed": f"接下来 {e.left} 个动作每动一下掉 {value} 点血，使不上劲",
@@ -2533,8 +2547,10 @@ def _beast_hint(cur: Cursor, room_id: str) -> list[str]:
                                 if n.template.props.get("animal") and n.template.props.get("dungeon", {}).get("rank") != "boss"))
     if not beasts:
         return []
+    pack = any(n.template.props.get("pack") for n in _enemies(cur, room_id))
     return [f"{'、'.join(beasts)}是野兽：可以试着安抚它，避开这一仗（说「安抚{beasts[0]}」，看驯兽）；"
-            "安抚成了照样有收获，失败会被它抢先扑上来；身上带着肉骨头会先扔一根，容易些"]
+            "安抚成了照样有收获，失败会被它抢先扑上来；身上带着肉骨头会先扔一根，容易些"] \
+        + (["它们的鼻子一直追着你身上的肉味；领头的那只一倒，剩下的就会夹着尾巴跑"] if pack else [])
 
 
 def do_dodge(cur: Cursor, player: Player, view: RoomView, a: Dodge) -> list[str]:
@@ -2712,11 +2728,17 @@ def enemy_turn(conn: Connection, player_id: UUID, actions: list[PlayerAction],
                 facts += skill
                 if acted:
                     continue
-                for _ in range(npc.template.props.get("attacks", 1)):
-                    facts += _enemy_act(cur, player, st, npc, dodge_bonus, pinned)
+                props = npc.template.props
+                for k in range(props.get("attacks", 1)):
+                    extra = k >= props.get("base_attacks", 99)
+                    if extra and not _roll(props.get("extra_chance", 1.0)):
+                        continue                    # 迅捷的：多出来的那一下这回没赶上
+                    facts += _enemy_act(cur, player, st, npc, dodge_bonus, pinned,
+                                        dmg=props.get("extra_mult", 1.0) if extra else 1.0)
                 if player.hp <= 0:
                     break
         _save_stealth(cur, player, st)
+        _guard_tick(cur, player.id)
         return stood + facts + _smoke_fades(cur, player.room_id), bool(facts)
 
 
@@ -2956,12 +2978,16 @@ def round_enemies(conn: Connection, room_id: str, done: dict[UUID, list[tuple[Pl
                 live = [c for c in cands if c["p"].hp > 0 and ("close" not in c or npc.id in c["close"])]
                 if not live:
                     break
-                if k >= npc.template.props.get("base_attacks", 99) and not _roll(npc.template.props["extra_chance"]):
+                extra = k >= npc.template.props.get("base_attacks", 99)
+                if extra and not _roll(npc.template.props.get("extra_chance", 1.0)):
                     continue                            # 迅捷的：多出来的那一下这回没赶上
                 c = _pick_target(cur, npc, live, hits, healers)
-                facts += _enemy_act(cur, c["p"], c["st"], npc, c["dodge"], hits.get(npc.id) == c["p"].id, c["hit"])
+                facts += _enemy_act(cur, c["p"], c["st"], npc, c["dodge"], hits.get(npc.id) == c["p"].id, c["hit"],
+                                    dmg=npc.template.props.get("extra_mult", 1.0) if extra else 1.0)
         for c in cands:
             _save_stealth(cur, c["p"], c["st"])
+        for p in players:
+            _guard_tick(cur, p.id)
         return facts + _smoke_fades(cur, room_id)
 
 
@@ -3054,7 +3080,7 @@ def _skill_effect(cur: Cursor, npc: Npc, s: dict, targets: list[Player], depth: 
                 facts.append(f"{p.name}扛住了")
                 continue
             facts += _inflict(cur, p, s["kind"], "", depth, npc.name, s.get("escape", 2), s.get("turns"),
-                              s.get("value_mult", 1.0))
+                              s.get("value_mult", 1.0), expected_hit(npc.template.attack, _defense(cur, p), depth))
         return facts
     if do == "self_heal":
         gain = math.ceil(npc.template.max_hp * s.get("heal", 0.2))
@@ -3082,8 +3108,8 @@ def _count(cur: Cursor, npc: Npc, key: str) -> int:
 
 
 def _enemy_act(cur: Cursor, player: Player, st: Stealth, npc: Npc, dodge: float, pinned: bool,
-               hit: float = 1.0) -> list[str]:
-    """hit：命中倍数（躲起来那一轮贴身的怪摸黑乱挥是 HIDDEN_HIT）"""
+               hit: float = 1.0, dmg: float = 1.0) -> list[str]:
+    """hit：命中倍数（躲起来那一轮贴身的怪摸黑乱挥是 HIDDEN_HIT）；dmg：伤害倍数（深层头目第二下）"""
     props = npc.template.props
     if (share := props.get("healer")) and _roll(HEALER_CHANCE) and _tally(cur, npc, "heals") < HEALER_MAX:
         hurt = [n for n in _enemies(cur, npc.room_id)
@@ -3112,13 +3138,13 @@ def _enemy_act(cur: Cursor, player: Player, st: Stealth, npc: Npc, dodge: float,
         if not _holds_fire(cur, player):        # 拿火把的人在暗处最显眼；别人在暗处不好瞄
             chance = light_hit(_light(cur, room), chance)
         chance *= _shot_smoke(cur, room, True)
-        return pinned_note + _npc_strike(cur, player, npc, props.get("verb") or "放了一箭", max(0.0, chance) * hit)
+        return pinned_note + _npc_strike(cur, player, npc, props.get("verb") or "放了一箭", max(0.0, chance) * hit, dmg)
     facts = []
     if d > 0:
         d = _set_distance(st, npc, d - ENEMY_STEP)
         facts.append(f"{npc.name}逼近过来，离{player.name} {distance_word(d)}")
     if d in MELEE_HIT:
-        facts += _npc_strike(cur, player, npc, props.get("verb") or "扑上来攻击", max(0.0, MELEE_HIT[d] - dodge) * hit)
+        facts += _npc_strike(cur, player, npc, props.get("verb") or "扑上来攻击", max(0.0, MELEE_HIT[d] - dodge) * hit, dmg)
     return facts
 
 
@@ -3653,12 +3679,28 @@ def do_rest(cur: Cursor, player: Player, view: RoomView, a: Rest) -> list[str]:
             + ("，酒也醒了" if player.drunk else "")] + patron
 
 
+CTRL_GUARD = "_ctrl_guard"               # players.flags：刚挣脱、爬起来的那种控制，{"kind", "left": 还护几个敌人回合}
+
+
+def _guard_control(cur: Cursor, player: Player, kind: str) -> None:
+    """挣脱缠住、爬起来以后：接下来一个敌人回合里不会再被同一种控制打中（不然一狗两藤轮流控住，一直没法动）"""
+    player.flags[CTRL_GUARD] = {"kind": kind, "left": 1}
+    cur.execute("update players set flags = flags || jsonb_build_object(%s::text, %s::jsonb) where id = %s",
+                (CTRL_GUARD, Jsonb(player.flags[CTRL_GUARD]), player.id))
+
+
+def _guard_tick(cur: Cursor, player_id: UUID) -> None:
+    """一个敌人回合过去了：刚挣脱的保护用掉"""
+    cur.execute("update players set flags = flags - %s where id = %s and flags ? %s", (CTRL_GUARD, player_id, CTRL_GUARD))
+
+
 def do_stand(cur: Cursor, player: Player, view: RoomView, a: Stand) -> list[str]:
     """倒地后爬起来：不用掷骰，这一下就花在站起来上了"""
     st = player.status
     if st is None or st.kind != "prone":
         raise ActionError(f"{player.name}没有倒在地上" + (f"，而是{st.describe()}" if st else ""))
     _set_status(cur, "players", player.id, None)
+    _guard_control(cur, player, "prone")
     return [f"{player.name}从地上爬了起来"]
 
 
@@ -3675,6 +3717,7 @@ def do_struggle(cur: Cursor, player: Player, view: RoomView, a: Struggle) -> lis
     facts = [f"{player.name}尝试：{a.description or '挣脱'}"] + rolled
     if ok:
         _set_status(cur, "players", player.id, None)
+        _guard_control(cur, player, st.kind)
         return facts + [f"{player.name}摆脱了“{st.label}”的状态"]
     st.attempts += 1
     _set_status(cur, "players", player.id, st)
@@ -5295,7 +5338,7 @@ def _effect_line(e: dict) -> str:
 MONSTER_LORE = ("远程的怪（投石手、弓手、弩手、猎手、喷毒蛙、墨咒书记）不会靠近，被贴身会往后跳，最多跳两次就撞墙了；"
                 "冲上去一句话里靠近加砍，砍中了它就跳不开；有掩体的地方它射不准，烟雾弹也能挡。"
                 "会治疗的招魂修女要先杀，或者耗光她的念珠（最多治三次）。狗头人盾卫护着身后的同伴，同伴死光它就跑。"
-                "狼、恶犬、石像鬼、头目鼻子灵，偷袭不了；野兽可以试着安抚。亡灵怕圣水和银器，怕光的怪在亮处软弱，"
+                "狼、恶犬、石像鬼、头目鼻子灵，偷袭不了；野兽可以试着安抚，扔根肉骨头能引开。狼和恶犬成群，先打领头的那只，它一倒剩下的就跑。亡灵怕圣水和银器，怕光的怪在亮处软弱，"
                 "带火把能压它们，但远程的怪会先射拿火把的人。拿弓弩的最好有人在前面挡着：一个人下去被怪贴上身，"
                 "弓只剩一半的准头。头目都有自己的招数、不吃的东西和弱点，打之前先看清楚")
 
@@ -5327,6 +5370,8 @@ def monster_notes(npc: Npc) -> str:
         notes.append("不吃：" + "、".join(EFFECT_NAMES.get(k, STATE_NAMES.get(k, k)) for k in immune))
     if weak := p.get("weak"):
         notes.append(f"弱点：{WEAK_WORDS.get(weak, weak)}（{WEAK_HOW.get(weak, '')}伤害 ×{WEAK_MULT:g}）")
+    if p.get("pack"):
+        notes.append("成群的：一个房间最多两只，领头的那只一倒，剩下的夹着尾巴跑；扔根肉骨头（麦琪后厨卖）能引开，安抚容易些")
     return "\n".join(notes + ["（诺艾尔的怪物图鉴）"])
 
 

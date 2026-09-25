@@ -18,15 +18,17 @@ def main() -> None:
     ap.add_argument("--dmg", type=float, default=1.5)
     ap.add_argument("--build", default="sword_shield")
     ap.add_argument("--focus-boss", action="store_true", help="召唤战先打头目")
+    ap.add_argument("--depths", default="5,10,15,20,25,30", help="测哪几层（深层头目 16 层起按房间怪数涨血、一轮两动）")
     args = ap.parse_args()
     sim.VARIANT["dmg"] = args.dmg
     sim.VARIANT["focus_boss"] = args.focus_boss
-    print(f"| 头目 | 第 5 层 | 第 10 层 | 第 15 层 |（{sim.BUILDS[args.build]}，伤害 ×{args.dmg:g}，挨的伤害 / 团灭率）")
-    print("|---|---|---|---|")
+    depths = [int(d) for d in args.depths.split(",")]
+    print("| 头目 | " + " | ".join(f"第 {d} 层" for d in depths) + f" |（{sim.BUILDS[args.build]}，伤害 ×{args.dmg:g}，挨的伤害 / 团灭率）")
+    print("|---|" + "---|" * len(depths))
     for key, th in sim.THEMES.items():
         random.seed(key)
         cells = []
-        for depth in (5, 10, 15):
+        for depth in depths:
             a, w, _ = sim.fight_test(args.build, "normal", (depth - 1) // sim.TRIP, depth, [("boss", "boss")], key, n=args.n)
             flag = "" if 0.35 <= a <= 0.50 and w <= 0.05 else " ✗"
             cells.append(f"{a:.0%} / {w:.0%}{flag}")

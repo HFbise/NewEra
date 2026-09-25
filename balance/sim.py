@@ -424,6 +424,7 @@ class Hero:
     potions: int = 0
     herbs: int = 0
     sneak: bool = False                 # 潜行打法：进门没被警觉的怪盯上就先偷袭一下
+    guard: Optional[str] = None         # 刚挣脱、爬起来的那种控制：这个敌人回合里不再中
     stealth: int = 0                    # 隐匿等级
     perks: set = field(default_factory=set)
     effects: dict = field(default_factory=dict)     # kind -> {"value", "left", "hp"}
@@ -461,6 +462,8 @@ def spawn(depth: int, kind: str, rank: str, theme_key: str, size: int, groups: i
     hp, atk, df = R.monster_stats(depth, m, rank)
     props = {k: m[k] for k in ("animal", "light_averse", "undead", "keen", "ranged", "healer", "on_hit", "guard_allies",
                                "immune", "weak") if m.get(k)}
+    if m.get("pack"):
+        props["pack"] = kind
     if rank == "elite" and affix is None:
         affix = random.choice(list(R.ELITE_AFFIXES))
     elif rank != "elite":
@@ -482,9 +485,12 @@ def spawn(depth: int, kind: str, rank: str, theme_key: str, size: int, groups: i
     skills = R.unlocked_skills(m.get("skills") or [], depth) if rank == "boss" else []
     if boss_room:
         mult = 1 + R.BOSS_PARTY_HP * (size - 1)
+        deep = rank == "boss" and depth >= R.BOSS_DEEP_FROM
+        if deep:                                # 深层头目一轮两动，第二下 ×BOSS_EXTRA_MULT
+            props["extra_chance"], props["extra_mult"] = 1.0, R.BOSS_EXTRA_MULT
         out = [Mon(name, max(2 * R.SCALE, round(hp * mult)), max(2 * R.SCALE, round(hp * mult)), atk, df, depth, props, rank,
-                   attacks=size * fx.get("attacks", 1), theme=theme_key, skills=skills,
-                   base_attacks=size if fx.get("extra_chance") else 99)]
+                   attacks=size * fx.get("attacks", 1) * (2 if deep else 1), theme=theme_key, skills=skills,
+                   base_attacks=size if fx.get("extra_chance") or deep else 99)]
     else:
         copies = 1 if minion else R.party_copies(size, groups)
         mult = size / copies if not minion else 1
@@ -623,7 +629,7 @@ class Fight:
             st = h.status
             if st["kind"] == "incapacitated":
                 if random.random() < R.escape_chance(st["escape"], st["attempts"]):
-                    h.status = None
+                    h.status, h.guard = None, st["kind"]
                 else:
                     st["attempts"] += 1
                 return
@@ -636,7 +642,7 @@ class Fight:
             if h.status:                         # 绊倒：爬起来；缠住：挣脱
                 st = h.status
                 if st["kind"] == "prone" or random.random() < R.escape_chance(st["escape"], st["attempts"]):
-                    h.status = None
+                    h.status, h.guard = None, st["kind"]
                 else:
                     st["attempts"] += 1
                 continue
@@ -713,6 +719,10 @@ class Fight:
         if (weak == "pierce" and pierce) or (weak == "light" and self.light() >= R.LIGHT_BRIGHT):
             dmg = math.ceil(dmg * R.WEAK_MULT)
         m.hp -= dmg
+        if m.hp <= 0 and m.props.get("leader"):
+            for x in self.alive():
+                if x.props.get("pack") == m.props["pack"]:
+                    x.hp = 0                     # 头领倒了，狗狼夹着尾巴跑
         if m.hp <= 0 and m.rank in ("boss", "elite") and not any(x.rank in ("boss", "elite") for x in self.alive()):
             for x in self.alive():
                 if x.minion:
@@ -766,13 +776,14 @@ class Fight:
         if do == "summon":
             room = R.SUMMON_MAX - sum(1 for x in self.alive() if x.minion)
             for _ in range(max(0, min(R.summon_count(sk, m.depth), room))):
-                for x in spawn(m.depth, sk["kind"], "normal", m.theme, 1, 1, False, minion=True):
+                for x in spawn(m.depth, sk["kind"], "elite" if m.depth >= R.ELITE_MINIONS_FROM else "normal", m.theme, 1, 1, False,
+                               minion=True, affix="plain" if m.depth >= R.ELITE_MINIONS_FROM else None):
                     self.mons.append(x)
                     for h in self.heroes:
                         self.dist[(id(h), id(x))] = 2
         elif do in ("status_all", "effect_all"):
             for h in targets:
-                self.afflict(h, sk["kind"], m.depth, sk)
+                self.afflict(h, sk["kind"], m.depth, sk, R.expected_hit(m.atk, hero_def(h), m.depth))
         elif do == "self_heal":
             m.hp = min(m.max_hp, m.hp + math.ceil(m.max_hp * sk.get("heal", 0.2)))
 
@@ -789,9 +800,12 @@ class Fight:
                     return
                 if k >= m.base_attacks and random.random() >= m.props.get("extra_chance", 1):
                     continue
-                self.enemy_act(m, pick_target(m, self.heroes, self.hits))
+                self.enemy_act(m, pick_target(m, self.heroes, self.hits),
+                               m.props.get("extra_mult", 1.0) if k >= m.base_attacks else 1.0)
+        for h in self.heroes:
+            h.guard = None
 
-    def enemy_act(self, m: Mon, h: Hero) -> None:
+    def enemy_act(self, m: Mon, h: Hero, mult: float = 1.0) -> None:
         props = m.props
         if (share := props.get("healer")) and random.random() < R.HEALER_CHANCE and m.heals < R.HEALER_MAX:
             hurt = [n for n in self.alive() if n is not m and n.hp < n.max_hp * R.HEALER_BELOW]
@@ -812,14 +826,14 @@ class Fight:
             chance -= R.RANGED_COVER if self.cover else 0
             if not h.torch_light:
                 chance = R.light_hit(self.light(), chance)
-            self.strike(m, h, chance, ranged=True)
+            self.strike(m, h, chance, ranged=True, mult=mult)
             return
         if d > 0:
             d = self.dist[key] = d - 1
         if d in R.MELEE_HIT:
-            self.strike(m, h, R.MELEE_HIT[d], ranged=False)
+            self.strike(m, h, R.MELEE_HIT[d], ranged=False, mult=mult)
 
-    def strike(self, m: Mon, h: Hero, chance: float, ranged: bool) -> None:
+    def strike(self, m: Mon, h: Hero, chance: float, ranged: bool, mult: float = 1.0) -> None:
         if random.random() >= chance:
             return
         if random.random() < min(h.block, R.AVOID_CAP):
@@ -835,27 +849,31 @@ class Fight:
         if marked:
             atk += m.mark_bonus
         dmg = R.hurt_player_by(atk, hero_def(h), m.depth, guard=h.guard_ranged if ranged else 0)
-        self.hurt_hero(h, R.scale_damage(dmg, m.props.get("dmg_mult", 1)))
+        dmg = R.scale_damage(dmg, m.props.get("dmg_mult", 1) * mult)
+        self.hurt_hero(h, dmg)
         if marked:
             m.mark = None
         if (steal := m.props.get("lifesteal")):
             m.hp = min(m.max_hp, m.hp + R.whole(dmg * steal))
         if h.down or not (hit := m.props.get("on_hit")) or random.random() >= hit.get("chance", 0.25):
             return
-        self.afflict(h, hit["kind"], m.depth, hit)
+        self.afflict(h, hit["kind"], m.depth, hit, dmg)
 
-    def afflict(self, h: Hero, kind: str, depth: int, hit: dict) -> None:
-        """怪打中附带的、头目全场放的效果（engine._inflict）"""
+    def afflict(self, h: Hero, kind: str, depth: int, hit: dict, base: Optional[float] = None) -> None:
+        """怪打中附带的、头目全场放的效果（engine._inflict）：中毒流血按那一下的伤害（rules.dot_value），
+        重复中招只延长一回合；刚挣脱、爬起来的这个敌人回合不再被同一种控制打中"""
         if h.down:
             return
         if kind in ("restrained", "prone", "stun"):
-            if not h.status:
-                h.status = {"kind": "incapacitated" if kind == "stun" else kind, "escape": hit.get("escape", 2), "attempts": 0}
+            k = "incapacitated" if kind == "stun" else kind
+            if not h.status and h.guard != k:
+                h.status = {"kind": k, "escape": hit.get("escape", 2), "attempts": 0}
             return
+        full = hit.get("turns") or R.EFFECT_TURNS[kind]
         if kind in h.effects:
-            h.effects[kind]["left"] = hit.get("turns") or R.EFFECT_TURNS[kind]
+            h.effects[kind]["left"] = min(full, h.effects[kind]["left"] + 1)
             return
-        e = {"value": max(R.SCALE, round(R.effect_value(kind, depth) * hit.get("value_mult", 1.0))), "left": hit.get("turns") or R.EFFECT_TURNS[kind]}
+        e = {"value": R.dot_value(kind, base, depth, hit.get("value_mult", 1.0)), "left": full}
         if kind == "corrode":
             e["hp"] = min(h.max_hp - 1, max(1, round(h.max_hp * R.CORRODE_HP)))
             h.max_hp -= e["hp"]
@@ -931,6 +949,18 @@ def make_heroes(build: str, quality: str, trip: int, kit, size: int, depth: int)
     return heroes
 
 
+def pick_kind(kinds: list[str]) -> str:
+    """按 dungeon.yaml 的 weight 抽（dungeon._pick_kind）"""
+    return random.choices(kinds, [MONSTERS[k].get("weight", 1) for k in kinds])[0]
+
+
+def mark_leader(mons: list) -> None:
+    """房间里第一只狗狼是头领（dungeon._spawn_group lead）"""
+    lead = next((x for x in mons if x.props.get("pack")), None)
+    if lead:
+        lead.props = {**lead.props, "leader": True}
+
+
 def floor_rooms(depth: int, theme_key: str) -> list[tuple[str, list[tuple[str, str]], bool]]:
     """这一层要打的仗：[(房间种类, [(怪, 等级)], 有没有掩体)]，楼梯间最后"""
     theme = THEMES[theme_key]
@@ -938,15 +968,22 @@ def floor_rooms(depth: int, theme_key: str) -> list[tuple[str, list[tuple[str, s
     rooms = []
     for _ in range(4):
         count = R.roll_groups(depth)
-        groups = [(random.choice(kinds), "elite" if i == 0 and random.random() < R.elite_chance(depth) else "normal")
-                  for i in range(count)]
+        groups, packs = [], 0
+        for i in range(count):
+            kind = pick_kind(kinds)
+            for _ in range(5):
+                if not MONSTERS[kind].get("pack") or packs < dungeon.PACK_MAX:
+                    break
+                kind = pick_kind(kinds)
+            packs += bool(MONSTERS[kind].get("pack"))
+            groups.append((kind, "elite" if i == 0 and random.random() < R.elite_chance(depth) else "normal"))
         rooms.append(("combat", groups, bool(random.choice(theme["rooms"]).get("cover"))))
     if random.random() < R.TREASURE_GUARD:
-        rooms.append(("treasure", [(random.choice(kinds), "elite" if random.random() < R.elite_chance(depth) else "normal")],
+        rooms.append(("treasure", [(pick_kind(kinds), "elite" if random.random() < R.elite_chance(depth) else "normal")],
                       False))
     random.shuffle(rooms)
     boss = depth % R.BOSS_EVERY == 0
-    rooms.append(("stairs", [("boss" if boss else random.choice(kinds), "boss" if boss else "elite")], False))
+    rooms.append(("stairs", [("boss" if boss else pick_kind(kinds), "boss" if boss else "elite")], False))
     return rooms
 
 
@@ -1000,6 +1037,7 @@ def run_trip(build: str, quality: str, trip: int, kit: Kit, size: int, stats: di
             mons = []
             for monster, rank in groups:
                 mons += spawn(depth, monster, rank, theme_key, size, len(groups), kind == "stairs")
+            mark_leader(mons)
             light = room_light(THEMES[theme_key])
             fight = Fight([h for h in heroes if not h.down], mons, light, cover, depth)
             fight.sneak_open()
@@ -1061,6 +1099,7 @@ def fight_test(build: str, quality: str, trip: int, depth: int, groups: list[tup
         mons = []
         for monster, rank in groups:
             mons += spawn(depth, monster, rank, theme, size, len(groups), boss, affix=affix)
+        mark_leader(mons)
         f = Fight(heroes, mons, room_light(THEMES[theme]) if light is None else light, False, depth)
         f.sneak_open()
         before = sum(h.taken for h in heroes)

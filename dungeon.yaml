@@ -761,6 +761,8 @@ monsters:
     def: 20
   dungeon_hound:
     keen: true
+    pack: true                   # 成群的：一个房间最多 PACK_MAX 只，第一只是头领，头领死了其余逃跑
+    weight: 0.5                  # 出现的权重（默认 1）：狗、狼太凶，少出一点
     name: 地牢恶犬
     description: 瘦得肋骨根根分明的大黑狗，脖子上还拴着半截铁链，眼睛是浑浊的黄色。
     persona: 被饿了太久，闻到活人味就狂吠着冲上来。
@@ -770,6 +772,8 @@ monsters:
     animal: true
   cave_wolf:
     keen: true
+    pack: true                   # 成群的：一个房间最多 PACK_MAX 只，第一只是头领，头领死了其余逃跑
+    weight: 0.5                  # 出现的权重（默认 1）：狗、狼太凶，少出一点
     name: 苍白狼
     description: 一头毛色灰白的大狼，眼睛是没有瞳孔的乳白色，靠嗅觉在黑暗里找猎物。
     persona: 成群狩猎，先绕着人转圈，找到破绽就扑上来咬腿。

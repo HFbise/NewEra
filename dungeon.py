@@ -18,7 +18,7 @@ from psycopg import Cursor
 from psycopg.types.json import Jsonb
 
 from rules import (BOSS_EVERY, BOSS_PARTY_HP, ELITE_AFFIXES, GEM_TIER_PREFIX, ROOM_CAP, SCALE, SUMMON_DMG, SUMMON_HP,  # noqa: F401
-                   THEME_PLAGUE, TREASURE_GUARD, UPGRADE_STEP, elite_chance, gem_category, gem_tier, max_groups, roll_groups, gold_scale,
+                   THEME_PLAGUE, TREASURE_GUARD, UPGRADE_STEP, BOSS_DEEP_FROM, BOSS_EXTRA_MULT, ELITE_MINIONS_FROM, elite_chance, gem_category, gem_tier, max_groups, roll_groups, gold_scale,
                    roll_sockets, unlocked_skills,
                    monster_gold, monster_stats, party_copies, stash_gold, treasure_gold)
 
@@ -363,7 +363,7 @@ def parse_room(room_id: str) -> tuple[UUID, int]:
 # 每种怪再按 dungeon.yaml 的倍率、加减调整。精英血 ×1.8 攻 +1，头目血 ×2 攻 +1 防 +1
 
 def _template(cur: Cursor, depth: int, kind: str, rank: str, theme: str, share: int = 1, hp_mult: float = 1.0,
-              minion: bool = False, attacks: int = 1, affix: Optional[str] = None) -> str:
+              minion: bool = False, attacks: int = 1, affix: Optional[str] = None, leader: bool = False) -> str:
     """这一层这种怪的 NPC 模板，没有就建。share：钱分给几只（组队多刷的同一群）；hp_mult：血的倍数；
     minion：头目叫来的、精英带着的小怪，不掉钱也不掉东西；attacks：战斗回合里一轮出手几次（房间满了折成血的，出手也跟着多）；
     affix：精英的词缀（rules.ELITE_AFFIXES）"""
@@ -371,19 +371,30 @@ def _template(cur: Cursor, depth: int, kind: str, rank: str, theme: str, share: 
     tid = (f"dg_{theme + '_' if rank == 'boss' else ''}{kind}_{depth}" + ("" if rank == "normal" else f"_{rank}")
            + (f"_{affix}" if affix else "")
            + (f"_g{share}" if share > 1 else "") + (f"_h{round(hp_mult * 10)}" if hp_mult != 1 else "")
-           + ("_m" if minion else "") + (f"_a{attacks}" if attacks > 1 else ""))
+           + ("_m" if minion else "") + (f"_a{attacks}" if attacks > 1 else "") + ("_lead" if leader else ""))
     m = data()["themes"][theme]["boss"] if rank == "boss" else data()["monsters"][kind]
     hp, atk, df = monster_stats(depth, m, rank)
     fx = ELITE_AFFIXES.get(affix, {}) if rank == "elite" else {}
     hp = max(2 * SCALE, round(hp * hp_mult * fx.get("hp_mult", 1)))
     df += fx.get("def", 0)
     name = m["name"] if rank != "elite" else f"{fx.get('name', '凶悍的')}{m['name']}"
-    description = m["description"] + ("它比同类更壮、更凶，身上带着好几道旧伤。" if rank == "elite" else "")
+    if leader and rank == "normal":
+        name = f"领头的{m['name']}"
+    description = m["description"] + ("它比同类更壮、更凶，身上带着好几道旧伤。" if rank == "elite" else "") \
+        + ("它是这一群的头领，别的都跟着它的动静走。" if leader else "")
     gold = [max(1, round(g / share)) for g in monster_gold(depth, rank)]
     props = {"on_death": {} if minion else {"gold": gold}, "dungeon": {"depth": depth, "rank": rank, "theme": theme}}
     if fx.get("extra_chance"):
         props["extra_chance"], props["base_attacks"] = fx["extra_chance"], attacks     # 迅捷的：多出来的那几下有几率落空
     attacks *= fx.get("attacks", 1)
+    if rank == "boss" and depth >= BOSS_DEEP_FROM:
+        # 深层头目一轮两动：每人多一下，多出来的那几下伤害 ×BOSS_EXTRA_MULT
+        props["base_attacks"], props["extra_chance"], props["extra_mult"] = attacks, 1.0, BOSS_EXTRA_MULT
+        attacks *= 2
+    if m.get("pack"):
+        props["pack"] = kind                    # 成群的：头领死了同种的其余逃跑
+    if leader:
+        props["leader"] = True
     if attacks > 1:
         props["attacks"] = attacks
     if affix:
@@ -450,34 +461,48 @@ def _kinds(theme: dict, depth: int) -> list[str]:
     return [k for k in theme["monsters"] if data()["monsters"][k].get("min_floor", 1) <= depth] or theme["monsters"]
 
 
-def _spawn_group(cur: Cursor, room: str, depth: int, kind: str, rank: str, theme: str, size: int, groups: int = 1) -> None:
+PACK_MAX = 2                            # 狗、狼（dungeon.yaml pack）一个房间最多几只
+
+
+def _pick_kind(theme: dict, depth: int) -> str:
+    """按权重抽一种怪（dungeon.yaml 的 weight，默认 1；狗、狼 0.5）"""
+    kinds = _kinds(theme, depth)
+    return random.choices(kinds, [data()["monsters"][k].get("weight", 1) for k in kinds])[0]
+
+
+def _spawn_group(cur: Cursor, room: str, depth: int, kind: str, rank: str, theme: str, size: int, groups: int = 1,
+                 lead: bool = False) -> int:
     """放一群同种的怪：一个人一只，组队时"人数"只（这个房间一共 groups 群，总数不超过 ROOM_CAP，多的折成血）。
-    钱按只数分，东西只有第一只带"""
+    钱按只数分，东西只有第一只带。lead：成群的狗狼，第一只是头领。返回放了几只"""
     copies = party_copies(size, groups)
     affix = random.choice(list(ELITE_AFFIXES)) if rank == "elite" else None      # 同一群精英同一个词缀
     for i in range(copies):
         _spawn(cur, room, depth, kind, rank, theme, share=copies, hp_mult=size / copies, loot=i == 0,
-               attacks=max(1, round(size / copies)), affix=affix)
+               attacks=max(1, round(size / copies)), affix=affix, leader=lead and i == 0)
+    return copies
 
 
 def _spawn_boss(cur: Cursor, room: str, depth: int, kind: str, rank: str, theme: str, size: int) -> None:
     """头目、楼梯间守卫：只有一只，组队时多些血、一轮多动几次（不召小怪：组队时场面已经够乱）"""
     _spawn(cur, room, depth, kind, rank, theme, hp_mult=1 + BOSS_PARTY_HP * (size - 1), attacks=size, stair=True,
            affix=random.choice(list(ELITE_AFFIXES)) if rank == "elite" else None)
+    # 深层头目一轮两动（第二下 ×BOSS_EXTRA_MULT）：组队时本来就一人一动，再各多一下
 
 
 def spawn_minions(cur: Cursor, room: str, depth: int, kind: str, theme: str, count: int) -> list[str]:
     """头目叫来的、号令的精英带着的小怪：本层普通怪一半的血，不掉钱也不掉东西。返回名字"""
     names = []
+    rank = "elite" if depth >= ELITE_MINIONS_FROM else "normal"     # 第 20 层起头目叫来的是精英
     for _ in range(count):
-        _spawn(cur, room, depth, kind, "normal", theme, hp_mult=SUMMON_HP, minion=True, loot=False)
+        _spawn(cur, room, depth, kind, rank, theme, hp_mult=SUMMON_HP, minion=True, loot=False)
         names.append(data()["monsters"][kind]["name"])
     return names
 
 
 def _spawn(cur: Cursor, room: str, depth: int, kind: str, rank: str, theme: str, share: int = 1, hp_mult: float = 1.0,
-           minion: bool = False, loot: bool = True, attacks: int = 1, stair: bool = False, affix: Optional[str] = None) -> None:
-    tid = _template(cur, depth, kind, rank, theme, share, hp_mult, minion, attacks, affix)
+           minion: bool = False, loot: bool = True, attacks: int = 1, stair: bool = False, affix: Optional[str] = None,
+           leader: bool = False) -> None:
+    tid = _template(cur, depth, kind, rank, theme, share, hp_mult, minion, attacks, affix, leader)
     cur.execute("insert into npcs (template_id, room_id, hp) select id, %s, max_hp from npc_templates where id = %s"
                 " returning id", (room, tid))
     npc_id = cur.fetchone()["id"]
@@ -603,11 +628,19 @@ def _make_floor(cur: Cursor, run: UUID, depth: int, above: Optional[str], size: 
         if kind == "combat":
             count = roll_groups(depth)
             ranks = ["elite" if i == 0 and random.random() < elite_chance(depth) else "normal" for i in range(count)]
+            packs = 0                           # 这个房间已经有几只狗狼
             for rank in ranks:
-                _spawn_group(cur, rid, depth, random.choice(_kinds(theme, depth)), rank, theme_key, size, len(ranks))
+                kind = _pick_kind(theme, depth)
+                for _ in range(5):              # 狗狼满了就换一种（这个主题全是成群的就算了）
+                    if not data()["monsters"][kind].get("pack") or packs + party_copies(size, len(ranks)) <= PACK_MAX:
+                        break
+                    kind = _pick_kind(theme, depth)
+                pack = bool(data()["monsters"][kind].get("pack"))
+                packs += _spawn_group(cur, rid, depth, kind, rank, theme_key, size, len(ranks), lead=pack and packs == 0) if pack \
+                    else _spawn_group(cur, rid, depth, kind, rank, theme_key, size, len(ranks)) * 0
         elif kind == "stairs":
             boss = depth % BOSS_EVERY == 0
-            _spawn_boss(cur, rid, depth, "boss" if boss else random.choice(_kinds(theme, depth)), "boss" if boss else "elite",
+            _spawn_boss(cur, rid, depth, "boss" if boss else _pick_kind(theme, depth), "boss" if boss else "elite",
                         theme_key, size)
             cur.execute("insert into room_exits (room_id, direction, to_room) values (%s, 'down', %s)", (rid, GATE))
         elif kind == "treasure":

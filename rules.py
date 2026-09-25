@@ -101,6 +101,25 @@ def steps(depth: int, n: int) -> float:
     return max(0.0, (depth - (n - 1) / 2) / n)
 
 
+# 怪打上来的中毒、流血按"挂上它的那一下实际打出的伤害（减完防御）"算：中毒每回合 POISON_SHARE，流血每个动作 BLEED_SHARE
+# （一回合两跳，合计也是四成），最少 DOT_MIN。以前按层数直接涨、不看防御，第 40 层 170 防的人一下只挨 34，毒却每回合 86。
+# 重复中招只延长 1 回合，封顶到原本的持续时间（不再整个重置，两只狗在场就永远挂着）
+POISON_SHARE, BLEED_SHARE, DOT_MIN = 0.4, 0.2, SCALE
+
+
+def dot_value(kind: str, base: Optional[float], depth: int, mult: float = 1.0) -> int:
+    """中毒、流血每跳多少：base 是挂上它的那一下打出的伤害；没有（头目全场放的算期望，决斗里的旧装备）就按层数"""
+    if base is None or kind not in ("poison", "bleed"):
+        return max(SCALE, round(effect_value(kind, depth) * mult))
+    return max(DOT_MIN, round(base * (POISON_SHARE if kind == "poison" else BLEED_SHARE) * mult))
+
+
+def expected_hit(atk: float, defense: float, depth: int = 0) -> float:
+    """这么高的攻击打在这么厚的防御上，一下平均掉多少（头目全场放毒时当 base 用）"""
+    k = def_k(depth)
+    return atk * k / (k + max(0, defense))
+
+
 def effect_value(kind: str, depth: int) -> int:
     """怪打上来的效果有多重：中毒、流血每次掉的血，腐蚀扣的防御，跟着层数涨"""
     base = (1 + steps(depth, 6) if kind == "corrode" else 1 + steps(depth, 5)) * SCALE
@@ -266,8 +285,25 @@ def monster_stats(depth: int, mods: dict, rank: str = "normal") -> tuple[int, in
     if rank == "elite":
         hp, atk = hp * ELITE_HP, atk + SCALE
     elif rank == "boss":
-        hp, atk, df = hp * 2, atk + SCALE, df + SCALE
+        hp, atk, df = hp * boss_hp_mult(depth), atk + SCALE, df + SCALE
     return max(2 * SCALE, round(hp)), max(SCALE, atk), max(0, df)
+
+
+def room_monsters(depth: int) -> float:
+    """这一层一个战斗房平均几只怪（单人）"""
+    second, third = group_chances(depth)
+    return 1 + second + second * third
+
+
+BOSS_DEEP_FROM = 999                    # 头目从这一层起跟着房间一起涨：血 = 1 + 一个战斗房平均几只怪（至少 2 倍），一轮两动。
+                                        # 先关着（原定 16）：模拟里第 20–30 层正常装备挨 90–117%、团灭五成以上，跟真人对不上，等真人头目战数据再定
+BOSS_EXTRA_MULT = 0.6                   # 深层头目第二下的伤害
+
+
+def boss_hp_mult(depth: int) -> float:
+    """头目血量是普通怪的几倍：15 层以内 2 倍（按那时一两只怪的房间调好的）；16 层起 1 + 房间平均怪数，
+    深层一屋子两三群的时候头目不再是最轻松的一场"""
+    return 2.0 if depth < BOSS_DEEP_FROM else max(2.0, 1 + room_monsters(depth))
 
 
 def monster_gold(depth: int, rank: str) -> list[int]:
@@ -392,8 +428,12 @@ def due_skill(skills: list[dict], hp_ratio: float, acts: int, used: set) -> Opti
     return None
 
 
+ENRAGE_DEEP_FROM, ENRAGE_DEEP_BELOW = 999, 0.5      # 每深 10 层解锁一招：原定第 20 层起召来的帮手是精英、第 30 层起一半血就狂暴；
+ELITE_MINIONS_FROM = 999                            # 跟头目加强一起先关着（见 BOSS_DEEP_FROM）
+
+
 def enraged(depth: int, hp_ratio: float) -> bool:
-    return depth >= ENRAGE_FROM and hp_ratio < ENRAGE_BELOW
+    return depth >= ENRAGE_FROM and hp_ratio < (ENRAGE_DEEP_BELOW if depth >= ENRAGE_DEEP_FROM else ENRAGE_BELOW)
 
 
 # ============ 宝石 ============
