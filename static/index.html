@@ -203,7 +203,7 @@ function render(s) {
   // fill 是点一下填进输入框的文字，默认就是名字
   const li = (ref, label, extra = "", fill = label, detail = "") =>
     `<li data-name="${esc(fill)}"${detail ? ` data-detail="${esc(detail)}"` : ""}><span class="ref">${ref}</span>${esc(label)}${extra}</li>`;
-  $("#side").innerHTML = `
+  const html = `
     <h2>${esc(p.name)}</h2>
     <div>HP ${p.hp}/${p.max_hp} · 攻 ${s.attack_total} · 防 ${s.defense_total} · 金币 ${p.gold}</div>
     <div class="hp"><div style="width:${100 * p.hp / p.max_hp}%"></div></div>
@@ -277,7 +277,10 @@ function render(s) {
     </div>
     <h2></h2>
     <a href="#" id="logout" class="sys">换角色</a>　<a href="#" id="delete" class="sys">删除角色</a>`;
+  // 每 3 秒轮询一次：内容没变就不重画（整块换 innerHTML 会让侧栏闪一下、悬停和选中的状态也丢了）
+  if (html !== lastSide) { lastSide = html; $("#side").innerHTML = html; }
 }
+let lastSide = "";
 
 // 地牢小地图：5×5 的网格，偶数位是格子，奇数位是格子之间的门（连线）
 const DOOR_POS = { north: "top:-13px", south: "bottom:-13px", west: "left:-11px", east: "right:-11px" };
