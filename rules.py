@@ -1,0 +1,251 @@
+"""
+纯规则：命中、减伤、伤害、负面效果的数值、回血、扎营、技能判定、价钱、升级费用和失败率、怪物数值和掉钱。
+不碰数据库、不调 AI。引擎（engine.py、dungeon.py）和数值模拟（balance/sim.py）共用这一份，改一次两边一起变。
+随机只用 random 模块：模拟里 random.seed 固定下来就能复现。
+"""
+import math
+import random
+
+# ============ 命中 ============
+# 近战按距离（格）：贴身、一步之遥、几步开外；够不着的格数是 0
+MELEE_HIT = {0: 0.95, 1: 0.45, 2: 0.05}
+# 远程武器贴身难射，离远了准；steady 的（麦琪的弩、绞盘重弩）远近都是 STEADY_HIT
+RANGED_HIT = {0: 0.45, 1: 0.75, 2: 0.9, 3: 0.9, 4: 0.85}
+STEADY_HIT = 0.9
+BLIND_HIT = 0.5                         # 看不清：命中减半（以前当一片漆黑只剩 5%，被墨咒书记远远致盲就追不上了）
+SMOKE_HIT = 0.5                         # 烟雾弹的烟里：远程命中减半，敌我都算
+SMOKE_ROUNDS = 2                        # 烟能撑几轮（敌人动几次）
+# 远程的怪：离人一步以上就射，有掩体的房间 −RANGED_COVER（对双方都一样）
+ENEMY_RANGED_HIT = {0: 0.5, 1: 0.75, 2: 0.85, 3: 0.85, 4: 0.75}
+RANGED_COVER = 0.15
+RANGED_BACKS = 2                        # 远程怪一场最多往后跳两次，再贴上去它就"背后撞上了石壁"，跳不开了
+HEALER_BELOW = 0.6
+HEALER_CHANCE = 0.5                     # 有同伴要治时一半几率治疗（另一半照常出手）。治疗量按本层普通怪的血量 × props.healer，不看治的是谁
+HEALER_MAX = 3                          # 每只一场最多治三次，"先杀她"和"耗光她"都是办法
+# 玩家每做这么多个动作，敌人行动一次；战斗回合里就是每人每轮最多做几件事
+ENEMY_EVERY = 2
+
+# ============ 光亮 ============
+# 光亮 0~100：低于 LIGHT_FULL 普通攻击命中按比例打折，0 时只剩 LIGHT_MIN_HIT；低于 LIGHT_DARK 做花样难一级；
+# 越暗怪越凶、钱越多（dark_factor）；怕光的怪在 LIGHT_BRIGHT 以上攻击 -1
+LIGHT_FULL, LIGHT_MIN_HIT, LIGHT_DARK, LIGHT_BRIGHT = 50, 0.05, 20, 70
+
+
+def light_hit(light: int, chance: float) -> float:
+    """命中按光亮打折：LIGHT_FULL 以上不打折，往下按比例降，最低 LIGHT_MIN_HIT（够不着的还是 0）"""
+    return 0.0 if chance <= 0 else max(LIGHT_MIN_HIT, chance * min(1.0, light / LIGHT_FULL))
+
+
+def dark_factor(light: int) -> float:
+    """-1（光亮 100）到 +1（光亮 0）：越暗越大。怪的攻击、掉的钱跟着它走"""
+    return (LIGHT_FULL - light) / LIGHT_FULL
+
+
+def dark_attack(light: int) -> int:
+    """暗处怪的攻击加成：很暗 +1，很亮 −1，中间 0"""
+    return math.floor(dark_factor(light) + 0.5)
+
+
+# ============ 伤害怎么被防御挡掉 ============
+# 按挨打的一方分：挨打的是玩家（怪打人、NPC 打人、决斗）按比例减伤，每一点防御都有用、越往上越少；
+# 挨打的是怪和 NPC 还是减法（怪的防御是我们定的，不会像玩家那样被装备叠上去，重甲怪就该硬，破甲才有价值）。
+# 中毒流血每回合掉的血、陷阱、事件失败、吃了有毒的东西都是固定值，不看防御（这正是对付高防玩家的手段）。
+# 玩家挨打的结算顺序（以后加效果照这个顺序插）：
+#   1 攻击方的破甲先扣掉防御  2 伤害 = 攻击 × K ÷ (K + 防御)  3 小数按几率进位（2.5 就一半 2 一半 3）
+#   4 防守方的减伤（guard，比如项圈 -1）  5 最少 1 点
+DEF_K = 4
+
+
+def def_k(depth: int = 0) -> int:
+    """比例减伤的常数：越大防御越不顶用。先写死，以后当深层难度的旋钮（比如 4 + 层数/5）"""
+    return DEF_K
+
+
+def hurt_player_by(atk: int, defense: int, depth: int = 0, pierce: int = 0, guard: int = 0) -> int:
+    """玩家挨一下打实际掉多少血（顺序见上面）"""
+    k = def_k(depth)
+    x = atk * k / (k + max(0, defense - pierce))
+    dmg = int(x) + (random.random() < x - int(x))
+    return max(1, dmg - guard)
+
+
+def hurt_npc_by(power: int, armor: int) -> int:
+    """怪挨一下打掉多少血：攻击减护甲（破甲、腐蚀已经从 armor 里扣掉了），最少 1"""
+    return max(1, power - max(0, armor))
+
+
+OFFHAND_SHARE = 0.5                     # 双持时副手（左手）武器只加这么多伤害，向下取整；只拿一把的不管在哪只手都算主手。
+                                        # 以前是 1/4，副手 7 才 +1；一半时两把精钢短剑 7+3 = 10，跟双手战锤一样
+
+# ============ 负面效果 ============
+# 玩家身上的：中毒每回合掉血、命中和判定 -POISON_HIT；流血每个动作掉血、打出的伤害 ×BLEED_DAMAGE；
+# 看不清命中 ×BLIND_HIT；腐蚀防御 -value、血量上限临时扣 CORRODE_HP
+EFFECT_TURNS = {"poison": 3, "bleed": 4, "blind": 1, "corrode": 3}
+POISON_HIT, BLEED_DAMAGE, CORRODE_HP = 0.15, 0.75, 0.15
+# 怪身上的（玩家装备打上去的）
+NPC_EFFECT_TURNS = {"poison": 3, "bleed": 3, "blind": 2, "corrode": 3}
+NPC_BLIND_HIT, NPC_CORRODE_DEF = 0.25, 2
+
+
+def effect_value(kind: str, depth: int) -> int:
+    """怪打上来的效果有多重：中毒、流血每次掉的血，腐蚀扣的防御，跟着层数涨"""
+    return 1 + depth // 6 if kind == "corrode" else 1 + depth // 5
+
+
+# ============ 回血、扎营、酒劲 ============
+# 吃喝回血按血量上限的百分比算，耐性练高了药也跟着管用：heal 每 1 点回 HEAL_PCT%（血量 20 时正好 1 点），
+# 酒回得少一点，每点 HEAL_PCT_ALCOHOL%。毒（harm）还是按点数掉血
+HEAL_PCT = 5
+HEAL_PCT_ALCOHOL = 3
+
+
+def heal_amount(points: int, max_hp: int, alcohol: bool = False) -> int:
+    """heal 点数 → 这个人实际回多少血"""
+    return max(1, round(max_hp * points * (HEAL_PCT_ALCOHOL if alcohol else HEAL_PCT) / 100)) if points > 0 else 0
+
+
+# 扎营：回 max_hp × CAMP_BASE，带帐篷再加 CAMP_TENT（用掉一顶），生存判定成功再加 CAMP_SURVIVAL，空房里整体 ×CAMP_EMPTY
+CAMP_BASE, CAMP_TENT, CAMP_SURVIVAL, CAMP_EMPTY = 0.3, 0.3, 0.15, 1.5
+CHEER_ATTACK, CHEER_FLOORS = 25, 1     # 麦琪的私酿：喝了这一层攻击 +25%（下一层就过去了）
+
+# ============ 技能 ============
+# 技能判定：难度减技能等级的差值 → 成功率，差值不超过 0 是 SKILL_SURE，比表里最大的还大就必定失败
+SKILL_SURE = 0.95
+SKILL_GAP_CHANCE = {1: 0.9, 2: 0.6, 3: 0.3}
+# 从 n 级升到 n+1 级要攒 SKILL_STEP * (n+1) 次熟练；只有难度高于当前等级的成功才算熟练
+SKILL_STEP = 3
+# 耐性：每升一级 HP 上限 +ENDURANCE_HP；挨打（活下来的）有 ENDURE_HIT_CHANCE 的几率涨熟练
+ENDURANCE_HP = 3
+ENDURE_HIT_CHANCE = 0.25
+
+
+def skill_total(level: int) -> int:
+    """升到 level 级一共要攒几次熟练：3、9、18、30……"""
+    return SKILL_STEP * level * (level + 1) // 2
+
+
+def skill_level(count: int) -> int:
+    level = 0
+    while count >= skill_total(level + 1):
+        level += 1
+    return level
+
+
+def skill_progress(count: int) -> tuple[int, int, int]:
+    """(等级, 这一级攒了几次, 升下一级要几次)"""
+    level = skill_level(count)
+    return level, count - skill_total(level), SKILL_STEP * (level + 1)
+
+
+def skill_chance(level: int, difficulty: int) -> float:
+    gap = difficulty - level
+    return SKILL_SURE if gap <= 0 else SKILL_GAP_CHANCE.get(gap, 0.0)
+
+
+def escape_chance(escape: int, attempts: int) -> float:
+    """挣脱、醒来不靠技能等级的那种（NPC 的、昏过去的）：施加时的难度，每失败一次降一级"""
+    return skill_chance(0, max(1, escape - attempts))
+
+
+# ============ 价钱 ============
+# 建议价按效果指数增长：好东西贵得快。NPC 报价在建议价的 OFFER_BAND 倍之间浮动；没有数值的东西（绳子、字条）
+# 没有建议价，价钱全由 AI 定，限在 FREE_PRICE 之间
+GEAR_PRICE = (2, 1.6)                   # 武器护甲：2 × 1.6^(伤害+防御)，伤害 3 约 8，伤害 5 约 21，伤害 6 约 34
+POTION_PRICE = (0.8, 1.4)               # 吃喝：0.8 × 1.4^(回血+毒)，回 3 约 2，回 6 约 6
+KNOCKOUT_PRICE = 5
+OFFER_BAND = (0.5, 2.0)
+FREE_PRICE = (1, 200)
+
+
+def base_price(stats: dict) -> int:
+    if stats.get("price"):
+        return stats["price"]               # 模板写死了建议价（解酒药这类没数值的）
+    gear = stats.get("damage", 0) + stats.get("defense", 0)
+    potion = stats.get("heal", 0) + stats.get("harm", 0)
+    price = ((GEAR_PRICE[0] * GEAR_PRICE[1] ** gear if gear else 0)
+             + (POTION_PRICE[0] * POTION_PRICE[1] ** potion if potion else 0)
+             + (KNOCKOUT_PRICE if stats.get("knockout") else 0))
+    return max(1, round(price))
+
+
+def has_stats(stats: dict) -> bool:
+    return any(stats.get(k) for k in ("damage", "defense", "heal", "harm", "knockout", "price"))
+
+
+def clamp_price(stats: dict, price: int, markup: float = 1.0) -> int:
+    """AI 报的价限在建议价的一半到两倍；没数值的东西只限一个大范围。
+    markup 是这家店加价卖的货（麦琪后厨的麻绳，props.markup）：建议价乘上它，而且不能往下砍（不然比本行的店还便宜）"""
+    if not has_stats(stats):
+        return max(FREE_PRICE[0], min(FREE_PRICE[1], price))
+    base = base_price(stats) * markup
+    low = math.ceil(base) if markup > 1 else math.ceil(base * OFFER_BAND[0])
+    return max(low, min(math.floor(base * OFFER_BAND[1]), price))
+
+
+# ============ 升级 ============
+# 铁匠升级：每级 +1（武器伤害、防具防御），升到第 N 级有 N × UPGRADE_BREAK_STEP 的几率失败（最多 UPGRADE_BREAK_MAX），
+# 失败退一级，钱照收。用奥利哈刚：失败不掉级、矿石不用掉，成功那次才用掉。淬火油必成、不收钱
+UPGRADE_BREAK_STEP = 0.10
+UPGRADE_BREAK_MAX = 0.90
+UPGRADE_MIN_COST = 5
+UPGRADE_MAX = 10
+UPGRADE_DISCOUNT = 0.9                  # 莉娜的回礼（好感 20）：熟客价九折
+
+
+def upgrade_cost(stat: str, now: int, level: int) -> tuple[int, float]:
+    """升到第 level 级的 (费用, 失败的几率)。now 是现在的伤害或防御。武器的费用是伤害 +1 前后建议价的差；
+    防具的数值小，套武器的曲线差价几乎是 0，改按护甲定价 8×防 + 防² 的差（9 + 2×当前防御：1→2 要 11，3→4 要 15）"""
+    diff = (9 + 2 * now) if stat == "defense" else base_price({stat: now + 1}) - base_price({stat: now})
+    return max(UPGRADE_MIN_COST, diff), min(UPGRADE_BREAK_MAX, UPGRADE_BREAK_STEP * level)
+
+
+# ============ 地牢里的怪 ============
+BOSS_EVERY = 5                          # 每几层楼梯间守着头目
+TREASURE_GUARD = 0.5                    # 宝箱房有怪守着的几率
+# 组队时多刷怪：每只普通怪、精英变成"人数"只，一个房间最多 ROOM_CAP 只，多出来的折成血；钱按只数分、东西只有第一只带。
+# 头目、楼梯间守卫还是一只，血 × (1 + BOSS_PARTY_HP × (人数 − 1))，一轮出手"人数"次
+ROOM_CAP = 6
+BOSS_PARTY_HP = 0.8
+
+
+def monster_stats(depth: int, mods: dict, rank: str = "normal") -> tuple[int, int, int]:
+    """(血, 攻, 防)：随层数涨，mods 是这种怪的倍数和加减（dungeon.yaml），精英、头目再加"""
+    hp = (6 + depth) * mods.get("hp", 1.0)
+    atk = 2 + depth // 3 + depth // 12 + mods.get("atk", 0)
+    df = 1 + depth // 4 + mods.get("def", 0)
+    if rank == "elite":
+        hp, atk = hp * 1.8, atk + 1
+    elif rank == "boss":
+        hp, atk, df = hp * 2, atk + 1, df + 1
+    return max(2, round(hp)), max(1, atk), max(0, df)
+
+
+def monster_gold(depth: int, rank: str) -> list[int]:
+    """掉的金币范围跟着层数涨（约 1.2^层数），精英 ×2，头目 ×5"""
+    scale = 1.2 ** depth * {"normal": 1, "elite": 2, "boss": 5}[rank]
+    return [max(1, round(2 * scale)), max(2, round(5 * scale))]
+
+
+def elite_chance(depth: int) -> float:
+    """一群怪是精英的几率（战斗房第一群、有怪守着的宝箱房）"""
+    return min(0.35, 0.02 * depth)
+
+
+def max_groups(depth: int) -> int:
+    """战斗房最多几群怪：1 到 7 层一群，8 层起最多两群，16 层起最多三群（每群随机 1 到这个数）"""
+    return min(3, 1 + depth // 8)
+
+
+def party_copies(size: int, groups: int) -> int:
+    """组队时一群怪刷几只（多出来的折成血）"""
+    return max(1, min(size, ROOM_CAP // max(1, groups)))
+
+
+def treasure_gold(depth: int, dark: float, size: int) -> int:
+    """宝箱房的钱袋：越深越多，越暗越多（按房间本来的光亮），组队按人数"""
+    return round(random.randint(8, 15) * 1.2 ** depth * (1 + 0.5 * dark)) * size
+
+
+def stash_gold(depth: int, size: int) -> int:
+    """空房里藏着的古币（调查判定，难度 2 + 层数/3）"""
+    return max(2, round(random.randint(4, 8) * 1.2 ** depth)) * size

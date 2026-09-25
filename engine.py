@@ -22,6 +22,7 @@ from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
 import dungeon
+from rules import *                 # noqa: F403  纯规则（命中、减伤、价钱、升级、怪物数值）见 rules.py
 from commands import REST_TALK_RE
 from schema import (
     ActionResult, Attack, Drop, Equip, Feature, Follow, Freeform, Give, ItemInstance, LeaveParty, Kick, Look,
@@ -70,28 +71,20 @@ START_DISTANCE = 2
 MAX_DISTANCE = 4
 MAX_STEP = 2
 ENEMY_STEP = 1
-MELEE_HIT = {0: 0.95, 1: 0.45, 2: 0.05}
 DODGE_BONUS = 0.15                      # 闪避动作让敌人这一下的命中率降低这么多，察觉每级再多降 DODGE_PER_LEVEL
 DODGE_PER_LEVEL = 0.05
 DISTANCE_WORDS = {0: "贴身", 1: "一步之遥", 2: "几步开外"}
 # 玩家每做这么多个动作，敌人行动一次（一句话结尾不够数也算一次）。敌人有动静（发现、逼近、出手）就打断后面的，
 # 免得一条超长的消息一口气打出一串伤害；被绊倒的敌人轮到时只是爬起来，不打断
-ENEMY_EVERY = 2
 
 # 徒手一击毙命、直接打晕：只有敌人没发现你时能偷袭，按隐匿判，难度至少这么高；对方有防备就不可能
 ASSASSINATE_DIFFICULTY = 4
 KEEN_EXTRA = 2                          # 对警觉的怪偷袭暗杀难度 +2（它们一见面就发现人，见 _keen_spotted）
 PRONE_DECISIVE_DIFFICULTY = 3           # 对刚被绊倒在地的下狠手（打晕、断手、一击毙命）难度至少这么高
 
-# 技能判定：难度减技能等级的差值 → 成功率，差值不超过 0 是 SKILL_SURE，比表里最大的还大就必定失败
-SKILL_SURE = 0.95
-SKILL_GAP_CHANCE = {1: 0.9, 2: 0.6, 3: 0.3}
-# 从 n 级升到 n+1 级要攒 SKILL_STEP * (n+1) 次熟练；只有难度高于当前等级的成功才算熟练
-SKILL_STEP = 3
+# 技能判定、升级要攒几次熟练：见 rules.SKILL_*
 # 耐性：每升一级 HP 上限 +ENDURANCE_HP。除了硬扛的判定，挨打（活下来的）、扛住没喝醉有 ENDURE_HIT_CHANCE 的几率涨熟练，
-# 吃了有毒的东西活下来一定涨；耐性每级让喝醉的几率乘 DRUNK_RESIST
-ENDURANCE_HP = 3
-ENDURE_HIT_CHANCE = 0.25
+# 吃了有毒的东西活下来一定涨（ENDURANCE_HP、ENDURE_HIT_CHANCE 在 rules）；耐性每级让喝醉的几率乘 DRUNK_RESIST
 DRUNK_RESIST = 0.85
 FLEE_DIFFICULTY = {0: 3, 1: 2, 2: 1}    # 决斗逃跑（运动）按距离的难度，更远不用判定
 REVIVE_DIFFICULTY = 1                   # 急救倒下的人（医药）
@@ -680,8 +673,6 @@ def _aura(cur: Cursor, player: Player, kind: str) -> int:
 
 # 装备打到怪身上的状态：怪也能中毒、流血（每轮敌人行动掉血）、看不清（命中 ×NPC_BLIND_HIT）、腐蚀（防御 -NPC_CORRODE_DEF）；
 # 定身 stun、缠住、撞倒用怪原来的状态
-NPC_EFFECT_TURNS = {"poison": 3, "bleed": 3, "blind": 2, "corrode": 3}
-NPC_BLIND_HIT, NPC_CORRODE_DEF = 0.25, 2
 
 
 def _npc_effect(npc: Npc, kind: str) -> Optional[Effect]:
@@ -837,28 +828,7 @@ def _sync_gear_hp(cur: Cursor, player_id: UUID) -> list[str]:
     return [f"{player.name}的血量上限{'+' if bonus > had else ''}{bonus - had}（身上的装备），现在上限 {cur.fetchone()['max_hp']}"]
 
 
-# ============ 伤害怎么被防御挡掉 ============
-# 按挨打的一方分：挨打的是玩家（怪打人、NPC 打人、决斗）按比例减伤，每一点防御都有用、越往上越少；
-# 挨打的是怪和 NPC 还是减法（怪的防御是我们定的，不会像玩家那样被装备叠上去，重甲怪就该硬，破甲才有价值）。
-# 中毒流血每回合掉的血、陷阱、事件失败、吃了有毒的东西都是固定值，不看防御（这正是对付高防玩家的手段）。
-# 玩家挨打的结算顺序（以后加效果照这个顺序插）：
-#   1 攻击方的破甲先扣掉防御  2 伤害 = 攻击 × K ÷ (K + 防御)  3 小数按几率进位（2.5 就一半 2 一半 3）
-#   4 防守方的减伤（guard，比如项圈 -1）  5 最少 1 点
-DEF_K = 4
-
-
-def def_k(depth: int = 0) -> int:
-    """比例减伤的常数：越大防御越不顶用。先写死，以后当深层难度的旋钮（比如 4 + 层数/5）"""
-    return DEF_K
-
-
-def hurt_player_by(atk: int, defense: int, depth: int = 0, pierce: int = 0, guard: int = 0) -> int:
-    """玩家挨一下打实际掉多少血（顺序见上面）"""
-    k = def_k(depth)
-    x = atk * k / (k + max(0, defense - pierce))
-    dmg = int(x) + (random.random() < x - int(x))
-    return max(1, dmg - guard)
-
+# ============ 伤害怎么被防御挡掉：见 rules.hurt_player_by（玩家挨打，按比例）、rules.hurt_npc_by（怪挨打，减法） ============
 
 def _defense(cur: Cursor, player: Player) -> int:
     """基础防御加上所有装备的防御（护甲、护符、以后的盾）"""
@@ -867,8 +837,6 @@ def _defense(cur: Cursor, player: Player) -> int:
                - (corrode.value if corrode else 0))
 
 
-OFFHAND_SHARE = 0.5                     # 双持时副手（左手）武器只加这么多伤害，向下取整；只拿一把的不管在哪只手都算主手。
-                                        # 以前是 1/4，副手 7 才 +1；一半时两把精钢短剑 7+3 = 10，跟双手战锤一样
 
 
 def gear_totals(attack: int, defense: int, equipped: list[ItemInstance]) -> tuple[int, int]:
@@ -1043,8 +1011,7 @@ def do_teleport(cur: Cursor, player: Player, view: RoomView, a: Teleport) -> lis
     return facts + _torch_floor(cur, [player.name] + names, to)
 
 
-# 扎营：回 max_hp × CAMP_BASE，带帐篷再加 CAMP_TENT（用掉一顶），生存判定成功再加 CAMP_SURVIVAL，空房里整体 ×CAMP_EMPTY
-CAMP_BASE, CAMP_TENT, CAMP_SURVIVAL, CAMP_EMPTY = 0.3, 0.3, 0.15, 1.5
+# 扎营：回多少见 rules.CAMP_*
 
 
 def do_camp(cur: Cursor, player: Player, view: RoomView, a: Camp) -> list[str]:
@@ -1380,7 +1347,6 @@ def _unlock(cur: Cursor, player: Player, key: ItemInstance, direction: str) -> l
     return facts
 
 
-CHEER_ATTACK, CHEER_FLOORS = 25, 1     # 麦琪的私酿：喝了这一层攻击 +25%（下一层就过去了）
 
 
 def _empty(cur: Cursor, item: ItemInstance) -> str:
@@ -1588,19 +1554,9 @@ def _use_other(player: Player, target: Player, item: ItemInstance) -> str:
             "salve": f"{player.name}给{target.name}用上了{item.name}"}[_use_kind(item)]
 
 
-# 吃喝回血按血量上限的百分比算，耐性练高了药也跟着管用：heal 每 1 点回 HEAL_PCT%（血量 20 时正好 1 点），
-# 酒回得少一点，每点 HEAL_PCT_ALCOHOL%。毒（harm）还是按点数掉血
-HEAL_PCT = 5
-HEAL_PCT_ALCOHOL = 3
-
-
+# 吃喝回血按血量上限的百分比算：rules.heal_amount
 def _is_alcohol(item: ItemInstance) -> bool:
     return bool(_prop(item, "alcohol")) or "酒" in item.name
-
-
-def heal_amount(points: int, max_hp: int, alcohol: bool = False) -> int:
-    """heal 点数 → 这个人实际回多少血"""
-    return max(1, round(max_hp * points * (HEAL_PCT_ALCOHOL if alcohol else HEAL_PCT) / 100)) if points > 0 else 0
 
 
 def _eat_effect(cur: Cursor, eater: Player, item: ItemInstance, user: Player) -> list[str]:
@@ -1836,29 +1792,6 @@ def _roll(chance: float) -> bool:
 
 # ============ 技能判定 ============
 
-def _skill_total(level: int) -> int:
-    """升到 level 级一共要攒几次熟练：3、9、18、30……"""
-    return SKILL_STEP * level * (level + 1) // 2
-
-
-def skill_level(count: int) -> int:
-    level = 0
-    while count >= _skill_total(level + 1):
-        level += 1
-    return level
-
-
-def skill_progress(count: int) -> tuple[int, int, int]:
-    """(等级, 这一级攒了几次, 升下一级要几次)"""
-    level = skill_level(count)
-    return level, count - _skill_total(level), SKILL_STEP * (level + 1)
-
-
-def skill_chance(level: int, difficulty: int) -> float:
-    gap = difficulty - level
-    return SKILL_SURE if gap <= 0 else SKILL_GAP_CHANCE.get(gap, 0.0)
-
-
 def _check(cur: Cursor, player: Player, view: RoomView, skill: Optional[str], difficulty: int) -> tuple[bool, list[str]]:
     """按技能掷骰，返回 (成没成, facts)。skill 为空是不靠本事的判定（昏过去醒来），按 0 级算、不涨熟练。
     成功而且难度高于当前等级才算一次熟练，一条消息里同一个技能最多涨一次"""
@@ -1900,11 +1833,6 @@ def _gain_skill(cur: Cursor, player: Player, skill: str) -> list[str]:
 def _toughen(cur: Cursor, player: Player, chance: float = 1.0) -> list[str]:
     """扛住了一下（挨了打还站着、喝了毒还活着、扛住酒劲）：按几率涨一次耐性熟练"""
     return _gain_skill(cur, player, "endurance") if player.hp > 0 and _roll(chance) else []
-
-
-def _escape_chance(escape: int, attempts: int) -> float:
-    """挣脱、醒来不靠技能等级的那种（NPC 的、昏过去的）：施加时的难度，每失败一次降一级"""
-    return skill_chance(0, max(1, escape - attempts))
 
 
 def _cap(value: str, cap: str, scale: list[str]) -> str:
@@ -1979,7 +1907,7 @@ def _npc_gone(cur: Cursor, player: Player, npc: Npc, tamed: bool = False) -> lis
     if gold := npc.template.props.get("on_death", {}).get("gold"):
         n = random.randint(*gold)
         if dungeon.is_dungeon(player.room_id):
-            n = max(1, round(n * (1 + 0.5 * _dark_factor(_light(cur, player.room_id)))))   # 越暗掉得越多
+            n = max(1, round(n * (1 + 0.5 * dark_factor(_light(cur, player.room_id)))))   # 越暗掉得越多
         n = max(1, round(n * (1 + gear_gold(cur, player))))      # 幸运古币、贪婪之戒（只算最好的一件）
         cur.execute("""update players set gold = gold + %s
                        where id = %s or (party_id = %s and room_id = %s and hp > 0) returning name""",
@@ -2051,7 +1979,7 @@ def _npc_counter(cur: Cursor, player: Player, npc: Npc) -> list[str]:
         st = npc.status
         if st.kind == "prone":
             return [f"{npc.name}还倒在地上，没法还手"]
-        if _roll(_escape_chance(st.escape, st.attempts)):
+        if _roll(escape_chance(st.escape, st.attempts)):
             _set_status(cur, "npcs", npc.id, None)
             return [f"{npc.name}摆脱了“{st.label}”的状态，但这回合来不及还手"]
         st.attempts += 1
@@ -2073,7 +2001,7 @@ def _npc_strike(cur: Cursor, player: Player, npc: Npc, verb: str, chance: float 
     if dodges:
         return [f"{npc.name}{verb}，" + (dodges[0].get("label") or f"被{player.name}躲开了")]
     light = _light(cur, npc.room_id)
-    atk = npc.template.attack + (math.floor(_dark_factor(light) + 0.5) if dungeon.is_dungeon(npc.room_id) else 0)
+    atk = npc.template.attack + (dark_attack(light) if dungeon.is_dungeon(npc.room_id) else 0)
     if npc.template.props.get("light_averse") and light >= LIGHT_BRIGHT:
         atk -= 1                                # 怕光的怪在亮处缩手缩脚
     depth = npc.template.props.get("dungeon", {}).get("depth", 0)
@@ -2131,8 +2059,6 @@ def _set_distance(st: Stealth, npc: Npc, d: int) -> int:
 # 同一种再中一次只刷新时间。住店、扎营、被扶起来、急救都会清掉
 EFFECT_NAMES = {"poison": "中毒", "bleed": "流血", "blind": "看不清", "corrode": "腐蚀", "whet": "磨利", "cheer": "浑身是劲"}
 # 住店、扎营、被扶起来清掉的只是坏效果，磨利、浑身是劲这种好的留着（那几处 update 里直接写了 jsonb 过滤）
-EFFECT_TURNS = {"poison": 3, "bleed": 4, "blind": 1, "corrode": 3}
-POISON_HIT, BLEED_DAMAGE, CORRODE_HP = 0.15, 0.75, 0.15
 # 清掉所有效果时把腐蚀扣的血量上限还回去（SQL 片段，用在 update players set ... 里，得在改 hp 之前算）
 RESTORE_MAX_HP = "coalesce((select sum((e->>'hp')::int) from jsonb_array_elements(effects) e), 0)"
 
@@ -2186,7 +2112,7 @@ def _inflict(cur: Cursor, player: Player, kind: str, label: str, depth: int, sou
         return [f"{player.name}{label}" + ("，得先挣脱" if kind == "restrained" else "，得先爬起来" if kind == "prone"
                                             else "，失去战斗能力")]
     label = label or EFFECT_NAMES[kind]
-    value = 1 + depth // 6 if kind == "corrode" else 1 + depth // 5
+    value = effect_value(kind, depth)
     old = _effect(player, kind)
     if old:
         old.left = EFFECT_TURNS[kind]
@@ -2251,7 +2177,6 @@ def _tick_effects(cur: Cursor, player: Player, unit: str) -> list[str]:
 # 低于 LIGHT_DARK 做花样难度 +1、躲藏容易 1 级。有人带火把 +TORCH_LIGHT；看不清（blind）的人光亮算 0。
 # 越暗怪越凶、钱越多（_dark_factor）；怕光的怪在 LIGHT_BRIGHT 以上攻击 -1。
 # 积水：闪避效果减半、逃跑难度 +1。掩体：躲藏容易 1 级
-LIGHT_FULL, LIGHT_MIN_HIT, LIGHT_DARK, LIGHT_BRIGHT = 50, 0.05, 20, 70
 TORCH_LIGHT = 35                        # 说明用；实际按 world.yaml 火把（点燃）/（弱光）的 props.light
 LIGHT_OLD = {"bright": 70, "dim": 40, "dark": 15}      # 旧存档里的文字写法
 
@@ -2287,16 +2212,6 @@ def _light(cur: Cursor, room_id: str, env: Optional[dict] = None, player: Option
     return max(0, min(100, level))
 
 
-def _light_hit(light: int, chance: float) -> float:
-    """命中按光亮打折：LIGHT_FULL 以上不打折，往下按比例降，最低 LIGHT_MIN_HIT（够不着的还是 0）"""
-    return 0.0 if chance <= 0 else max(LIGHT_MIN_HIT, chance * min(1.0, light / LIGHT_FULL))
-
-
-def _dark_factor(light: int) -> float:
-    """-1（光亮 100）到 +1（光亮 0）：越暗越大。怪的攻击、掉的钱跟着它走"""
-    return (LIGHT_FULL - light) / LIGHT_FULL
-
-
 def light_info(cur: Cursor, player: Player, room: Room) -> Optional[dict]:
     """给界面看的光亮：数值、说法、这个亮度现在对这个人有什么影响、光从哪来。没设环境的房间（村里）是 None"""
     env = room.props.get("env")
@@ -2308,16 +2223,16 @@ def light_info(cur: Cursor, player: Player, room: Room) -> Optional[dict]:
     if _effect(player, "blind"):
         lines.append(f"你看不清东西，这一回合命中 ×{BLIND_HIT}")
     hit_light = max(light, LIGHT_FULL) if gear_has(cur, player, "darkvision") and not _effect(player, "blind") else light
-    hit = round(_light_hit(hit_light, MELEE_HIT[0]) * _blind(player) * 100)
+    hit = round(light_hit(hit_light, MELEE_HIT[0]) * _blind(player) * 100)
     lines.append(f"你贴身普通攻击的命中 {hit}%" + ("（夜视，不受暗处影响）" if hit_light > light
                                                   else "（亮度 50 以上不打折）" if light >= LIGHT_FULL else "（越暗越低，带火把能补）"))
     if light < LIGHT_DARK:
         lines.append("几乎漆黑：做花样难一级，躲起来容易一级")
-    atk = math.floor(_dark_factor(light) + 0.5)
+    atk = dark_attack(light)
     lines.append("怪下手更狠（攻击 +1）" if atk > 0 else "怪被照得缩手缩脚（攻击 −1）" if atk < 0 else "怪的攻击正常")
     if light >= LIGHT_BRIGHT:
         lines.append("怕光的怪攻击再 −1")
-    lines.append(f"打怪掉的钱 ×{1 + 0.5 * _dark_factor(light):.2f}（越暗越多）")
+    lines.append(f"打怪掉的钱 ×{1 + 0.5 * dark_factor(light):.2f}（越暗越多）")
     parts = [f"房间 {base}"]
     cur.execute("""select max((t.props->>'light')::int) filter (where t.props ? 'burning') as torch,
                           max((t.props->>'light')::int) filter (where not t.props ? 'burning') as lamp
@@ -2781,12 +2696,7 @@ def round_enemies(conn: Connection, room_id: str, done: dict[UUID, list[tuple[Pl
 #   被贴身了先往后跳开一步、这一下不射；这一轮刚被这个人贴身砍中（pinned，被缠住了）就跳不开，只能贴身硬射。
 #   所以对付远程怪要"冲上去砍它"（靠近和攻击一句话里说完），或者用远程武器、躲在掩体后面
 # - 近战的怪：逼近一格，够得着就扑上来
-ENEMY_RANGED_HIT = {0: 0.5, 1: 0.75, 2: 0.85, 3: 0.85, 4: 0.75}
-RANGED_COVER = 0.15
-RANGED_BACKS = 2                        # 远程怪一场最多往后跳两次，再贴上去它就"背后撞上了石壁"，跳不开了
-HEALER_BELOW = 0.6
-HEALER_CHANCE = 0.5                     # 有同伴要治时一半几率治疗（另一半照常出手）。治疗量按本层普通怪的血量 × props.healer，不看治的是谁
-HEALER_MAX = 3                          # 每只一场最多治三次，"先杀她"和"耗光她"都是办法
+# 命中、跳开、治疗的数值：rules.ENEMY_RANGED_HIT、RANGED_BACKS、HEALER_*
 
 
 def _tally(cur: Cursor, npc: Npc, key: str) -> int:
@@ -2828,7 +2738,7 @@ def _enemy_act(cur: Cursor, player: Player, st: Stealth, npc: Npc, dodge: float,
         room = npc.room_id
         chance = ENEMY_RANGED_HIT.get(d, ENEMY_RANGED_HIT[max(ENEMY_RANGED_HIT)]) - dodge - _cover(cur, room, True)
         if not _holds_fire(cur, player):        # 拿火把的人在暗处最显眼；别人在暗处不好瞄
-            chance = _light_hit(_light(cur, room), chance)
+            chance = light_hit(_light(cur, room), chance)
         chance *= _shot_smoke(cur, room, True)
         return pinned_note + _npc_strike(cur, player, npc, props.get("verb") or "放了一箭", max(0.0, chance))
     facts = []
@@ -2907,7 +2817,7 @@ def do_attack(cur: Cursor, player: Player, view: RoomView, a: Attack) -> list[st
         light = _light(cur, player.room_id, player=player)
         if gear_has(cur, player, "darkvision") and not _effect(player, "blind"):
             light = max(light, LIGHT_FULL)      # 石像鬼之眼：暗处命中不打折
-        chance = _light_hit(light, _hit_base(shooter, d) - _cover(cur, player.room_id, shooter)) \
+        chance = light_hit(light, _hit_base(shooter, d) - _cover(cur, player.room_id, shooter)) \
             * _shot_smoke(cur, player.room_id, shooter) * _blind(player)
         if not _roll(max(0.0, chance - _drunk(player) - _poisoned(player) + _prone_bonus(npc, d))):
             swung = _fire(cur, player, "attack", npc=npc)
@@ -2933,7 +2843,7 @@ def do_attack(cur: Cursor, player: Player, view: RoomView, a: Attack) -> list[st
     corrode = _npc_effect(npc, "corrode")
     armor = max(0, npc.template.defense - pierce - (corrode.value if corrode else 0))
     whet = _effect(player, "whet")
-    dmg = _bled(player, max(1, power + (whet.value if whet else 0) + bonus + _aura(cur, player, "attack") - armor))
+    dmg = _bled(player, hurt_npc_by(power + (whet.value if whet else 0) + bonus + _aura(cur, player, "attack"), armor))
     facts, dead = _hurt_npc(cur, player, npc, dmg)
     facts += _assassinated(cur, player, view, npc, dead, not st.detected)
     facts = (guarded + [f"{player.name}{how}{npc.name}，造成 {dmg} 点伤害"]
@@ -2947,11 +2857,7 @@ def do_attack(cur: Cursor, player: Player, view: RoomView, a: Attack) -> list[st
 # props.ranged 的武器：贴身难射，离得越远越准（RANGED_HIT）；steady 的（麦琪的弩）远近都是 STEADY_HIT。
 # 射完换成 props.unloaded 那个"空"的样子（弩没弦），说"装填"换回来（props.loads），算一个动作。
 # 射的时候只算这件远程武器的伤害；"空"的远程武器不算近战武器
-RANGED_HIT = {0: 0.45, 1: 0.75, 2: 0.9, 3: 0.9, 4: 0.85}
-STEADY_HIT = 0.9
-BLIND_HIT = 0.5                         # 看不清：命中减半（以前当一片漆黑只剩 5%，被墨咒书记远远致盲就追不上了）
-SMOKE_HIT = 0.5                         # 烟雾弹的烟里：远程命中减半，敌我都算
-SMOKE_ROUNDS = 2                        # 烟能撑几轮（敌人动几次）
+# 命中表：rules.RANGED_HIT、STEADY_HIT、BLIND_HIT、SMOKE_*
 
 
 def _choose_weapons(weapons: list[ItemInstance], d: int, want: Optional[ItemInstance]
@@ -3583,12 +3489,8 @@ def do_give(cur: Cursor, player: Player, view: RoomView, a: Give) -> list[str]:
 # 等级不封顶。费用是升级后和升级前建议价的差（至少 UPGRADE_MIN_COST），跟着伤害指数涨。
 # 用奥利哈刚（UPGRADE_ORE）：钱照付、照样掷骰，但失败不掉级、矿石也不用掉，成功那次才用掉，一块矿保证一级。
 # 莉娜的淬火油（UPGRADE_OIL，好感 40 的回礼）：这一次必定成功，不收钱。等级上限 UPGRADE_MAX
-UPGRADE_BREAK_STEP = 0.10
-UPGRADE_BREAK_MAX = 0.90
-UPGRADE_MIN_COST = 5
 UPGRADE_ORE = "ore"
 UPGRADE_OIL = "lina_oil"
-UPGRADE_MAX = 10
 
 
 STAT_WORDS = {"damage": "伤害", "defense": "防御"}
@@ -3613,12 +3515,7 @@ def upgrade_terms(item: ItemInstance) -> tuple[int, int, float]:
     stat = upgrade_stat(item)
     now = getattr(item, stat)
     level = item.props.get("plus", 0) + 1
-    diff = (9 + 2 * now) if stat == "defense" else base_price({stat: now + 1}) - base_price({stat: now})
-    cost = max(UPGRADE_MIN_COST, diff)
-    return level, cost, min(UPGRADE_BREAK_MAX, UPGRADE_BREAK_STEP * level)
-
-
-UPGRADE_DISCOUNT = 0.9                  # 莉娜的回礼（好感 20）：熟客价九折
+    return (level,) + upgrade_cost(stat, now, level)
 
 
 def _upgrade_text(item: ItemInstance, price: Optional[int] = None) -> str:
@@ -4482,39 +4379,7 @@ def _set_quest(cur: Cursor, player_id: UUID, quest_id: str, status: str) -> None
 
 MADE_TEMPLATES = {"food": "made_food", "drink": "made_drink", "misc": "made_misc", "weapon": "made_weapon"}
 CREATE_COOLDOWN = "3 minutes"           # 同一个 NPC 白送现造东西给同一个玩家的间隔
-# 建议价按效果指数增长：好东西贵得快。NPC 报价在建议价的 OFFER_BAND 倍之间浮动；没有数值的东西（绳子、字条）
-# 没有建议价，价钱全由 AI 定，限在 FREE_PRICE 之间
-GEAR_PRICE = (2, 1.6)                   # 武器护甲：2 × 1.6^(伤害+防御)，伤害 3 约 8，伤害 5 约 21，伤害 6 约 34
-POTION_PRICE = (0.8, 1.4)               # 吃喝：0.8 × 1.4^(回血+毒)，回 3 约 2，回 6 约 6
-KNOCKOUT_PRICE = 5
-OFFER_BAND = (0.5, 2.0)
-FREE_PRICE = (1, 200)
-
-
-def base_price(stats: dict) -> int:
-    if stats.get("price"):
-        return stats["price"]               # 模板写死了建议价（解酒药这类没数值的）
-    gear = stats.get("damage", 0) + stats.get("defense", 0)
-    potion = stats.get("heal", 0) + stats.get("harm", 0)
-    price = ((GEAR_PRICE[0] * GEAR_PRICE[1] ** gear if gear else 0)
-             + (POTION_PRICE[0] * POTION_PRICE[1] ** potion if potion else 0)
-             + (KNOCKOUT_PRICE if stats.get("knockout") else 0))
-    return max(1, round(price))
-
-
-def has_stats(stats: dict) -> bool:
-    return any(stats.get(k) for k in ("damage", "defense", "heal", "harm", "knockout", "price"))
-
-
-def clamp_price(stats: dict, price: int, markup: float = 1.0) -> int:
-    """AI 报的价限在建议价的一半到两倍；没数值的东西只限一个大范围。
-    markup 是这家店加价卖的货（麦琪后厨的麻绳，props.markup）：建议价乘上它，而且不能往下砍（不然比本行的店还便宜）"""
-    if not has_stats(stats):
-        return max(FREE_PRICE[0], min(FREE_PRICE[1], price))
-    base = base_price(stats) * markup
-    low = math.ceil(base) if markup > 1 else math.ceil(base * OFFER_BAND[0])
-    return max(low, min(math.floor(base * OFFER_BAND[1]), price))
-
+# 建议价、报价区间：rules.base_price、clamp_price
 
 def markup(npc: Npc, key: str) -> float:
     """这家店对这样货的加价倍数（props.markup），不加价是 1"""

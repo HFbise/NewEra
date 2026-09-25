@@ -17,19 +17,18 @@ import yaml
 from psycopg import Cursor
 from psycopg.types.json import Jsonb
 
+from rules import (BOSS_EVERY, BOSS_PARTY_HP, ROOM_CAP, TREASURE_GUARD, elite_chance, max_groups,  # noqa: F401
+                   monster_gold, monster_stats, party_copies, stash_gold, treasure_gold)
+
 GATE = "dungeon_gate"                   # 地窖的入口、楼梯间往下都连到这个占位房间，引擎走到这里改由 through_gate 决定去哪
 ENTRANCE = "cellar"                     # 地牢第 1 层往上回到这里
 STALE = "30 minutes"                    # 没人在、这么久没动静的一层删掉（按层算，有人在的那一层留着）
 GRID = 3                                # 一层 GRID × GRID 个房间
-BOSS_EVERY = 5                          # 每几层楼梯间守着头目
 THEME_GAP = 3                           # 主题不跟上面几层重复
-TREASURE_GUARD = 0.5                    # 宝箱房有怪守着的几率
 # 组队时多刷怪，不再给怪加血（战斗按回合结算，每只怪一轮只出手一次，以前是每个人出手它都还手）：
 # 每只普通怪、精英变成"人数"只，一个房间最多 ROOM_CAP 只，多出来的折成血；钱按只数分、东西只有第一只带，
 # 整个房间的收获跟以前一样。头目、楼梯间守卫还是一只，血 × (1 + BOSS_PARTY_HP × (人数 − 1))，
 # 一轮出手"人数"次（跟以前每个人出手它都还手一样）
-ROOM_CAP = 6
-BOSS_PARTY_HP = 0.8
 
 DIRS = {"north": (-1, 0), "south": (1, 0), "west": (0, -1), "east": (0, 1)}
 BACK = {"north": "south", "south": "north", "west": "east", "east": "west"}
@@ -290,23 +289,6 @@ def parse_room(room_id: str) -> tuple[UUID, int]:
 # 第 n 层普通怪：血 6+n、攻击 2+n/3+n/12、防御 1+n/4（攻击跟着玩家大概的防御涨，见 memory/dungeon-design.md 的模拟）；
 # 每种怪再按 dungeon.yaml 的倍率、加减调整。精英血 ×1.8 攻 +1，头目血 ×2 攻 +1 防 +1
 
-def monster_stats(depth: int, mods: dict, rank: str = "normal") -> tuple[int, int, int]:
-    hp = (6 + depth) * mods.get("hp", 1.0)
-    atk = 2 + depth // 3 + depth // 12 + mods.get("atk", 0)
-    df = 1 + depth // 4 + mods.get("def", 0)
-    if rank == "elite":
-        hp, atk = hp * 1.8, atk + 1
-    elif rank == "boss":
-        hp, atk, df = hp * 2, atk + 1, df + 1
-    return max(2, round(hp)), max(1, atk), max(0, df)
-
-
-def _gold(depth: int, rank: str) -> list[int]:
-    """掉的金币跟着层数涨（约 1.2^层数），精英 ×2，头目 ×5"""
-    scale = 1.2 ** depth * {"normal": 1, "elite": 2, "boss": 5}[rank]
-    return [max(1, round(2 * scale)), max(2, round(5 * scale))]
-
-
 def _template(cur: Cursor, depth: int, kind: str, rank: str, theme: str, share: int = 1, hp_mult: float = 1.0,
               minion: bool = False, attacks: int = 1) -> str:
     """这一层这种怪的 NPC 模板，没有就建。share：钱分给几只（组队多刷的同一群）；hp_mult：血的倍数；
@@ -320,7 +302,7 @@ def _template(cur: Cursor, depth: int, kind: str, rank: str, theme: str, share: 
     hp = max(2, round(hp * hp_mult))
     name = m["name"] if rank != "elite" else f"凶悍的{m['name']}"
     description = m["description"] + ("它比同类更壮、更凶，身上带着好几道旧伤。" if rank == "elite" else "")
-    gold = [max(1, round(g / share)) for g in _gold(depth, rank)]
+    gold = [max(1, round(g / share)) for g in monster_gold(depth, rank)]
     props = {"on_death": {} if minion else {"gold": gold}, "dungeon": {"depth": depth, "rank": rank}}
     if attacks > 1:
         props["attacks"] = attacks
@@ -364,7 +346,7 @@ def _kinds(theme: dict, depth: int) -> list[str]:
 def _spawn_group(cur: Cursor, room: str, depth: int, kind: str, rank: str, theme: str, size: int, groups: int = 1) -> None:
     """放一群同种的怪：一个人一只，组队时"人数"只（这个房间一共 groups 群，总数不超过 ROOM_CAP，多的折成血）。
     钱按只数分，东西只有第一只带"""
-    copies = max(1, min(size, ROOM_CAP // max(1, groups)))
+    copies = party_copies(size, groups)
     for i in range(copies):
         _spawn(cur, room, depth, kind, rank, theme, share=copies, hp_mult=size / copies, loot=i == 0,
                attacks=max(1, round(size / copies)))
@@ -460,7 +442,7 @@ def _make_floor(cur: Cursor, run: UUID, depth: int, above: Optional[str], size: 
             # 空房：搜索可能找到药草（和主题特产：森林的野莓、沼泽的解毒苔和沼泽菇）；调查可能翻出藏着的古币，每人一次
             props["forage"] = EMPTY_FORAGE + [{"item": e["item"], "chance": e.get("chance", 0.5), "cooldown": 86400}
                                               for e in loot_data().get("forage", {}).get(theme_key) or []]
-            props["stash"] = {"gold": max(2, round(random.randint(4, 8) * 1.2 ** depth)) * size,
+            props["stash"] = {"gold": stash_gold(depth, size),
                               "difficulty": 2 + depth // 3}
         if event:
             # 事件房的东西跟酒馆武器桶一样是"取用处"：每人一次，要过技能判定（难度随层数涨）
@@ -493,8 +475,8 @@ def _make_floor(cur: Cursor, run: UUID, depth: int, above: Optional[str], size: 
                                  to_jsonb(least(100, (props->'env'->>'light')::int + %s)))
                                where id = %s""", (Jsonb(lamps), LAMP_LIGHT * len(lamps), rid))
         if kind == "combat":
-            count = random.randint(1, min(3, 1 + depth // 8))
-            ranks = ["elite" if i == 0 and random.random() < min(0.35, 0.02 * depth) else "normal" for i in range(count)]
+            count = random.randint(1, max_groups(depth))
+            ranks = ["elite" if i == 0 and random.random() < elite_chance(depth) else "normal" for i in range(count)]
             for rank in ranks:
                 _spawn_group(cur, rid, depth, random.choice(_kinds(theme, depth)), rank, theme_key, size, len(ranks))
         elif kind == "stairs":
@@ -505,7 +487,7 @@ def _make_floor(cur: Cursor, run: UUID, depth: int, above: Optional[str], size: 
         elif kind == "treasure":
             # 越暗的房间钱越多（按房间本来的光亮，不按后来点没点灯）
             dark = (50 - (theme.get("light", 35) + LIGHT_OFFSET.get(theme["treasure"].get("light", "dim"), 0))) / 50
-            coins = round(random.randint(8, 15) * 1.2 ** depth * (1 + 0.5 * dark)) * size   # 捡的人会分给在场的队友
+            coins = treasure_gold(depth, dark, size)    # 捡的人会分给在场的队友
             cur.execute("insert into item_instances (template_id, room_id, props) values ('gold_pouch', %s, %s)",
                         (rid, Jsonb({"gold": coins})))
             cur.execute("insert into item_instances (template_id, room_id) values ('herb', %s)", (rid,))
@@ -519,7 +501,7 @@ def _make_floor(cur: Cursor, run: UUID, depth: int, above: Optional[str], size: 
                     _put_item(cur, item, depth, room=rid)
             if guarded:
                 # 有一半的宝箱房有怪守着（越深越可能是精英）
-                rank = "elite" if random.random() < min(0.35, 0.02 * depth) else "normal"
+                rank = "elite" if random.random() < elite_chance(depth) else "normal"
                 _spawn_group(cur, rid, depth, random.choice(_kinds(theme, depth)), rank, theme_key, size)
     if theme_key == "castle" and theme.get("cell"):
         _prison_cell(cur, run, depth, theme, cells, start, size)
