@@ -78,16 +78,28 @@ class Usage(BaseModel):
     cache_write: int = 0
 
 
+# 智谱的限流按 key 算：第二个 key（ZAI_API_KEY_2）给玩家不用干等的那几类调用（台词、交易、记忆、写房间），
+# 解析和叙事留在第一个 key；某个 key 被限流时同一个模型先换另一个 key 再试，还不行才换备用模型
+SECOND_KEY_KINDS = {"roleplay", "give", "memory", "rooms"}
+_zkey = threading.local()               # 这次调用用哪个 key（_generate_with_fallback 设）
+
+
+def _zhipu_keys(kind: str) -> list[str]:
+    keys = [k for k in (os.environ.get("ZAI_API_KEY"), os.environ.get("ZAI_API_KEY_2")) if k]
+    return keys[::-1] if kind in SECOND_KEY_KINDS and len(keys) == 2 else keys
+
+
 def _generate_zhipu(system: str, user: str, fmt: type[BaseModel], max_tokens: int, mdl: str):
     # 智谱只有 json_object 模式，不强制 schema，所以把 schema 写进 system，回来再用 Pydantic 校验
     chain = list(dict.fromkeys([model()] + fallback_models()))
     timeout = ZHIPU_TIMEOUT_SLOW if getattr(_slow, "on", False) else ZHIPU_TIMEOUT_LAST if mdl == chain[-1] else ZHIPU_TIMEOUT
-    if ("zhipu", timeout) not in _clients:
-        # 读 ZAI_API_KEY，默认连国内 bigmodel.cn。SDK 默认限流、超时时自己等着重试 3 次，会拖很久；
-        # 这里不让它重试，出问题直接换备用模型（见 _generate_with_fallback）
-        _clients[("zhipu", timeout)] = ZhipuAiClient(timeout=timeout, max_retries=0)
+    key = getattr(_zkey, "key", None) or os.environ.get("ZAI_API_KEY")
+    if ("zhipu", timeout, key) not in _clients:
+        # 默认连国内 bigmodel.cn。SDK 默认限流、超时时自己等着重试 3 次，会拖很久；
+        # 这里不让它重试，出问题直接换 key、换备用模型（见 _generate_with_fallback）
+        _clients[("zhipu", timeout, key)] = ZhipuAiClient(api_key=key, timeout=timeout, max_retries=0)
     schema = json.dumps(fmt.model_json_schema(), ensure_ascii=False)
-    resp = _clients[("zhipu", timeout)].chat.completions.create(
+    resp = _clients[("zhipu", timeout, key)].chat.completions.create(
         model=mdl, max_tokens=max_tokens,
         messages=[{"role": "system",
                    "content": f"{system}\n\n只输出一个符合下面 JSON Schema 的 JSON 对象，不要任何别的文字：\n{schema}"},
@@ -163,16 +175,23 @@ def _generate_with_fallback(db, player_id: UUID, kind: str, generate, system: st
     """先用主模型，报错（限流、超时、服务器错）就按顺序换备用模型再试。报错的调用也记进 ai_calls。
     返回 (输出, token, 用的模型, 耗时毫秒)；全都报错就把最后的错误抛给服务器"""
     models = list(dict.fromkeys(([prefer] if prefer else []) + [model()] + fallback_models()))   # 去重，保持顺序
+    keys = _zhipu_keys(kind) if provider() == "zhipu" else [None]
     for i, mdl in enumerate(models):
-        start = time.monotonic()
-        try:
-            out, usage = generate(system, user, fmt, max_tokens, mdl)
-            return out, usage, mdl, int((time.monotonic() - start) * 1000)
-        except API_ERRORS as e:
-            _log(db, player_id, kind, mdl, Usage(), int((time.monotonic() - start) * 1000), False,
-                 e.__class__.__name__)
-            if i == len(models) - 1:
-                raise
+        for j, key in enumerate(keys or [None]):
+            _zkey.key = key
+            start = time.monotonic()
+            try:
+                out, usage = generate(system, user, fmt, max_tokens, mdl)
+                return out, usage, mdl, int((time.monotonic() - start) * 1000)
+            except API_ERRORS as e:
+                _log(db, player_id, kind, mdl, Usage(), int((time.monotonic() - start) * 1000), False,
+                     e.__class__.__name__ + (f" key{2 if key == os.environ.get('ZAI_API_KEY_2') else 1}" if key else ""))
+                # 限流是这个 key 的事：同一个模型换另一个 key 再试；超时这类换 key 没用，直接换模型
+                if "ReachLimit" in e.__class__.__name__ and j < len(keys) - 1:
+                    continue
+                if i == len(models) - 1:
+                    raise
+                break
 
 
 def _call(db, player_id: UUID, kind: str, system: str, user: str, fmt: type[BaseModel],

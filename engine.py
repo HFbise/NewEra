@@ -1380,7 +1380,7 @@ def _unlock(cur: Cursor, player: Player, key: ItemInstance, direction: str) -> l
     return facts
 
 
-CHEER_CHANCE, CHEER_ATTACK, CHEER_FLOORS = 0.2, 25, 2     # 回头见❤：20% 在两层内攻击 +25%
+CHEER_ATTACK, CHEER_FLOORS = 25, 1     # 麦琪的私酿：喝了这一层攻击 +25%（下一层就过去了）
 
 
 def _empty(cur: Cursor, item: ItemInstance) -> str:
@@ -1389,17 +1389,16 @@ def _empty(cur: Cursor, item: ItemInstance) -> str:
 
 
 def _flask(cur: Cursor, player: Player, item: ItemInstance) -> list[str]:
-    """麦琪的回头见❤：一口回满血，20% 浑身是劲（CHEER_FLOORS 层内攻击 +CHEER_ATTACK%）。喝完就空了，找她续杯"""
+    """麦琪的私酿：一口回满血，浑身是劲（这一层攻击 +CHEER_ATTACK%）。喝完就空了，找她续杯"""
     if player.hp >= player.max_hp:
         raise ActionError(f"{player.name}没受伤，舍不得喝（这一壶喝完就得回酒馆续了）")
     cur.execute("update players set hp = max_hp where id = %s", (player.id,))
     facts = [f"{player.name}拧开{item.name}灌了一大口，一股辛辣的暖流冲遍全身，壶底的纸条晃了晃",
              f"{player.name}恢复到满血，HP {player.max_hp}/{player.max_hp}"]
-    if _roll(CHEER_CHANCE):
-        player.effects = [e for e in player.effects if e.kind != "cheer"] + [
-            Effect(kind="cheer", value=CHEER_ATTACK, left=CHEER_FLOORS, label="回头见❤ 的酒劲", source=item.name)]
-        _save_effects(cur, player)
-        facts.append(f"{player.name}忽然浑身是劲，攻击 +{CHEER_ATTACK}%（接下来 {CHEER_FLOORS} 层）")
+    player.effects = [e for e in player.effects if e.kind != "cheer"] + [
+        Effect(kind="cheer", value=CHEER_ATTACK, left=CHEER_FLOORS, label="私酿的酒劲", source=item.name)]
+    _save_effects(cur, player)
+    facts.append(f"{player.name}浑身是劲，攻击 +{CHEER_ATTACK}%（这一层）")
     return facts + [f"{_empty(cur, item)}，回酒馆找麦琪续杯"]
 
 
@@ -4043,7 +4042,7 @@ def _torch_floor(cur: Cursor, names: list[str], room_id: str) -> list[str]:
         else:
             cur.execute("delete from item_instances where id = %s", (r["id"],))
             facts.append(f"{r['who']}手上的火把烧到了头，熄灭了")
-    # 回头见❤ 的劲头：每下一层少一层
+    # 私酿的劲头：下到下一层就过去了（CHEER_FLOORS 层）
     for p in [load_player(cur, r["id"]) for r in _rows_by_names(cur, names)]:
         if e := _effect(p, "cheer"):
             e.left -= 1
@@ -4203,7 +4202,8 @@ def sellable(conn: Connection, npc: Npc, rare: Optional[str] = None, player_id: 
         cur.execute("select id, name, description, type, damage, defense, heal, props->'price' as price,"
                     " coalesce(props->>'kind', case when (props->>'alcohol')::boolean then 'drink' end) as kind"
                     " from item_templates where id = any(%s)", (ids,))
-        return [r | ({"base_price": _rare_price(npc, r), "rare": True} if r["id"] == rare else {"base_price": base_price(r)})
+        return [r | ({"base_price": _rare_price(npc, r), "rare": True} if r["id"] == rare
+                     else {"base_price": math.ceil(base_price(r) * markup(npc, r["id"]))})
                 for r in cur.fetchall()]
 
 
@@ -4322,7 +4322,7 @@ def set_offer(conn: Connection, player_id: UUID, npc: Npc, key: str, price: int)
         else:
             cur.execute("select damage, defense, heal, props->'price' as price from item_templates where id = %s", (key,))
             stats = cur.fetchone()
-        _put_offer(cur, player_id, npc, key, clamp_price(stats, price))
+        _put_offer(cur, player_id, npc, key, clamp_price(stats, price, markup(npc, key)))
 
 
 def npc_hand(conn: Connection, player_id: UUID, npc: Npc, key: str, price: int, affinity: int) -> ActionResult:
@@ -4350,7 +4350,7 @@ def npc_hand(conn: Connection, player_id: UUID, npc: Npc, key: str, price: int, 
                     patron = _pay(cur, player, price, npc)
                     return ActionResult(action="npc_sell", success=True,
                                         facts=_sell_rare(cur, player, npc, key, name, price) + patron)
-            price = 0 if price <= 0 and can_gift(affinity) else clamp_price(stats, price if price > 0 else base_price(stats))
+            price = 0 if price <= 0 and can_gift(affinity) else clamp_price(stats, price if price > 0 else base_price(stats), markup(npc, key))
             patron = _pay(cur, player, price, npc)
             if key.startswith("made:"):
                 _make(cur, player_id, stats)
@@ -4390,7 +4390,7 @@ def npc_sell(conn: Connection, player_id: UUID, npc: Npc, template_id: str, pric
                 cur.execute("select damage, defense, heal, props->'price' as price from item_templates where id = %s",
                             (template_id,))
                 stats = cur.fetchone()
-                offer = {"price": clamp_price(stats, price or base_price(stats))}
+                offer = {"price": clamp_price(stats, price or base_price(stats), markup(npc, template_id))}
             player = load_player(cur, player_id, lock=True)
             count = max(1, min(SELL_MAX_COUNT, count))
             patron = _pay(cur, player, offer["price"] * count, npc)
@@ -4506,12 +4506,19 @@ def has_stats(stats: dict) -> bool:
     return any(stats.get(k) for k in ("damage", "defense", "heal", "harm", "knockout", "price"))
 
 
-def clamp_price(stats: dict, price: int) -> int:
-    """AI 报的价限在建议价的一半到两倍；没数值的东西只限一个大范围"""
+def clamp_price(stats: dict, price: int, markup: float = 1.0) -> int:
+    """AI 报的价限在建议价的一半到两倍；没数值的东西只限一个大范围。
+    markup 是这家店加价卖的货（麦琪后厨的麻绳，props.markup）：建议价乘上它，而且不能往下砍（不然比本行的店还便宜）"""
     if not has_stats(stats):
         return max(FREE_PRICE[0], min(FREE_PRICE[1], price))
-    base = base_price(stats)
-    return max(math.ceil(base * OFFER_BAND[0]), min(math.floor(base * OFFER_BAND[1]), price))
+    base = base_price(stats) * markup
+    low = math.ceil(base) if markup > 1 else math.ceil(base * OFFER_BAND[0])
+    return max(low, min(math.floor(base * OFFER_BAND[1]), price))
+
+
+def markup(npc: Npc, key: str) -> float:
+    """这家店对这样货的加价倍数（props.markup），不加价是 1"""
+    return float((npc.template.props.get("markup") or {}).get(key, 1))
 
 
 # 白送的门槛：NPC 现做的东西、AI 决定给不给的东西（地图），好感够高才白送，不然模型第一次见面就把剑白送了。

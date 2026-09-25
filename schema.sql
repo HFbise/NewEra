@@ -154,14 +154,6 @@ create table player_npc_relations (
 
 create index on players (party_id) where party_id is not null;
 
--- 组队邀请：被邀请的人回"加入某某的队伍"才入队，engine.INVITE_WINDOW 内有效
-create table party_invites (
-  inviter     uuid not null references players(id) on delete cascade,
-  invitee     uuid not null references players(id) on delete cascade,
-  created_at  timestamptz not null default now(),
-  primary key (inviter, invitee)
-);
-
 -- 事件日志：给 AI 提供最近发生的事，也用来给前端推送
 create table events (
   id          bigserial primary key,
@@ -358,7 +350,6 @@ alter table events         enable row level security;
 alter table player_npc_relations enable row level security;
 alter table ai_calls       enable row level security;   -- 不开放给客户端
 alter table spawns         enable row level security;
-alter table party_invites  enable row level security;
 alter table room_features  enable row level security;
 alter table player_log     enable row level security;
 alter table quests         enable row level security;

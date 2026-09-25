@@ -410,9 +410,9 @@ items:
     props: {price: 80, refill_by: innkeeper, refill_to: maggie_drug}
   maggie_flask:
     name: 麦琪的私酿
-    description: 一只磨得发亮的旧锡酒壶，装着麦琪自己酿的酒。壶底歪歪扭扭刻着"回头见"，后面还有一颗小小的心。喝一口伤一下子就好了，偶尔还会觉得浑身是劲。喝完回酒馆找她续上。
+    description: 一只磨得发亮的旧锡酒壶，装着麦琪自己酿的酒。壶底歪歪扭扭刻着"回头见"，后面还有一颗小小的心。喝一口伤一下子就好了，浑身是劲（这一层攻击 +25%）。喝完回酒馆找她续上。
     type: misc
-    props: {price: 200, flask: true, empty: maggie_flask_empty}      # 回满血；20% 两层内攻击 +25%（engine._flask）
+    props: {price: 200, flask: true, empty: maggie_flask_empty}      # 回满血；这一层攻击 +25%（engine._flask）
   maggie_flask_empty:
     name: 麦琪的私酿（空）
     description: 麦琪给的那只旧锡酒壶，已经喝空了，壶底那行"回头见"和小小的心还在。回酒馆找她说"续杯"。
@@ -539,11 +539,13 @@ npcs:
         40: {item: maggie_antidote, text: 一只装着解毒草泡的烈酒的皮酒壶（喝了解毒）}
         60: {item: maggie_drug, text: 一小瓶她的特调"一口倒"（泼向敌人能让它醉倒）}
         80: {item: maggie_crossbow, text: 她吧台下那把上了弦的轻弩（单手就能端平，远近一样准，射完要重新上弦）}
-        100: {item: maggie_flask, text: 一只装着她私酿的旧锡酒壶，壶底偷偷刻着"回头见"和一颗小小的心（喝一口回满血，偶尔浑身是劲）}
+        100: {item: maggie_flask, text: 一只装着她私酿的旧锡酒壶，壶底偷偷刻着"回头见"和一颗小小的心（喝一口回满血，这一层浑身是劲）}
       # 吧台上的货，价钱由 AI 按建议价浮动
       # 麻绳、火把、面包、药草是后厨的顺手生意（人设里写了开价比诺艾尔贵）
       sells: [dwarf_stout, elf_mead, dragon_breath, sober_potion, trail_rations,
               tavern_stew, beast_bone, travel_journal, rope, torch, bread, herb]   # 游记是送诺艾尔的小礼物
+      # 后厨的顺手生意不是本行：建议价 ×1.5，而且砍不到这个价以下（engine.markup / clamp_price）
+      markup: {rope: 1.5, torch: 1.5, bread: 1.5, herb: 1.5}
       eject_to: south
       # 店里有人倒下时扶起来回满血，按倒下的原因说一句（{name} 倒下的人，{by} 打倒他的怪、人或者吃下的东西）
       revive_lines:
