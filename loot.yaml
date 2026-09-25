@@ -191,7 +191,7 @@ gems:
   numeric_perfect_min_floor: 15   # numeric 的宝石低于这层时，完美降成闪亮
   unsocket_fee: [10, 30, 60, 120] # 取出费用：碎裂 / 普通 / 闪亮 / 完美
   tier_price: [15, 40, 80, 200]   # 参考价
-  body_caps: {defense: 2, max_hp: 6}
+  body_caps: {defense: 20, max_hp: 60}
   refine:                      # 诺艾尔刷品质（宝石得是没镶在装备上的）：只升不降
     up_chance: [0.5, 0.25, 0.10]  # 从碎裂、普通、闪亮各升一档的几率
     double_up_chance: 0.05        # 每次另有这么多几率直接跳两档（封顶完美）

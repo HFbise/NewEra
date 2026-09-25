@@ -105,7 +105,7 @@ themes:
       on_hit: {kind: prone, chance: 0.3, label: 被鹤嘴锄撞翻在地}
       hp: 0.9
       atk: 0
-      def: 1
+      def: 10
       # 技能按层数解锁（rules.unlocked_skills）：第 5 层只会第一招，第 10 层两招，第 15 层起全套加狂暴
       immune: [prone]                 # 免疫：玩家打不上去的状态、效果
       weak: pierce                    # 弱点：破甲的打它伤害 ×1.5（rules.WEAK_MULT）
@@ -267,13 +267,13 @@ themes:
       persona: 冷酷，一板一眼，把闯进来的人都当成越狱的犯人，一边追一边念着罪名。
       on_hit: {kind: restrained, chance: 0.3, label: 被铁链锁住了手脚, escape: 3}
       hp: 1.2
-      atk: 3
-      def: 1
+      atk: 30
+      def: 10
       immune: [restrained]
       weak: poison
       skills:
         - {when: every, value: 3, do: status_all, kind: restrained, escape: 2, label: 甩出铁链横扫一圈}
-        - {when: fight_start, do: mark, bonus: 2, label: 用钥匙串指着人冷冷地宣判：你，有罪}
+        - {when: fight_start, do: mark, bonus: 20, label: 用钥匙串指着人冷冷地宣判：你，有罪}
 
   forest:
     name: 地底森林
@@ -346,8 +346,8 @@ themes:
       persona: 缓慢而愤怒，把闯进森林的人都当作砍树的贼，枝条抽过来又重又狠。
       on_hit: {kind: prone, chance: 0.35, label: 被枝条抽倒在地}
       hp: 1.6
-      atk: 1
-      def: 1
+      atk: 10
+      def: 10
       immune: [prone]                 # 扎着根，撞不倒
       weak: fire
       skills:
@@ -425,7 +425,7 @@ themes:
       persona: 阴沉又爱笑，喜欢用甜言蜜语引人走进泥沼深处，发起怒来尖啸着召唤毒雾。
       on_hit: {kind: poison, chance: 0.3, turns: 2, value_mult: 0.5, label: 被毒雾呛得喘不过气}
       hp: 1.0
-      atk: 1
+      atk: 10
       def: 0
       immune: [poison]
       weak: fire
@@ -503,8 +503,8 @@ themes:
       persona: 严厉又偏执，认定每个闯进来的人都是偷书贼，一边念着馆规一边用书页割人。
       on_hit: {kind: blind, chance: 0.35, label: 被飞舞的书页遮住了视线}
       hp: 1.3
-      atk: 2
-      def: 1
+      atk: 20
+      def: 10
       immune: [poison, bleed]         # 幽灵，毒和血口子都没用
       weak: light                     # 怕光：光亮 70 以上打它伤害 ×1.5
       skills:
@@ -527,7 +527,7 @@ events:
     light: dim
     description: 一面岩壁被塌方剥开，露出一条闪着暗光的矿脉，旁边丢着一把还能用的旧镐。
     details: 矿脉里嵌着拳头大的矿石，泛着青灰色的金属光泽，敲一下声音清亮。岩壁上方的石头有些松，挖的时候得小心。
-    take: {name: 矿脉, item: ore, where: 里, skill: athletics, difficulty: 2, fail: 一块松石从头顶崩下来，砸在了手上, fail_damage: 2}
+    take: {name: 矿脉, item: ore, where: 里, skill: athletics, difficulty: 2, fail: 一块松石从头顶崩下来，砸在了手上, fail_damage: 20}
   spring:
     name: 地下泉眼
     light: dim
@@ -545,7 +545,7 @@ events:
     light: dim
     description: 一座低矮的石台，上面摆着几只封着泥的陶罐，是当年献给死者的祭酒。
     details: 陶罐上的封泥大多完好，有几只已经裂了缝，散出酸败的气味。石台上刻着一行字："饮者须敬"。要挑出一罐没坏的，得懂点门道。
-    take: {name: 祭酒台, item: ancient_wine, where: 上, skill: nature, difficulty: 2, fail: 撬开的那罐早就酸成了醋，呛得人直咳嗽, fail_damage: 1}
+    take: {name: 祭酒台, item: ancient_wine, where: 上, skill: nature, difficulty: 2, fail: 撬开的那罐早就酸成了醋，呛得人直咳嗽, fail_damage: 10}
   tomb_notes:
     name: 墓主的书房
     light: dark
@@ -564,7 +564,7 @@ events:
     cover: true
     description: 一间堆满卷宗的石室，墙边立着几只上了锁的铁柜。
     details: 地上散落着被撕碎的卷宗，铁柜的锁大多锈死了，只有一只能撬开。柜子里据说收着典狱长没收来的古书。
-    take: {name: 铁柜, item: old_tome, where: 里, skill: sleight, difficulty: 2, fail: 铁丝在锁眼里断了，还划破了手指, fail_damage: 1}
+    take: {name: 铁柜, item: old_tome, where: 里, skill: sleight, difficulty: 2, fail: 铁丝在锁眼里断了，还划破了手指, fail_damage: 10}
 
   tree_hollow_wine:
     name: 老树洞
@@ -585,20 +585,20 @@ events:
     cover: true
     description: 一株空心蘑菇里布置成了小屋，挂满了风干的草药和骨头，角落堆着几本书。
     details: 书上压着几块刻着符文的骨头，像是某种封印。随便乱翻，封印可能会咬人。
-    take: {name: 书堆, item: old_tome, where: 里, skill: investigation, difficulty: 2, fail: 碰到了一块刻着符文的骨头，手上被烫出一道红印, fail_damage: 2}
+    take: {name: 书堆, item: old_tome, where: 里, skill: investigation, difficulty: 2, fail: 碰到了一块刻着符文的骨头，手上被烫出一道红印, fail_damage: 20}
   sunken_cart:
     name: 陷进泥里的矿车
     light: dim
     ground: water
     description: 一辆翻倒的矿车半陷在泥浆里，车斗里的矿石撒了一地，大多沉进了泥里。
     details: 泥浆很深，要把矿石捞出来得费不少力气，一不小心就会整个人陷进去。
-    take: {name: 泥浆, item: ore, where: 里, skill: athletics, difficulty: 2, fail: 一脚踩空陷进泥里，费了好大劲才爬出来, fail_damage: 1}
+    take: {name: 泥浆, item: ore, where: 里, skill: athletics, difficulty: 2, fail: 一脚踩空陷进泥里，费了好大劲才爬出来, fail_damage: 10}
   forbidden_shelf:
     name: 半开的禁书架
     light: dark
     description: 一排被铁链锁住的书架，其中一格的锁已经锈断了，露出几本古老的书。
     details: 书架上的书有的会自己合上，有的封面上长着眼睛一样的花纹。要从里面挑出一本安全又值钱的，得有眼力。
-    take: {name: 禁书架, item: old_tome, where: 上, skill: investigation, difficulty: 3, fail: 抽出的那本书猛地合上，夹破了手指, fail_damage: 2}
+    take: {name: 禁书架, item: old_tome, where: 上, skill: investigation, difficulty: 3, fail: 抽出的那本书猛地合上，夹破了手指, fail_damage: 20}
   scholar_cellar:
     name: 学者的私藏
     light: dim
@@ -611,7 +611,7 @@ events:
     light: bright
     description: 一张摆满星盘和仪器的书桌，桌上压着一块黑沉沉的陨铁镇纸。
     details: 陨铁被固定在一个黄铜机关上，拿起来之前得先解开机关的卡扣，不然会触发什么。
-    take: {name: 书桌, item: ore, where: 上, skill: sleight, difficulty: 2, fail: 机关弹出一根细针，扎进了手背, fail_damage: 2}
+    take: {name: 书桌, item: ore, where: 上, skill: sleight, difficulty: 2, fail: 机关弹出一根细针，扎进了手背, fail_damage: 20}
 
 # 走路时的陷阱（每个主题都可能碰上）
 traps:
@@ -631,8 +631,8 @@ monsters:
     description: 一只扛着矿车挡板当盾牌的狗头人，挡板上坑坑洼洼全是凿痕，缩在后面只露出两只眼睛。
     persona: 胆小但死忠，只要身后还有同伴，就死死挡在前面不挪步；同伴一死就扔下盾牌逃跑。
     hp: 1.2
-    atk: -1
-    def: 2
+    atk: -10
+    def: 20
     guard_allies: 0.5
     min_floor: 8
   kobold_slinger:
@@ -648,7 +648,7 @@ monsters:
     description: 一具穿着烂皮甲的骷髅，拉着一张缠满蛛丝的骨弓，眼窝里两点幽光一直盯着你。
     persona: 没有恐惧，也不会累，只会一箭接一箭地射，直到弓弦断掉。
     hp: 0.7
-    atk: 1
+    atk: 10
     undead: true
     ranged: true
     verb: 松开弓弦射出一箭
@@ -667,7 +667,7 @@ monsters:
     description: 一个站在高处的狱卒，端着一把沉重的绞盘弩，弩箭的箭头是扁平的铁片，专门用来打穿铠甲。
     persona: 冷静，喜欢隔着距离把人钉在墙上，看见有人冲过来就退到更远的地方。
     hp: 0.7
-    atk: 2
+    atk: 20
     ranged: true
     verb: 扣下扳机，一支粗短的弩箭呼啸而来
   goblin_hunter:
@@ -692,7 +692,7 @@ monsters:
     description: 一个用墨水勾出轮廓的人形，握着一支比手臂还长的羽毛笔，在空中写下发光的字。
     persona: 永远在抄写同一段咒文，写出来的字会飞出去伤人；讨厌光。
     hp: 0.7
-    atk: 1
+    atk: 10
     light_averse: true
     ranged: true
     verb: 在空中写下一行发光的字，字句飞了过来
@@ -704,7 +704,7 @@ monsters:
     on_hit: {kind: bleed, chance: 0.25, label: 被啃出了血口子}
     light_averse: true
     hp: 0.6
-    atk: -1
+    atk: -10
     animal: true
   kobold:
     name: 狗头人矿工
@@ -717,7 +717,7 @@ monsters:
     persona: 迟钝但硬，被打了也不慌，一直往前顶。
     on_hit: {kind: prone, chance: 0.25, label: 被硬壳撞翻在地}
     hp: 0.8
-    def: 1
+    def: 10
     animal: true
   skeleton:
     undead: true
@@ -725,7 +725,7 @@ monsters:
     description: 一具套着锈甲片的骸骨，眼眶里燃着两点幽蓝的火，手里握着一把缺口的长剑。
     persona: 没有意识，只会重复生前站岗的动作，看见活人就挥剑。
     hp: 0.8
-    def: 1
+    def: 10
   ghoul:
     undead: true
     name: 食尸鬼
@@ -742,7 +742,7 @@ monsters:
     on_hit: {kind: blind, chance: 0.3, label: 被寒雾糊住了眼睛}
     light_averse: true
     hp: 0.6
-    atk: 1
+    atk: 10
   jailer:
     name: 地牢狱卒
     description: 身材臃肿的狱卒，脸上缠着发黑的绷带，手里拎着一根包铁的警棍。
@@ -753,7 +753,7 @@ monsters:
     description: 一副空荡荡的全身铁甲，关节处吱嘎作响，却自己走着路。
     persona: 一板一眼地执行最后一道命令：谁也不许过去。
     hp: 0.7
-    def: 2
+    def: 20
   dungeon_hound:
     keen: true
     name: 地牢恶犬
@@ -761,7 +761,7 @@ monsters:
     persona: 被饿了太久，闻到活人味就狂吠着冲上来。
     on_hit: {kind: bleed, chance: 0.25, label: 被咬住撕开了皮肉}
     hp: 0.8
-    atk: 1
+    atk: 10
     animal: true
   cave_wolf:
     keen: true
@@ -770,7 +770,7 @@ monsters:
     persona: 成群狩猎，先绕着人转圈，找到破绽就扑上来咬腿。
     on_hit: {kind: bleed, chance: 0.3, label: 被狼牙撕开了口子}
     hp: 0.8
-    atk: 1
+    atk: 10
     animal: true
   thorn_vine:
     name: 荆棘藤
@@ -778,8 +778,8 @@ monsters:
     persona: 不会追人，但谁靠近就用带刺的藤条抽打、缠绕。
     on_hit: {kind: restrained, chance: 0.3, label: 被荆棘藤缠住了, escape: 2}
     hp: 1.2
-    atk: -1
-    def: 1
+    atk: -10
+    def: 10
   forest_goblin:
     name: 林地哥布林
     description: 一只脸上涂着绿泥的哥布林，身上披着树叶，手里拿着一把骨头削成的短矛。
@@ -805,7 +805,7 @@ monsters:
     persona: 藏在泥水里，贴上来就不松口，吸饱了才肯走。
     on_hit: {kind: poison, chance: 0.3, label: 被水蛭注进了毒液}
     hp: 0.6
-    atk: 1
+    atk: 10
     animal: true
   animated_tome:
     name: 活化书
@@ -813,7 +813,7 @@ monsters:
     persona: 像鸟一样扑腾着飞过来，用书页割人，被打中就散落一地书页。
     on_hit: {kind: bleed, chance: 0.25, label: 被锋利的书页割开了口子}
     hp: 0.6
-    atk: 1
+    atk: 10
     light_averse: true
   ink_shade:
     name: 墨影
@@ -821,7 +821,7 @@ monsters:
     persona: 贴着墙和地板无声地滑过来，怕光，在烛光下会变淡。
     on_hit: {kind: blind, chance: 0.35, label: 被泼了一脸墨}
     hp: 0.8
-    atk: 1
+    atk: 10
     light_averse: true
   stone_gargoyle:
     keen: true
@@ -830,4 +830,4 @@ monsters:
     persona: 一动不动地守着，有人靠近书架就扑下来，石头身子又硬又沉。
     on_hit: {kind: prone, chance: 0.2, label: 被石翼扫倒在地}
     hp: 0.8
-    def: 2
+    def: 20

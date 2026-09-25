@@ -200,7 +200,7 @@ def login(req: LoginReq):
             )
             conn.execute(
                 """insert into players (id, name, room_id, hp, max_hp, attack, defense, password_hash)
-                   values (%s, %s, %s, 20, 20, 2, 0, %s)""",
+                   values (%s, %s, %s, 200, 200, 20, 0, %s)""",
                 (pid, name, engine.START_ROOM, _hash_password(req.password)),
             )
         return {"player_id": pid, "created": True}      # 新角色：前端自动弹新手教程

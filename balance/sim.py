@@ -63,18 +63,19 @@ START_TRIP = {"bow": 1, "xbow": 2, "sword_shield+bow": 1}
 # 护甲：差装备只有开局的皮甲和古旧护符（地窖桌上人人拿得到），一直不升级；
 #       正常：第 1 趟是莉娜店里的全套（皮帽、皮甲、皮靴）+ 护符；第 2 趟锁子甲；第 3 趟起头目的胸甲（3）和典狱长的头盔（2）
 ARMOR = {
-    "poor": [[("皮甲", 1), ("古旧护符", 2)]] * 4,
-    "normal": [[("皮帽", 1), ("皮甲", 1), ("皮靴", 1), ("古旧护符", 2)],
-               [("皮帽", 1), ("锁子甲", 2), ("皮靴", 1), ("古旧护符", 2)],
-               [("头盔", 2), ("头目胸甲", 3), ("皮靴", 1), ("古旧护符", 2)],
-               [("头盔", 2), ("头目胸甲", 3), ("皮靴", 1), ("古旧护符", 2)]],
+    "poor": [[("皮甲", 10), ("古旧护符", 20)]] * 4,
+    "normal": [[("皮帽", 10), ("皮甲", 10), ("皮靴", 10), ("古旧护符", 20)],
+               [("皮帽", 10), ("锁子甲", 20), ("皮靴", 10), ("古旧护符", 20)],
+               [("头盔", 20), ("头目胸甲", 30), ("皮靴", 10), ("古旧护符", 20)],
+               [("头盔", 20), ("头目胸甲", 30), ("皮靴", 10), ("古旧护符", 20)]],
 }
 ARMOR["fav"] = ARMOR["normal"]
 # 盾：剑盾打法第 1 趟木盾，之后塔盾（挡远程 2 点）；最后一项是格挡几率（物品表的 props.block）
-SHIELD = [("木盾", 2, 0, ITEMS["wooden_shield"]["props"].get("block", 0)),
-          ("塔盾", 3, 2, ITEMS["tower_shield"]["props"].get("block", 0)),
-          ("塔盾", 3, 2, ITEMS["tower_shield"]["props"].get("block", 0)),
-          ("塔盾", 3, 2, ITEMS["tower_shield"]["props"].get("block", 0))]
+_TOWER = ("塔盾", ITEMS["tower_shield"]["defense"],
+          next(e["value"] for e in ITEMS["tower_shield"]["props"]["effects"] if e["do"] == "guard"),
+          ITEMS["tower_shield"]["props"].get("block", 0))
+SHIELD = [("木盾", ITEMS["wooden_shield"]["defense"], 0, ITEMS["wooden_shield"]["props"].get("block", 0)), _TOWER, _TOWER, _TOWER]
+DMG = {k: ITEMS[k]["damage"] for k in ("shiny_sword", "steel_shortsword", "iron_axe", "hunting_bow", "heavy_crossbow", "sling")}
 
 
 @dataclass
@@ -89,11 +90,16 @@ class Weapon:
     free_reload: bool = False           # 箭袋腰带：每场白给一次装填
 
 
+HUNTER_RING = next(e["value"] for e in ITEMS["hunter_ring"]["props"]["effects"] if e["do"] == "bonus")
+XBOW_PIERCE = next(e["value"] for e in ITEMS["heavy_crossbow"]["props"]["effects"] if e["do"] == "pierce")
+
+
 def melee_weapons(build: str, trip: int) -> list[tuple[str, int]]:
     """(名字, 伤害) 主手在前"""
-    sword = ("闪亮的短剑", 6) if trip == 0 else ("精钢短剑", 7)
+    sword = ("闪亮的短剑", DMG["shiny_sword"]) if trip == 0 else ("精钢短剑", DMG["steel_shortsword"])
     if build == "dual":
-        return [sword, ("铁斧", 5) if trip == 0 else ("闪亮的短剑", 6) if trip == 1 else ("精钢短剑", 7)]
+        return [sword, ("铁斧", DMG["iron_axe"]) if trip == 0 else ("闪亮的短剑", DMG["shiny_sword"]) if trip == 1
+                else ("精钢短剑", DMG["steel_shortsword"])]
     if build in ("sword_shield", "sword_torch", "sling_sword", "mcb_sword", "hxb_sword"):
         return [sword]
     return []
@@ -101,12 +107,13 @@ def melee_weapons(build: str, trip: int) -> list[tuple[str, int]]:
 
 def ranged_weapon(build: str, trip: int) -> Optional[Weapon]:
     if build == "bow":
-        return Weapon("猎弓", 10, True, first_bonus=3 if trip >= 2 else 0, free_reload=trip >= 2)
+        return Weapon("猎弓", DMG["hunting_bow"], True, first_bonus=HUNTER_RING if trip >= 2 else 0, free_reload=trip >= 2)
     if build == "xbow":
-        return (Weapon("猎弓", 10, True) if trip == 0
-                else Weapon("绞盘重弩", 13, True, steady=True, reload_steps=2, pierce=1, free_reload=trip >= 2))
+        return (Weapon("猎弓", DMG["hunting_bow"], True) if trip == 0
+                else Weapon("绞盘重弩", DMG["heavy_crossbow"], True, steady=True, reload_steps=2, pierce=XBOW_PIERCE,
+                            free_reload=trip >= 2))
     if build == "sling_sword":
-        return Weapon("投石索", 6, True)
+        return Weapon("投石索", DMG["sling"], True)
     if build == "mcb_sword":
         return Weapon("麦琪的轻弩", ITEMS["maggie_crossbow"]["damage"], True, steady=True)
     if build == "hxb_sword":
@@ -122,7 +129,7 @@ QUALITY = {"poor": "装备差", "normal": "正常", "fav": "好感全满"}
 
 def endurance_hp(depth: int) -> int:
     """走到这一层时的血量上限：耐性熟练大约每层涨 2 次（玩家A到第 6 层是 13 次、上限 26）"""
-    return 20 + R.ENDURANCE_HP * R.skill_level(round(2.2 * (depth - 1)))
+    return 20 * R.SCALE + R.ENDURANCE_HP * R.skill_level(round(2.2 * (depth - 1)))
 
 
 # ============ 经济：按期望走一遍每层（不打仗，假设都活着），算每层收入；回城时买药、火把，剩下的钱升级 ============
@@ -196,7 +203,7 @@ def gem_chance(gem: str, tier: int, do: str) -> float:
 
 def weapon_score(g: list) -> float:
     """武器孔挑宝石的分数：加伤害、破甲按点算，会心按几率 × 一下大约 8 点"""
-    return gem_value(g[0], g[1], "weapon", "bonus") + gem_value(g[0], g[1], "weapon", "pierce") + 8 * gem_chance(g[0], g[1], "crit")
+    return gem_value(g[0], g[1], "weapon", "bonus") + gem_value(g[0], g[1], "weapon", "pierce") + 8 * R.SCALE * gem_chance(g[0], g[1], "crit")
 
 
 def fit_gems(bag: list[list], w_sockets: int, a_sockets: int) -> tuple[float, float, float, float]:
@@ -354,7 +361,7 @@ def upgradable_weapons(build: str, trip: int, quality: str) -> list[int]:
 
 def blade_damage(deepest: int) -> int:
     """莉娜的专属剑无铭：伤害 5 + 最深层数/3（最多 12），dungeon.arrived"""
-    return min(12, 5 + deepest // 3)
+    return min(12, 5 + deepest // 3) * R.SCALE
 
 
 # ============ 战斗 ============
@@ -468,14 +475,14 @@ def spawn(depth: int, kind: str, rank: str, theme_key: str, size: int, groups: i
     skills = R.unlocked_skills(m.get("skills") or [], depth) if rank == "boss" else []
     if boss_room:
         mult = 1 + R.BOSS_PARTY_HP * (size - 1)
-        out = [Mon(name, max(2, round(hp * mult)), max(2, round(hp * mult)), atk, df, depth, props, rank,
+        out = [Mon(name, max(2 * R.SCALE, round(hp * mult)), max(2 * R.SCALE, round(hp * mult)), atk, df, depth, props, rank,
                    attacks=size * fx.get("attacks", 1), theme=theme_key, skills=skills,
                    base_attacks=size if fx.get("extra_chance") else 99)]
     else:
         copies = 1 if minion else R.party_copies(size, groups)
         mult = size / copies if not minion else 1
         base = max(1, round(size / copies))
-        out = [Mon(name, max(2, round(hp * mult)), max(2, round(hp * mult)), atk, df, depth, props, rank,
+        out = [Mon(name, max(2 * R.SCALE, round(hp * mult)), max(2 * R.SCALE, round(hp * mult)), atk, df, depth, props, rank,
                    attacks=base * fx.get("attacks", 1), theme=theme_key, minion=minion,
                    base_attacks=base if fx.get("extra_chance") else 99)
                for _ in range(copies)]
@@ -668,7 +675,7 @@ class Fight:
         if h.gem_crit and random.random() < h.gem_crit:
             dmg *= 2                             # 锋墨石会心一击
         if "bleed" in h.effects:
-            dmg = max(1, math.floor(dmg * R.BLEED_DAMAGE))
+            dmg = max(R.SCALE, math.floor(dmg * R.BLEED_DAMAGE))
         weak = m.props.get("weak")
         if (weak == "pierce" and pierce) or (weak == "light" and self.light() >= R.LIGHT_BRIGHT):
             dmg = math.ceil(dmg * R.WEAK_MULT)
@@ -785,7 +792,7 @@ class Fight:
         if random.random() < min(h.block, R.AVOID_CAP):
             return                              # 用盾挡下了这一击
         light = self.light()
-        atk = m.atk + R.dark_attack(light) - (1 if m.props.get("light_averse") and light >= R.LIGHT_BRIGHT else 0)
+        atk = m.atk + R.dark_attack(light) - (R.SCALE if m.props.get("light_averse") and light >= R.LIGHT_BRIGHT else 0)
         ratio = m.hp / m.max_hp
         if m.props.get("frenzy") and ratio < 0.5:
             atk += m.props["frenzy"]
@@ -815,7 +822,7 @@ class Fight:
         if kind in h.effects:
             h.effects[kind]["left"] = hit.get("turns") or R.EFFECT_TURNS[kind]
             return
-        e = {"value": max(1, round(R.effect_value(kind, depth) * hit.get("value_mult", 1.0))), "left": hit.get("turns") or R.EFFECT_TURNS[kind]}
+        e = {"value": max(R.SCALE, round(R.effect_value(kind, depth) * hit.get("value_mult", 1.0))), "left": hit.get("turns") or R.EFFECT_TURNS[kind]}
         if kind == "corrode":
             e["hp"] = min(h.max_hp - 1, max(1, round(h.max_hp * R.CORRODE_HP)))
             h.max_hp -= e["hp"]
@@ -865,9 +872,9 @@ def make_heroes(build: str, quality: str, trip: int, kit, size: int, depth: int)
             r.damage += (wp[0] if wp else 0) * VARIANT["ranged_step"]
         elif build in ("hxb_sword", "mcb_sword"):
             r.damage += (wp[0] if wp else 0) * VARIANT["ranged_step"]
-            ws = [(n, d + (wp[1] if len(wp) > 1 else 0)) for n, d in ws]
+            ws = [(n, d + (wp[1] if len(wp) > 1 else 0) * R.UPGRADE_STEP["damage"]) for n, d in ws]
         else:
-            ws = [(n, d + (wp[k] if k < len(wp) else 0)) for k, (n, d) in enumerate(ws)]
+            ws = [(n, d + (wp[k] if k < len(wp) else 0) * R.UPGRADE_STEP["damage"]) for k, (n, d) in enumerate(ws)]
         armor = [d for _, d in ARMOR[quality][trip]]
         guard, block = 0, 0.0
         if build == "sword_shield":
@@ -877,7 +884,7 @@ def make_heroes(build: str, quality: str, trip: int, kit, size: int, depth: int)
                       for k, d in enumerate(armor)) + kit.gem_def
         hp = endurance_hp(depth)
         perks = {"bookmark", "tome", "flask", "drug"} if quality == "fav" else set()
-        heroes.append(Hero(hp, hp, 2, defense, ws, r, guard_ranged=guard, block=block, gem_bonus=kit.gem_bonus, gem_pierce=kit.gem_pierce, gem_crit=kit.gem_crit,
+        heroes.append(Hero(hp, hp, 2 * R.SCALE, defense, ws, r, guard_ranged=guard, block=block, gem_bonus=kit.gem_bonus, gem_pierce=kit.gem_pierce, gem_crit=kit.gem_crit,
                            potions=kit.potions, perks=perks))
     return heroes
 
@@ -968,7 +975,7 @@ def run_trip(build: str, quality: str, trip: int, kit: Kit, size: int, stats: di
             if standing:
                 for h in fight.heroes:
                     if h.down and random.random() < R.skill_chance(0, 1):
-                        h.down, h.hp = False, 1
+                        h.down, h.hp = False, R.SCALE
                         h.status, h.effects = None, {}
             for h in heroes:
                 h.status = None

@@ -17,7 +17,7 @@ import yaml
 from psycopg import Cursor
 from psycopg.types.json import Jsonb
 
-from rules import (BOSS_EVERY, BOSS_PARTY_HP, ELITE_AFFIXES, GEM_TIER_PREFIX, ROOM_CAP, SUMMON_DMG, SUMMON_HP,  # noqa: F401
+from rules import (BOSS_EVERY, BOSS_PARTY_HP, ELITE_AFFIXES, GEM_TIER_PREFIX, ROOM_CAP, SCALE, SUMMON_DMG, SUMMON_HP,  # noqa: F401
                    THEME_PLAGUE, TREASURE_GUARD, UPGRADE_STEP, elite_chance, gem_category, gem_tier, max_groups,
                    roll_sockets, unlocked_skills,
                    monster_gold, monster_stats, party_copies, stash_gold, treasure_gold)
@@ -155,7 +155,7 @@ def _put_item(cur: Cursor, template: str, depth: int, *, room: Optional[str] = N
         props["sockets"] = n
     if boss and every and (plus := depth // every - 1) > 0:
         if t["type"] == "weapon":
-            props |= {"plus": plus, "damage": t["damage"] + plus, "name": f"{t['name']} +{plus}"}
+            props |= {"plus": plus, "damage": t["damage"] + plus * UPGRADE_STEP["damage"], "name": f"{t['name']} +{plus}"}
         elif t["type"] == "armor" and t["defense"]:
             props |= {"plus": plus, "defense": t["defense"] + plus * UPGRADE_STEP["defense"], "name": f"{t['name']} +{plus}"}
     cur.execute("insert into item_instances (template_id, room_id, npc_id, props) values (%s, %s, %s, %s)",
@@ -350,7 +350,7 @@ def _template(cur: Cursor, depth: int, kind: str, rank: str, theme: str, share: 
     m = data()["themes"][theme]["boss"] if rank == "boss" else data()["monsters"][kind]
     hp, atk, df = monster_stats(depth, m, rank)
     fx = ELITE_AFFIXES.get(affix, {}) if rank == "elite" else {}
-    hp = max(2, round(hp * hp_mult * fx.get("hp_mult", 1)))
+    hp = max(2 * SCALE, round(hp * hp_mult * fx.get("hp_mult", 1)))
     df += fx.get("def", 0)
     name = m["name"] if rank != "elite" else f"{fx.get('name', '凶悍的')}{m['name']}"
     description = m["description"] + ("它比同类更壮、更凶，身上带着好几道旧伤。" if rank == "elite" else "")
@@ -665,9 +665,9 @@ def _arrive(cur: Cursor, player, run: UUID, depth: int, above: Optional[str], on
 def arrived(cur: Cursor, names: list[str], depth: int) -> list[str]:
     """这些人到了第 depth 层：更新最深层数；这层有传送石就记进他们能传送的层（players.waypoints）"""
     cur.execute("update players set deepest_floor = greatest(deepest_floor, %s) where name = any(%s)", (depth, names))
-    # 莉娜打的专属剑（lina_blade）跟着人一起变强：伤害 5 + 最深层数/3（最多 12），再加升级的等级
+    # 莉娜打的专属剑（lina_blade）跟着人一起变强：伤害 (5 + 最深层数/3，最多 12) × 10，再加升级的等级 × 10
     cur.execute("""update item_instances i set props = i.props || jsonb_build_object('damage',
-                     least(12, 5 + p.deepest_floor / 3) + coalesce((i.props->>'plus')::int, 0))
+                     10 * least(12, 5 + p.deepest_floor / 3) + 10 * coalesce((i.props->>'plus')::int, 0))
                    from players p where i.player_id = p.id and p.name = any(%s) and i.template_id = 'lina_blade'""", (names,))
     if not is_stone(depth):
         return []

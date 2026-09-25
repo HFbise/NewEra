@@ -7,6 +7,10 @@ import math
 import random
 from typing import Optional
 
+# 战斗数值（血、伤害、防御、效果里的点数）统一放大 10 倍：防具升级 +0.5、远程 +1.5、宝石这些小数都成了整数。
+# 几率、抗性倍数、光亮、金币、价格、升级费用、技能难度不跟着放大；回血本来就按血量上限的百分比算
+SCALE = 10
+
 # ============ 命中 ============
 # 近战按距离（格）：贴身、一步之遥、几步开外；够不着的格数是 0
 MELEE_HIT = {0: 0.95, 1: 0.45, 2: 0.05}
@@ -45,8 +49,8 @@ def dark_factor(light: int) -> float:
 
 
 def dark_attack(light: int) -> int:
-    """暗处怪的攻击加成：很暗 +1，很亮 −1，中间 0"""
-    return math.floor(dark_factor(light) + 0.5)
+    """暗处怪的攻击加成：很暗 +10，很亮 −10，中间 0"""
+    return math.floor(dark_factor(light) + 0.5) * SCALE
 
 
 # ============ 伤害怎么被防御挡掉 ============
@@ -56,7 +60,7 @@ def dark_attack(light: int) -> int:
 # 玩家挨打的结算顺序（以后加效果照这个顺序插）：
 #   1 攻击方的破甲先扣掉防御  2 伤害 = 攻击 × K ÷ (K + 防御)  3 小数按几率进位（2.5 就一半 2 一半 3）
 #   4 防守方的减伤（guard，比如项圈 -1）  5 最少 1 点
-DEF_K = 4
+DEF_K = 4 * SCALE
 
 
 def def_k(depth: int = 0) -> int:
@@ -69,12 +73,12 @@ def hurt_player_by(atk: int, defense: int, depth: int = 0, pierce: int = 0, guar
     k = def_k(depth)
     x = atk * k / (k + max(0, defense - pierce))
     dmg = int(x) + (random.random() < x - int(x))
-    return max(1, dmg - guard)
+    return max(SCALE, dmg - guard)                  # 最少 1 点（放大前的 1 点）
 
 
 def hurt_npc_by(power: int, armor: int) -> int:
     """怪挨一下打掉多少血：攻击减护甲（破甲、腐蚀已经从 armor 里扣掉了），最少 1"""
-    return max(1, power - max(0, armor))
+    return max(SCALE, power - max(0, armor))
 
 
 OFFHAND_SHARE = 0.5                     # 双持时副手（左手）武器只加这么多伤害，向下取整；只拿一把的不管在哪只手都算主手。
@@ -87,12 +91,12 @@ EFFECT_TURNS = {"poison": 3, "bleed": 4, "blind": 1, "corrode": 3}
 POISON_HIT, BLEED_DAMAGE, CORRODE_HP = 0.15, 0.75, 0.15
 # 怪身上的（玩家装备打上去的）
 NPC_EFFECT_TURNS = {"poison": 3, "bleed": 3, "blind": 2, "corrode": 3}
-NPC_BLIND_HIT, NPC_CORRODE_DEF = 0.25, 2
+NPC_BLIND_HIT, NPC_CORRODE_DEF = 0.25, 2 * SCALE
 
 
 def effect_value(kind: str, depth: int) -> int:
     """怪打上来的效果有多重：中毒、流血每次掉的血，腐蚀扣的防御，跟着层数涨"""
-    return 1 + depth // 6 if kind == "corrode" else 1 + depth // 5
+    return (1 + depth // 6 if kind == "corrode" else 1 + depth // 5) * SCALE
 
 
 # ============ 回血、扎营、酒劲 ============
@@ -104,7 +108,7 @@ HEAL_PCT_ALCOHOL = 3
 
 def heal_amount(points: int, max_hp: int, alcohol: bool = False) -> int:
     """heal 点数 → 这个人实际回多少血"""
-    return max(1, round(max_hp * points * (HEAL_PCT_ALCOHOL if alcohol else HEAL_PCT) / 100)) if points > 0 else 0
+    return max(SCALE, round(max_hp * points * (HEAL_PCT_ALCOHOL if alcohol else HEAL_PCT) / 100)) if points > 0 else 0
 
 
 # 扎营：回 max_hp × CAMP_BASE，带帐篷再加 CAMP_TENT（用掉一顶），生存判定成功再加 CAMP_SURVIVAL，空房里整体 ×CAMP_EMPTY
@@ -118,7 +122,7 @@ SKILL_GAP_CHANCE = {1: 0.9, 2: 0.6, 3: 0.3}
 # 从 n 级升到 n+1 级要攒 SKILL_STEP * (n+1) 次熟练；只有难度高于当前等级的成功才算熟练
 SKILL_STEP = 3
 # 耐性：每升一级 HP 上限 +ENDURANCE_HP；挨打（活下来的）有 ENDURE_HIT_CHANCE 的几率涨熟练
-ENDURANCE_HP = 3
+ENDURANCE_HP = 3 * SCALE
 ENDURE_HIT_CHANCE = 0.25
 
 
@@ -163,8 +167,8 @@ FREE_PRICE = (1, 200)
 def base_price(stats: dict) -> int:
     if stats.get("price"):
         return stats["price"]               # 模板写死了建议价（解酒药这类没数值的）
-    gear = stats.get("damage", 0) + stats.get("defense", 0)
-    potion = stats.get("heal", 0) + stats.get("harm", 0)
+    gear = (stats.get("damage", 0) + stats.get("defense", 0)) / SCALE       # 定价曲线按放大前的数值算
+    potion = stats.get("heal", 0) + stats.get("harm", 0) / SCALE
     price = ((GEAR_PRICE[0] * GEAR_PRICE[1] ** gear if gear else 0)
              + (POTION_PRICE[0] * POTION_PRICE[1] ** potion if potion else 0)
              + (KNOCKOUT_PRICE if stats.get("knockout") else 0))
@@ -191,8 +195,8 @@ def clamp_price(stats: dict, price: int, markup: float = 1.0) -> int:
 # 费用只看升到第几级，武器防具同一条曲线（以前看这件现在的数值：基础伤害高的弓、弩升一级比短剑贵 5 到 10 倍，
 # 防具又便宜得离谱）；稀有的东西可以在物品 props.upgrade_mult 里给个倍数。
 # 用奥利哈刚：失败不掉级、矿石不用掉，成功那次才用掉。淬火油必成、不收钱
-UPGRADE_STEP = {"damage": 1, "defense": 0.5}
-RANGED_UPGRADE_STEP = 1.5               # 远程武器每级伤害 +1.5：射一发要搭一次装填，不补的话深层跟不上近战
+UPGRADE_STEP = {"damage": 1 * SCALE, "defense": SCALE // 2}
+RANGED_UPGRADE_STEP = 15               # 远程武器每级伤害 +15（放大前 +1.5）：射一发要搭一次装填，不补的话深层跟不上近战
 
 
 def upgrade_step(stat: str, ranged: bool) -> float:
@@ -233,14 +237,14 @@ ELITE_HP = 1.5                          # 精英的血（以前 1.8，现在每�
 
 def monster_stats(depth: int, mods: dict, rank: str = "normal") -> tuple[int, int, int]:
     """(血, 攻, 防)：随层数涨，mods 是这种怪的倍数和加减（dungeon.yaml），精英、头目再加"""
-    hp = (6 + depth) * mods.get("hp", 1.0)
-    atk = 2 + depth // 3 + depth // 12 + mods.get("atk", 0)
-    df = 1 + depth // 4 + mods.get("def", 0)
+    hp = (6 + depth) * SCALE * mods.get("hp", 1.0)
+    atk = (2 + depth // 3 + depth // 12) * SCALE + mods.get("atk", 0)
+    df = (1 + depth // 4) * SCALE + mods.get("def", 0)
     if rank == "elite":
-        hp, atk = hp * ELITE_HP, atk + 1
+        hp, atk = hp * ELITE_HP, atk + SCALE
     elif rank == "boss":
-        hp, atk, df = hp * 2, atk + 1, df + 1
-    return max(2, round(hp)), max(1, atk), max(0, df)
+        hp, atk, df = hp * 2, atk + SCALE, df + SCALE
+    return max(2 * SCALE, round(hp)), max(SCALE, atk), max(0, df)
 
 
 def monster_gold(depth: int, rank: str) -> list[int]:
@@ -279,11 +283,11 @@ def stash_gold(depth: int, size: int) -> int:
 ELITE_AFFIXES = {
     "swift": {"name": "迅捷的", "attacks": 2, "extra_chance": 0.5, "dmg_mult": 0.7, "hp_mult": 0.75,
               "note": "一轮常常出手两次（第二下一半几率），每下轻一点，身子也脆一点"},
-    "armored": {"name": "坚甲的", "def": 3, "hp_mult": 0.75, "note": "防御高、血少一些"},
-    "frenzied": {"name": "狂暴的", "frenzy": 3, "note": "血量低于一半时攻击 +3"},
+    "armored": {"name": "坚甲的", "def": 3 * SCALE, "hp_mult": 0.75, "note": "防御高、血少一些"},
+    "frenzied": {"name": "狂暴的", "frenzy": 3 * SCALE, "note": "血量低于一半时攻击 +30"},
     "bloodthirsty": {"name": "嗜血的", "lifesteal": 0.5, "note": "打中人就回造成伤害的一半"},
     "commanding": {"name": "号令的", "minions": 1, "note": "带着一只同类小怪（小怪下手减半、不掉东西，主子一死就跑）"},
-    "thorny": {"name": "荆棘的", "thorns": 1, "thorns_chance": 0.5, "note": "近战砍它一半几率被扎回 1 点"},
+    "thorny": {"name": "荆棘的", "thorns": 1 * SCALE, "thorns_chance": 0.5, "note": "近战砍它一半几率被扎回 10 点"},
     "keen": {"name": "警觉的", "keen": True, "note": "一进门就发现人，偷袭不了"},
     "plagued": {"name": "瘟疫的", "plague": 0.3, "note": "打中人 30% 附带这一带的毒害"},
 }
@@ -297,7 +301,7 @@ def scale_damage(dmg: int, mult: float) -> int:
     if mult == 1:
         return dmg
     x = dmg * mult
-    return max(1, int(x) + (random.random() < x - int(x)))
+    return max(SCALE, int(x) + (random.random() < x - int(x)))
 
 
 # ============ 头目技能 ============
@@ -311,7 +315,7 @@ SUMMON_MAX = 2                          # 场上同时最多几只召唤来的�
 SUMMON_HP = 0.5                         # 召唤的小怪血量：本层普通怪的一半，不掉钱也不掉东西，不召治疗怪
 SUMMON_DMG = 0.5                        # 召唤的小怪下手也只有一半（全额的话场上一下多出两个人出手，太容易打出爆发）
 INTERRUPT_SHARE = 0.15                  # 预告大招那一轮对它打出这么多（血量上限的比例）就打断了：打断靠重创，不算控制
-ENRAGE_FROM, ENRAGE_BELOW, ENRAGE_ATK = 15, 0.3, 2      # 第 15 层起的头目血量低于三成狂暴，攻击 +2
+ENRAGE_FROM, ENRAGE_BELOW, ENRAGE_ATK = 15, 0.3, 2 * SCALE      # 第 15 层起的头目血量低于三成狂暴，攻击 +20
 WEAK_MULT = 1.5                         # 打中弱点（火、破甲、圣水、强光……）伤害 ×1.5
 
 

@@ -54,18 +54,18 @@ items:
     name: 精钢短剑
     description: 剑身泛着冷冷的青光，护手上刻着一个早就没人认得的铁匠印记，挥起来比看着轻。
     type: weapon
-    damage: 7
+    damage: 70
     props: {price: 49}
   war_hammer:                  #双手、破甲
     name: 双手战锤
     description: 锤头有小孩脑袋那么大，柄上缠着磨得发亮的皮条，砸在铁甲上会留下一个坑。
     type: weapon
-    damage: 10
+    damage: 100
     props:
       price: 95
       two_handed: true
       effects:
-        - {when: hit, do: pierce, value: 2}
+        - {when: hit, do: pierce, value: 20}
   vigor_ring:
     name: 活力之戒
     description: 一枚暖烘烘的红铜指环，戴上以后心跳都沉稳了几分。
@@ -74,7 +74,7 @@ items:
     props:
       price: 40
       effects:
-        - {when: passive, do: max_hp, value: 3}
+        - {when: passive, do: max_hp, value: 30}
   lucky_coin:                  #会加速通胀，建议只做这一件、两个戒指位不叠加
     name: 幸运古币
     description: 一枚被人钻了孔、穿在指环上的古金币，正面的头像被摸得看不清了。
@@ -93,35 +93,35 @@ items:
     description: 一根磨得发亮的皮索，兜里放一颗石子甩出去，打得又准又狠。单手就能用，射完要再装一颗石子（说"装填"）。
     type: weapon
     slot: hand
-    damage: 6
+    damage: 60
     props: {ammo_kind: sling, price: 25, ranged: true, unloaded: sling_empty}
   sling_empty:
     name: 投石索（空）
     description: 皮兜里空了，得再装一颗石子才能甩（说"装填"）。
     type: weapon
     slot: hand
-    damage: 6
+    damage: 60
     props: {ammo_kind: sling, price: 25, loads: sling}
   hunting_bow:
     name: 猎弓
     description: 一张用韧木和兽筋做的短弓，要两只手才拉得开。离得越远越准，贴身了就不好使；射完要重新搭箭（说"装填"）。
     type: weapon
     slot: hand
-    damage: 10
+    damage: 100
     props: {ammo_kind: arrow, price: 55, ranged: true, two_handed: true, unloaded: hunting_bow_empty}
   hunting_bow_empty:
     name: 猎弓（空）
     description: 弦上没搭箭，得重新搭一支才能射（说"装填"）。
     type: weapon
     slot: hand
-    damage: 10
+    damage: 100
     props: {ammo_kind: arrow, price: 55, two_handed: true, loads: hunting_bow}
   bone_bow:
     name: 骨弓
     description: 骷髅弓手那张缠满蛛丝的骨弓，弓身冰凉，要两只手拉。射向亡灵的箭格外狠；射完要重新搭箭（说"装填"）。
     type: weapon
     slot: hand
-    damage: 8
+    damage: 80
     props:
       ammo_kind: arrow
       price: 60
@@ -129,20 +129,20 @@ items:
       two_handed: true
       unloaded: bone_bow_empty
       effects:
-        - {when: hit, do: bonus, value: 2, vs: [undead]}
+        - {when: hit, do: bonus, value: 20, vs: [undead]}
   bone_bow_empty:
     name: 骨弓（空）
     description: 弦上没搭箭，得重新搭一支才能射（说"装填"）。
     type: weapon
     slot: hand
-    damage: 8
+    damage: 80
     props: {ammo_kind: arrow, price: 60, two_handed: true, loads: bone_bow}
   heavy_crossbow:
     name: 绞盘重弩
     description: 弩手狱卒那把沉重的绞盘弩，要两只手端着，远近一样准，扁铁箭头能打穿铠甲；上一次弦很费劲（说"装填"）。
     type: weapon
     slot: hand
-    damage: 13
+    damage: 130
     props:
       ammo_kind: arrow
       price: 120
@@ -151,25 +151,25 @@ items:
       two_handed: true
       unloaded: heavy_crossbow_empty
       effects:
-        - {when: hit, do: pierce, value: 1}
+        - {when: hit, do: pierce, value: 10}
   heavy_crossbow_empty:
     name: 绞盘重弩（空）
     description: 弦松着，得转着绞盘重新上弦才能射（说"装填"）。
     type: weapon
     slot: hand
-    damage: 13
+    damage: 130
     props: {ammo_kind: arrow, price: 120, two_handed: true, loads: heavy_crossbow, reload_steps: 2}   # 绞盘要摇两次
   tower_shield:
     name: 塔盾
     description: 一面几乎有半人高的包铁木盾，举起来能把整个人藏在后面，专挡箭矢、石子和飞过来的东西。
     type: armor
     slot: hand
-    defense: 3
+    defense: 30
     props:
       price: 45
       block: 0.15                # 格挡：几率完全挡下一击（跟闪避合计最多 30%）
       effects:
-        - {when: hurt, do: guard, value: 2, vs: [ranged]}
+        - {when: hurt, do: guard, value: 20, vs: [ranged]}
 
   # ===================== 远程：更多武器 =====================
   hand_crossbow:
@@ -177,42 +177,42 @@ items:
     description: 一把只有小臂长的轻弩，弩臂是牛角做的，单手就能端平，另一只手还能拿盾；上弦要费点劲（说"装填"）。
     type: weapon
     slot: hand
-    damage: 8
+    damage: 80
     props: {price: 45, ranged: true, ammo_kind: arrow, unloaded: hand_crossbow_empty}
   hand_crossbow_empty:
     name: 手弩（空）
     description: 弦松着，得重新上弦才能射（说"装填"）。
     type: weapon
     slot: hand
-    damage: 8
+    damage: 80
     props: {price: 45, ammo_kind: arrow, loads: hand_crossbow}
   repeater_crossbow:
     name: 连弩
     description: 弩身上架着一只木匣，里面码着三支短箭，扳一下机括就能再上一支；三发射完得整匣重装（说"装填"）。要两只手端。
     type: weapon
     slot: hand
-    damage: 5
+    damage: 50
     props: {price: 70, ranged: true, two_handed: true, magazine: 3, unloaded: repeater_crossbow_empty}   # 连发：一匣三发，不能装特殊弹药
   repeater_crossbow_empty:
     name: 连弩（空）
     description: 木匣空了，得整匣重装才能再射（说"装填"）。
     type: weapon
     slot: hand
-    damage: 5
+    damage: 50
     props: {price: 70, two_handed: true, loads: repeater_crossbow}
   throwing_knives:
     name: 一套飞刀
     description: 三把没有护手的细长小刀插在皮套里，刀尾缠着红布，扔出去看得清落在哪。不用装填，扔完了打完这一架自然捡回来。单手。
     type: weapon
     slot: hand
-    damage: 4
+    damage: 40
     props: {price: 35, ranged: true, thrown: true, magazine: 3, unloaded: throwing_knives_empty}   # thrown：扔出去的，说法是"掷出"
   throwing_knives_empty:
     name: 一套飞刀（扔完了）
     description: 皮套空了，刀都扔在地上。打完这一架（房间里没有敌人了）自然会捡回来。
     type: weapon
     slot: hand
-    damage: 4
+    damage: 40
     props: {price: 35, loads: throwing_knives, recover: true}
 
   # ===================== 远程：特殊弹药（装填时说"用钩索箭装填"，下一发带上它的效果，射出去就用掉）=====================
@@ -237,8 +237,8 @@ items:
       ammo: arrow
       fire: true                 # 带火：打怕火的头目（古树守卫、沼泽女巫）伤害 ×1.5
       effects:
-        - {when: hit, do: bonus, value: 2}
-        - {when: hit, do: bonus, value: 2, vs: [light_averse], label: 火苗一沾身，它尖叫着往后缩}
+        - {when: hit, do: bonus, value: 20}
+        - {when: hit, do: bonus, value: 20, vs: [light_averse], label: 火苗一沾身，它尖叫着往后缩}
   lead_shot:
     name: 铅弹
     description: 一小袋灌了铅的圆石子，比普通石头沉一倍，砸在铁甲上会凹进去。投石索用。
@@ -248,7 +248,7 @@ items:
       price: 2
       ammo: sling
       effects:
-        - {when: hit, do: pierce, value: 2}
+        - {when: hit, do: pierce, value: 20}
 
   # ===================== 远程：配件和对策 =====================
   quiver_belt:
@@ -268,7 +268,7 @@ items:
     props:
       price: 40
       effects:
-        - {when: fight, do: bonus, value: 3, weapon: ranged}
+        - {when: fight, do: bonus, value: 30, weapon: ranged}
   smoke_bomb:
     name: 烟雾弹
     description: 一只糊着黄泥的陶球，摔碎了会冒出一大团呛人的灰烟，谁也看不清谁：两轮里远程命中减半，敌我都算。
@@ -296,25 +296,25 @@ items:
     name: 磨刀石
     description: 一块灰色的细磨石，一面已经被磨出了浅浅的凹槽。
     type: misc
-    props: {price: 6, whet: 1}
+    props: {price: 6, whet: 10}
 
   # ===================== 矿坑 =====================
   miner_pick:                  #破甲
     name: 矿工的短镐
     description: 镐头磨得只剩一半，木柄被汗浸成了黑色，敲在石头上火星四溅。
     type: weapon
-    damage: 5
+    damage: 50
     props:
       price: 35
       effects:
-        - {when: hit, do: pierce, value: 1}
+        - {when: hit, do: pierce, value: 10}
         - {when: passive, do: skill, kind: athletics, value: 1}
   kobold_cap:                  #光亮
     name: 狗头人矿工帽
     description: 一顶对人来说太小的皮帽，帽檐上焊着一只拇指大的油灯，灯芯居然还能点着。
     type: armor
     slot: head
-    defense: 1
+    defense: 10
     props: {price: 17, light: 10}
   miner_lamp:                  #光亮
     name: 矿工灯
@@ -327,7 +327,7 @@ items:
     description: 一片岩甲虫的背壳，内侧钉了两根皮带当把手，敲上去像敲石头。占一只手。
     type: armor
     slot: hand
-    defense: 3
+    defense: 30
     props:
       price: 33
       block: 0.15
@@ -337,19 +337,19 @@ items:
     name: 工头的鹤嘴锄
     description: 沾满血锈的鹤嘴锄，比普通矿镐长出一截，锄尖被磨得像矛头。
     type: weapon
-    damage: 9
+    damage: 90
     props:
       price: 86
       two_handed: true
       effects:
-        - {when: hit, do: pierce, value: 2}
+        - {when: hit, do: pierce, value: 20}
         - {when: hit, do: status, kind: prone, chance: 0.2, label: 被鹤嘴锄勾倒在地}
   foreman_plate:               #头目掉落
     name: 工头的矿车铁皮甲
     description: 用矿车铁皮敲成的护甲，铆钉歪歪扭扭，穿上去叮当乱响，跑起来很吃力。
     type: armor
     slot: chest
-    defense: 3
+    defense: 30
     props:
       price: 53
       effects:
@@ -360,16 +360,16 @@ items:
     name: 银匕首
     description: 一把细长的银匕首，刃上刻着一行祷词，在黑暗里泛着淡淡的白光。
     type: weapon
-    damage: 4
+    damage: 40
     props:
       price: 31
       effects:
-        - {when: hit, do: bonus, value: 3, vs: [undead, light_averse], label: 银刃划过的地方冒起一缕白烟}
+        - {when: hit, do: bonus, value: 30, vs: [undead, light_averse], label: 银刃划过的地方冒起一缕白烟}
   grave_lantern:               #永久光源，占手
     name: 守墓提灯
     description: 一盏铁皮提灯，灯罩上镂着十字形的孔，里面的火苗是幽白色的，从来不晃。
     type: weapon
-    damage: 1
+    damage: 10
     props: {price: 45, light: 15}
   holy_water:
     name: 圣水
@@ -389,7 +389,7 @@ items:
     name: 守陵人的长柄镰
     description: 比人还高的长柄镰刀，镰刃薄得透光，挥过去的时候没有声音。
     type: weapon
-    damage: 9
+    damage: 90
     props:
       price: 81
       two_handed: true
@@ -400,7 +400,7 @@ items:
     description: 从守陵人胸口撬下来的石头，用皮绳穿着，还在一明一暗地发着幽光，像在呼吸。
     type: armor
     slot: neck
-    defense: 1
+    defense: 10
     props:
       price: 27
       light: 10
@@ -412,7 +412,7 @@ items:
     name: 包铁警棍
     description: 一根一臂长的硬木棍，前半截包着铁皮，上面有几道洗不掉的深色印子。
     type: weapon
-    damage: 5
+    damage: 50
     props:
       price: 35
       effects:
@@ -431,17 +431,17 @@ items:
     description: 一截拴狗的铁链连着铁项圈，被磨得锃亮，戴上去野兽闻着你就像闻着同类。
     type: armor
     slot: neck
-    defense: 1
+    defense: 10
     props:
       price: 22
       effects:
-        - {when: hurt, do: guard, value: 1, vs: [animal]}
+        - {when: hurt, do: guard, value: 10, vs: [animal]}
   warden_helm:                 #头目掉落
     name: 典狱长的黑铁头盔
     description: 整块黑铁锻成的头盔，只在眼睛的位置开了一道缝，戴上以后连自己的呼吸声都变闷了。
     type: armor
     slot: head
-    defense: 2
+    defense: 20
     props:
       price: 43
       effects:
@@ -457,14 +457,14 @@ items:
     name: 骨矛
     description: 一根削尖的长骨头绑在木杆上，矛尖涂着一层干掉的绿泥。可以掷出去，要走过去捡回来。
     type: weapon
-    damage: 5
+    damage: 50
     props: {price: 35, throw: heavy}
   wolf_hide_boots:
     name: 狼皮靴
     description: 用苍白狼的皮缝的短靴，毛朝里，踩在落叶上几乎没有声音。
     type: armor
     slot: feet
-    defense: 1
+    defense: 10
     props:
       price: 17
       effects:
@@ -473,7 +473,7 @@ items:
     name: 荆棘鞭
     description: 一截还活着的荆棘藤，握柄那头被缠上了布，鞭梢的刺偶尔会自己动一下。
     type: weapon
-    damage: 4
+    damage: 40
     props:
       price: 28
       effects:
@@ -483,7 +483,7 @@ items:
     description: 一整块从古树守卫身上剥下来的树皮，内侧还是湿的，穿上去有股松脂的清香。
     type: armor
     slot: chest
-    defense: 3
+    defense: 30
     props:
       price: 73
       effects:
@@ -493,11 +493,11 @@ items:
     description: 一小块深褐色的心木，纹理像一圈圈年轮，贴着胸口能感觉到很慢很慢的搏动。
     type: armor
     slot: neck
-    defense: 1
+    defense: 10
     props:
       price: 32
       effects:
-        - {when: passive, do: max_hp, value: 2}
+        - {when: passive, do: max_hp, value: 20}
   wild_berries:
     name: 野莓
     description: 一把紫黑色的小野莓，酸得人眯眼，吃完嘴唇都是紫的。
@@ -510,7 +510,7 @@ items:
     name: 淬毒骨匕
     description: 一把用鱼骨磨成的小刀，刃口泛着一层油绿，最好别拿它削水果。
     type: weapon
-    damage: 3
+    damage: 30
     props:
       price: 24
       effects:
@@ -519,14 +519,14 @@ items:
     name: 发光菌杖
     description: 一根顶上长着一簇发光蘑菇的木杖，蘑菇伞盖一明一暗，像在呼吸。
     type: weapon
-    damage: 3
+    damage: 30
     props: {price: 29, light: 15}
   marsh_boots:
     name: 沼泽高筒靴
     description: 一双涂过蜡的高筒皮靴，一直到膝盖，里面还积着一点泥水。
     type: armor
     slot: feet
-    defense: 1
+    defense: 10
     props:
       price: 19
       effects:
@@ -542,7 +542,7 @@ items:
     description: 一朵肥厚的褐色蘑菇，伞盖底下的褶子是淡粉色的，看着能吃，也可能不能。
     type: consumable
     heal: 5
-    props: {price: 2, harm: 3, harm_check: nature, kind: food}
+    props: {price: 2, harm: 30, harm_check: nature, kind: food}
   witch_bone_ring:             #头目掉落
     name: 女巫的骨戒
     description: 一枚用指骨磨成的戒指，上面刻着歪歪扭扭的符文，戴上去指尖会发麻。
@@ -557,7 +557,7 @@ items:
     name: 女巫的骨杖
     description: 一根挂满小骨头的拐杖，杖头的骷髅眼眶里跳着两点绿色的磷火。
     type: weapon
-    damage: 5
+    damage: 50
     props:
       price: 50
       light: 10
@@ -569,7 +569,7 @@ items:
     name: 墨刃
     description: 一把像是用凝固的墨汁铸成的细剑，刃口滴着永远干不了的黑色。
     type: weapon
-    damage: 6
+    damage: 60
     props:
       price: 48
       effects:
@@ -579,7 +579,7 @@ items:
     description: 一叠折成小方块的符纸，用红线缠着，上面的字迹会慢慢换来换去。
     type: armor
     slot: neck
-    defense: 1
+    defense: 10
     props:
       price: 22
       effects:
@@ -603,7 +603,7 @@ items:
     description: 一片镶在银框里的圆镜片，透过它看书上的字会自己排整齐。
     type: armor
     slot: head
-    defense: 1
+    defense: 10
     props:
       price: 32
       effects:
@@ -619,16 +619,16 @@ items:
     name: 回旋链锤
     description: 一根短柄上拴着三截铁链，每截末端坠着一颗带刺的铁球，抡起来整个房间都是呼呼的风声。
     type: weapon
-    damage: 4
+    damage: 40
     props:
       price: 45
       effects:
-        - {when: attack, do: splash, value: 1, label: 甩开的铁链扫过了周围所有敌人}
+        - {when: attack, do: splash, value: 10, label: 甩开的铁链扫过了周围所有敌人}
   quake_axe:                   #双手，群体撞倒
     name: 碎岩战斧
     description: 斧刃厚得像一块门板，劈进地面时整个房间都跟着一震。
     type: weapon
-    damage: 8
+    damage: 80
     props:
       price: 80
       two_handed: true
@@ -638,16 +638,16 @@ items:
     name: 雷鸣短杖
     description: 一根缠着铜丝的黑木短杖，杖头嵌着一块碎裂的蓝水晶，握久了手臂会发麻。
     type: weapon
-    damage: 4
+    damage: 40
     props:
       price: 50
       effects:
-        - {when: hit, do: chain, value: 3, chance: 0.25, label: 一道细细的电光从伤口跳到了旁边的敌人身上}
+        - {when: hit, do: chain, value: 30, chance: 0.25, label: 一道细细的电光从伤口跳到了旁边的敌人身上}
   bat_fang_dagger:             #吸血
     name: 蝠牙匕首
     description: 刀刃是一颗弯弯的巨大兽牙，牙根处有一道细槽，刺进去以后会自己往回吸。
     type: weapon
-    damage: 4
+    damage: 40
     props:
       price: 45
       effects:
@@ -656,7 +656,7 @@ items:
     name: 处刑者大剑
     description: 一把没有剑尖的方头大剑，剑身上刻着一排排小小的记号，数不清有多少道。
     type: weapon
-    damage: 8
+    damage: 80
     props:
       price: 85
       two_handed: true
@@ -666,16 +666,16 @@ items:
     name: 伏击者短刀
     description: 一把刀身涂黑的短刀，刀柄缠着吸汗的细绳，拔出来的时候没有一点反光。
     type: weapon
-    damage: 4
+    damage: 40
     props:
       price: 35
       effects:
-        - {when: fight, do: bonus, value: 4, label: 趁对方还没反应过来，刀已经扎了进去}
+        - {when: fight, do: bonus, value: 40, label: 趁对方还没反应过来，刀已经扎了进去}
   frost_blade:                 #用现有的定身
     name: 霜咬短剑
     description: 剑身上永远结着一层薄霜，握在手里呵出来的气都是白的。
     type: weapon
-    damage: 5
+    damage: 50
     props:
       price: 45
       effects:
@@ -684,16 +684,16 @@ items:
     name: 收魂弯刀
     description: 一把弯得像新月的刀，刀背上挂着一串小小的铁铃，每杀一个敌人就会自己响一下。
     type: weapon
-    damage: 5
+    damage: 50
     props:
       price: 45
       effects:
-        - {when: kill, do: heal, value: 2, label: 铁铃轻轻一响，一股暖意顺着刀柄流进手臂}
+        - {when: kill, do: heal, value: 20, label: 铁铃轻轻一响，一股暖意顺着刀柄流进手臂}
   avenger_blade:               #队友倒下加伤，组队向
     name: 复仇之刃
     description: 一把朴素的长剑，剑格上缠着一条褪色的发带，平时毫不起眼，同伴倒下时却会烫得握不住。
     type: weapon
-    damage: 6
+    damage: 60
     props:
       price: 50
       effects:
@@ -702,23 +702,23 @@ items:
     name: 余烬长剑
     description: 剑身里像是封着一块没烧完的炭，裂纹里透出暗红的光，砍在身上会发出滋滋的声响。
     type: weapon
-    damage: 5
+    damage: 50
     props:
       price: 55
       light: 15
       fire: true
       effects:
-        - {when: hit, do: bonus, value: 2, vs: [light_averse]}
+        - {when: hit, do: bonus, value: 20, vs: [light_averse]}
   cursed_twinblade:            #诅咒：卸不下来，找诺艾尔解咒
     name: 饮血双刃剑
     description: 剑柄两头都有刃，握的地方也是刃，一拿起来就划破了手掌，却怎么也松不开。
     type: weapon
-    damage: 9
+    damage: 90
     props:
       price: 40
       cursed: true
       effects:
-        - {when: attack, do: self_damage, value: 1, label: 握柄上的刃口又咬进手心一点}
+        - {when: attack, do: self_damage, value: 10, label: 握柄上的刃口又咬进手心一点}
   greed_ring:                  #诅咒
     name: 贪婪之戒
     description: 一枚沉得不像话的金戒指，戴上以后总觉得口袋里的钱不够，脸色也一天比一天差。
@@ -729,7 +729,7 @@ items:
       cursed: true
       effects:
         - {when: passive, do: gold, value: 0.3}
-        - {when: passive, do: max_hp, value: -3}
+        - {when: passive, do: max_hp, value: -30}
   berserker_ring:              #残血加伤
     name: 狂战士之戒
     description: 一枚粗糙的铁环，内侧沾着洗不掉的血渍，伤得越重，它勒得越紧。
@@ -744,11 +744,11 @@ items:
     description: 皮甲外面缝满了晒干的荆棘，谁扑上来都得先扎一手。
     type: armor
     slot: chest
-    defense: 1
+    defense: 10
     props:
       price: 30
       effects:
-        - {when: hurt, do: reflect, value: 1, label: 扑上来的敌人被荆棘扎得一缩}
+        - {when: hurt, do: reflect, value: 10, label: 扑上来的敌人被荆棘扎得一缩}
   shadow_boots:                #闪避
     name: 影步靴
     description: 一双软底黑靴，走起路来脚下的影子总是慢半拍才跟上。
@@ -775,7 +775,7 @@ items:
     props:
       price: 35
       effects:
-        - {when: enter, do: heal, value: 1}
+        - {when: enter, do: heal, value: 10}
   legion_sigil:                #光环，组队向
     name: 军团徽记
     description: 一枚磨损的铜徽章，上面是一面残破的战旗，别在胸前，身边的人都会不自觉地站直了些。
@@ -784,7 +784,7 @@ items:
     props:
       price: 45
       effects:
-        - {when: passive, do: aura, kind: defense, value: 1}
+        - {when: passive, do: aura, kind: defense, value: 10}
 
   # ============ 宝石（第一期）============
   # 镶在带孔的装备上（只有地牢掉落的装备带孔，找莉娜镶，免费；取出要按品质收钱，宝石保留）。
@@ -798,9 +798,9 @@ items:
     props:
       gem_slot: any
       numeric: true
-      adapts: {weapon: {when: hit, do: bonus, values: [0.5, 0.5, 0.75, 1]},
-               armor: {when: passive, do: defense, values: [0.25, 0.25, 0.4, 0.5]},
-               trinket: {when: passive, do: max_hp, values: [1, 1, 1.5, 2]}}
+      adapts: {weapon: {when: hit, do: bonus, values: [5, 5, 8, 10]},
+               armor: {when: passive, do: defense, values: [3, 3, 4, 5]},
+               trinket: {when: passive, do: max_hp, values: [10, 10, 15, 20]}}
   vigor_garnet:
     name: 活力石榴石
     description: 一颗深红色的小石头，贴着皮肤戴，能感觉到它跟着心跳一起微微发烫。
@@ -809,7 +809,7 @@ items:
       gem_slot: trinket
       numeric: true
       effects:
-        - {when: passive, do: max_hp, values: [1, 2, 2.5, 3]}
+        - {when: passive, do: max_hp, values: [10, 20, 25, 30]}
   bloodstone:
     name: 血石
     description: 一块暗红色的石头，里面有几缕更深的红丝，握久了掌心会发热。
@@ -818,7 +818,7 @@ items:
       gem_slot: weapon
       numeric: true
       effects:
-        - {when: hit, do: bonus, values: [0.5, 1, 1.5, 2]}
+        - {when: hit, do: bonus, values: [5, 10, 15, 20]}
   rockvein_stone:              # 对付工头砸地、岩甲虫
     name: 岩纹石
     description: 一块灰褐色的扁石，表面有一圈圈像年轮一样的纹路，放在哪里都稳稳当当。
@@ -834,7 +834,7 @@ items:
     props:
       gem_slot: weapon
       effects:
-        - {when: hit, do: bonus, values: [1, 1.5, 2.5, 3], vs: [undead]}
+        - {when: hit, do: bonus, values: [10, 15, 25, 30], vs: [undead]}
   frost_jade:                  # 对付守陵人的寒气、食尸鬼
     name: 寒玉
     description: 一块青白色的玉石，摸上去冰得扎手，却从来不会结霜。
@@ -859,7 +859,7 @@ items:
       gem_slot: armor
       numeric: true
       effects:
-        - {when: passive, do: defense, values: [0.25, 0.5, 0.6, 0.75]}
+        - {when: passive, do: defense, values: [3, 5, 6, 8]}
   sunder_stone:                # 城堡：无视对方的防御（锈甲守卫这类硬怪、狗头人工头的弱点）
     name: 破甲石
     description: 一块边缘锋利的黑色燧石，敲在铁甲上会迸出一串细小的火星。
@@ -868,7 +868,7 @@ items:
       gem_slot: weapon
       numeric: true
       effects:
-        - {when: hit, do: pierce, values: [0.5, 1, 1.5, 2]}
+        - {when: hit, do: pierce, values: [5, 10, 15, 20]}
   staunch_stone:               # 对付恶犬、典狱长那一带的流血
     name: 止血石
     description: 一块暗红带黑斑的石头，据说古时候的军医会把它按在伤口上。

@@ -45,7 +45,7 @@ RESPAWN_ROOM = "tavern"                 # 倒下的人选择复活时默认被�
 # 创意攻击（stunt）和负面状态。AI 只选档位和难度，数字都在这里
 TIERS = ["none", "light", "heavy", "lethal"]
 # 伤害在区间里随机：自由动作是控场用的，新手拿它打伤害不如老老实实砍一刀
-TIER_RANGE = {"none": (0, 0), "light": (1, 3), "heavy": (3, 6), "lethal": (5, 9)}
+TIER_RANGE = {"none": (0, 0), "light": (10, 30), "heavy": (30, 60), "lethal": (50, 90)}      # 战斗数值 ×10（rules.SCALE）
 TIER_MIN_DIFFICULTY = {"none": 1, "light": 2, "heavy": 3, "lethal": 4}   # 伤得越重难度越高（对无力反抗的补刀不算）
 IMPROVISED_MAX_TIER = "light"           # 空手、随手的东西（没在 world.yaml 声明成可利用地形）最多轻伤
 WEAPON_MAX_TIER = "heavy"               # 拿武器的花样（挑、劈、刺喉）最多重伤
@@ -711,7 +711,7 @@ def _npc_affect(cur: Cursor, player: Player, npc: Npc, kind: str, label: str) ->
         npc.status = st
         return [f"{npc.name}{label}" if label else f"{npc.name}{st.describe()}"]
     depth = npc.template.props.get("dungeon", {}).get("depth", 1)
-    value = NPC_CORRODE_DEF if kind == "corrode" else 1 + depth // 5
+    value = NPC_CORRODE_DEF if kind == "corrode" else (1 + depth // 5) * SCALE
     npc.effects = [e for e in npc.effects if e.kind != kind] + [
         Effect(kind=kind, value=value, left=NPC_EFFECT_TURNS[kind], label=(label or EFFECT_NAMES[kind])[:20], source=player.name)]
     _save_npc_effects(cur, npc)
@@ -984,7 +984,7 @@ def _road_event(cur: Cursor, player: Player, view: RoomView, to: str) -> list[st
         ok, rolled = _check(cur, player, view, "perception", max(1, 2 + depth // 3 - (_prop(sense, "trap_sense") if sense else 0)))
         if ok:
             return [f"路上{trap}"] + rolled + [f"{player.name}{'想起陷阱图上画过这种地方，' if sense else ''}及时察觉，躲了过去"]
-        dmg = 2 + depth // 3
+        dmg = (2 + depth // 3) * SCALE
         hurt, down = _hurt_player(cur, player, dmg, "other", "陷阱")
         return [f"路上{trap}"] + rolled + [f"{player.name}没能躲开，受到 {dmg} 点伤害"] + hurt             + ([] if down else _toughen(cur, player))
     if r < ROAD_COINS:
@@ -2091,7 +2091,7 @@ def _npc_strike(cur: Cursor, player: Player, npc: Npc, verb: str, chance: float 
     light = _light(cur, npc.room_id)
     atk = npc.template.attack + (dark_attack(light) if dungeon.is_dungeon(npc.room_id) else 0)
     if npc.template.props.get("light_averse") and light >= LIGHT_BRIGHT:
-        atk -= 1                                # 怕光的怪在亮处缩手缩脚
+        atk -= SCALE                            # 怕光的怪在亮处缩手缩脚
     depth = npc.template.props.get("dungeon", {}).get("depth", 0)
     props = npc.template.props
     ratio = npc.hp / npc.template.max_hp if npc.hp and npc.template.max_hp else 1.0
@@ -2109,7 +2109,7 @@ def _npc_strike(cur: Cursor, player: Player, npc: Npc, verb: str, chance: float 
         return [f"{npc.name}{verb}，这一下本该要了{player.name}的命",
                 f"{player.name}身上的{mark.name}亮了一下，硬生生挡下了这一击（这一层用过了）"]
     if dmg >= player.hp and (cd := _fire(cur, player, "hurt", "cheat_death", npc)) and _cheat_death_ready(cur, player):
-        dmg, saved = player.hp - 1, _labels(cd) or [f"{player.name}硬撑着没倒下"]
+        dmg, saved = max(0, player.hp - SCALE), _labels(cd) or [f"{player.name}硬撑着没倒下"]
     player.hp = max(0, player.hp - dmg)
     cur.execute("update players set hp = %s, updated_at = now() where id = %s", (player.hp, player.id))
     hit = (f"{npc.name}{verb}，这一下本该要了{player.name}的命" if saved
@@ -2183,7 +2183,7 @@ def _poisoned(player: Player) -> float:
 
 def _bled(player: Player, dmg: int) -> int:
     """流血时打出的伤害打折"""
-    return max(1, round(dmg * BLEED_DAMAGE)) if _effect(player, "bleed") and dmg > 0 else dmg
+    return max(SCALE, round(dmg * BLEED_DAMAGE)) if _effect(player, "bleed") and dmg > 0 else dmg
 
 
 def _save_effects(cur: Cursor, player: Player) -> None:
@@ -2224,7 +2224,7 @@ def _inflict(cur: Cursor, player: Player, kind: str, label: str, depth: int, sou
         return [f"{player.name}{label}" + ("，得先挣脱" if kind == "restrained" else "，得先爬起来" if kind == "prone"
                                             else "，失去战斗能力")]
     label = label or EFFECT_NAMES[kind]
-    value = max(1, round(effect_value(kind, depth) * value_mult))      # value_mult：这只怪的毒、血口子轻一点（on_hit.value_mult）
+    value = max(SCALE, round(effect_value(kind, depth) * value_mult))      # value_mult：这只怪的毒、血口子轻一点（on_hit.value_mult）
     old = _effect(player, kind)
     if old:
         old.left = turns or EFFECT_TURNS[kind]
@@ -2343,7 +2343,7 @@ def light_info(cur: Cursor, player: Player, room: Room) -> Optional[dict]:
     if light < LIGHT_DARK:
         lines.append("几乎漆黑：做花样难一级，躲起来容易一级")
     atk = dark_attack(light)
-    lines.append("怪下手更狠（攻击 +1）" if atk > 0 else "怪被照得缩手缩脚（攻击 −1）" if atk < 0 else "怪的攻击正常")
+    lines.append("怪下手更狠（攻击 +10）" if atk > 0 else "怪被照得缩手缩脚（攻击 −10）" if atk < 0 else "怪的攻击正常")
     if light >= LIGHT_BRIGHT:
         lines.append("怕光的怪攻击再 −1")
     lines.append(f"打怪掉的钱 ×{1 + 0.5 * dark_factor(light):.2f}（越暗越多）")
@@ -3522,7 +3522,7 @@ def do_revive(cur: Cursor, player: Player, view: RoomView, a: Revive) -> list[st
         ok, facts = _check(cur, player, view, "medicine", REVIVE_DIFFICULTY)
         if not ok:
             return facts + [f"{player.name}给{target.name}做了急救，但没能救醒"]
-        hp = min(target.max_hp, 1 + skill_level(player.skills.get("medicine", 0)))
+        hp = min(target.max_hp, (1 + skill_level(player.skills.get("medicine", 0))) * SCALE)
         cur.execute(f"""update players set hp = %s, max_hp = max_hp + {RESTORE_MAX_HP}, effects = coalesce((select jsonb_agg(e) from jsonb_array_elements(effects) e where e->>'kind' in ('whet', 'cheer')), '[]'::jsonb), updated_at = now()
                         where id = %s""", (hp, target.id))
         facts += [f"{player.name}给{target.name}做了急救，{target.name}醒了过来", f"{target.name} HP {hp}/{target.max_hp}"]
@@ -3819,7 +3819,7 @@ def upgradable(items: list[ItemInstance]) -> list[ItemInstance]:
 
 
 def _step(item: ItemInstance, stat: str) -> float:
-    """这件升一级加多少（远程武器伤害 +1.5）"""
+    """这件升一级加多少（远程武器伤害 +15）"""
     return upgrade_step(stat, bool(_prop(item, "ranged") or _prop(item, "loads")))
 
 
@@ -4011,15 +4011,15 @@ def do_reroll(cur: Cursor, player: Player, view: RoomView, a: Reroll) -> list[st
 
 
 def _exclusive_blade(cur: Cursor, player: Player, npc: Npc) -> list[str]:
-    """莉娜的回礼（好感 100）：一把专属武器。伤害按他走到过的最深层数（5 + 层数/3，最多 12），带一个武器词条"""
+    """莉娜的回礼（好感 100）：一把专属武器。伤害按他走到过的最深层数（(5 + 层数/3，最多 12) × 10），带一个武器词条"""
     cur.execute("select deepest_floor from players where id = %s", (player.id,))
     deep = cur.fetchone()["deepest_floor"] or 0
-    dmg = min(12, 5 + deep // 3)
+    dmg = min(12, 5 + deep // 3) * SCALE
     affix = random.choice(_affix_pool(cur, "weapon") or [{}])
     props = {"damage": dmg, "effects": [affix] if affix else []}
     cur.execute("insert into item_instances (template_id, player_id, props) values ('lina_blade', %s, %s)",
                 (player.id, Jsonb(props)))
-    return [f"无铭：伤害 {dmg}（跟着走过的最深层数一起长，最多 12）" + (f"，{_effect_line(affix)}" if affix else ""),
+    return [f"无铭：伤害 {dmg}（跟着走过的最深层数一起长，最多 {12 * SCALE}）" + (f"，{_effect_line(affix)}" if affix else ""),
             f"{npc.name}只说了一句：名字，你起"]
 
 
@@ -4836,7 +4836,7 @@ def _effect_line(e: dict) -> str:
         "resist": f"免疫{STATE_NAMES.get(k, k)}" if v == 0 else f"{STATE_NAMES.get(k, k)}的几率 ×{v}",
         "max_hp": f"血量上限 {'+' if v >= 0 else ''}{v}", "skill": f"{SKILL_NAMES.get(k, k)} +{v}", "gold": f"打怪掉的金币 +{round(v * 100)}%",
         "flee": "逃跑更容易" if v < 0 else "逃跑更难", "wade": "积水里行动不受影响", "darkvision": "暗处攻击不打折",
-        "self_damage": f"自己掉 {v} 点血", "cheat_death": "本该倒下时留 1 点血",
+        "self_damage": f"自己掉 {v} 点血", "cheat_death": "本该倒下时留 10 点血",
         "aura": f"同房间的队友和自己{'攻击' if k == 'attack' else '防御'} +{v}",
         "defense": f"防御 +{stat_text(v)}", "light": f"光亮 +{v}（跟别的随身光源只取最亮的）",
         "crit": f"会心一击：伤害 ×{e.get('mult', 2)}（几件只取几率最高的一件）",
