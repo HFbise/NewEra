@@ -4904,10 +4904,13 @@ WEAK_HOW = {"fire": "火把、火油箭、带火的剑打它", "pierce": "破甲
 
 def _skill_note(s: dict) -> str:
     """头目的一招，图鉴里怎么写"""
-    when = {"hp_below": f"血量低于 {round(s.get('value', 0) * 100)}% 时", "every": f"每出手 {s.get('value')} 次",
-            "fight_start": "一开打就"}.get(s.get("when"), "")
+    waves = s.get("waves")
+    when = ("血量低于 " + " 和 ".join(f"{round(w * 100)}%" for w in waves) + " 时各一次，" if waves else
+            {"hp_below": f"血量低于 {round(s.get('value', 0) * 100)}% 时", "every": f"每出手 {s.get('value')} 次",
+             "fight_start": "一开打就"}.get(s.get("when"), ""))
     helper = dungeon.data()["monsters"].get(s.get("kind"), {}).get("name", s.get("kind"))
-    what = {"summon": f"叫来帮手（{helper}，第 5 层一只、第 10 层起 {s.get('count', 1)} 只，最多同时 {SUMMON_MAX} 只，"
+    count = (f"每次一只，第 5 层只叫第一次" if waves else f"第 5 层一只、第 10 层起 {s.get('count', 1)} 只")
+    what = {"summon": f"叫来帮手（{helper}，{count}，最多同时 {SUMMON_MAX} 只，"
                       f"不掉东西，主子一死就跑）",
             "status_all": f"让所有人{STATE_NAMES.get(s.get('kind'), s.get('kind'))}",
             "effect_all": f"让所有人{EFFECT_NAMES.get(s.get('kind'), s.get('kind'))}",

@@ -103,14 +103,14 @@ themes:
       description: 比别的狗头人高出一头，披着用矿车铁皮敲成的护甲，手里拎着一把沾满血锈的鹤嘴锄。
       persona: 暴躁，嗓门大，把闯进矿坑的人当成偷矿的贼，会先吼叫着让手下围上来。
       on_hit: {kind: prone, chance: 0.3, label: 被鹤嘴锄撞翻在地}
-      hp: 0.8
+      hp: 0.9
       atk: 0
       def: 10
       # 技能按层数解锁（rules.unlocked_skills）：第 5 层只会第一招，第 10 层两招，第 15 层起全套加狂暴
       immune: [prone]                 # 免疫：玩家打不上去的状态、效果
       weak: pierce                    # 弱点：破甲的打它伤害 ×1.5（rules.WEAK_MULT）
       skills:
-        - {when: hp_below, value: 0.6, do: summon, kind: kobold, count: 2, label: 把铜哨塞进嘴里猛吹一声，巷道深处跑来了两个帮手}
+        - {waves: [0.75, 0.5], do: summon, kind: kobold, label: 把铜哨塞进嘴里猛吹一声，巷道深处跑来了一个帮手}      # 分两次叫，每次一只（两只一起上团灭 6–9%）
         - {when: every, value: 3, do: status_all, kind: prone, escape: 2, label: 抡起鹤嘴锄砸向地面，震得所有人站不稳}
 
   graveyard:
@@ -187,7 +187,7 @@ themes:
       immune: [bleed]                 # 一身骸骨，不会流血
       weak: holy
       skills:
-        - {when: hp_below, value: 0.5, do: summon, kind: skeleton, count: 2, label: 把镰刀插进坟土，两具骷髅兵从地下爬了出来}
+        - {when: hp_below, value: 0.5, do: summon, kind: skeleton, count: 2, label: 把镰刀插进坟土，两具骷髅兵从地下爬了出来}      # 试过分两次：第 10、15 层压力掉太多，团灭又不是两只一起上造成的
         - {when: every, value: 3, do: effect_all, kind: corrode, turns: 2, label: 镰刃贴地一扫，一股寒气钻进了每个人的伤口}
 
   castle:
@@ -425,14 +425,14 @@ themes:
       persona: 阴沉又爱笑，喜欢用甜言蜜语引人走进泥沼深处，发起怒来尖啸着召唤毒雾。
       on_hit: {kind: poison, chance: 0.3, turns: 2, value_mult: 0.6, label: 被毒雾呛得喘不过气}
       hp: 1.0
-      atk: 13
+      atk: 10
       def: 0
       immune: [poison]
       weak: fire
       skills:
         - {when: every, value: 4, do: telegraph, label: 举起骨杖念念有词，绿色的毒雾在她脚下翻涌（下一次出手全场中毒；这一轮狠狠砍她一下能打断）,
            then: {do: effect_all, kind: poison, turns: 2, value_mult: 0.6, label: 毒雾轰地炸开，灌满了整个房间}}
-        - {when: hp_below, value: 0.5, do: summon, kind: bog_toad, count: 1, label: 尖叫一声，泥水里拱出了一只巨蟾}
+        - {when: hp_below, value: 0.8, do: summon, kind: bog_toad, count: 1, label: 尖叫一声，泥水里拱出了一只巨蟾}
 
   library:
     name: 巨大图书馆
@@ -509,7 +509,7 @@ themes:
       weak: light                     # 怕光：光亮 70 以上打它伤害 ×1.5
       skills:
         - {when: every, value: 4, do: silence, turns: 2, label: 竖起一根手指「嘘——」，书页和卷轴上的字一下子全暗了}
-        - {when: hp_below, value: 0.5, do: summon, kind: animated_tome, count: 2, label: 一挥手，书架上扑棱棱飞下来两本书}
+        - {when: hp_below, value: 0.5, do: summon, kind: animated_tome, count: 2, label: 一挥手，书架上扑棱棱飞下来两本书}      # 两本一起没有爆发（团灭 2%），分开第 10、15 层只剩 30%
 
 # 传送石：打完头目（每 BOSS_EVERY 层）之后下一层的入口。摸一下能回到酒馆地窖；到过这里的人以后能从地窖直接传送过来
 stone:

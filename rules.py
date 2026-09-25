@@ -331,9 +331,17 @@ def summon_count(skill: dict, depth: int) -> int:
 
 
 def unlocked_skills(skills: list[dict], depth: int) -> list[dict]:
-    """这一层的头目会哪几招（按顺序解锁）"""
+    """这一层的头目会哪几招（按顺序解锁）。分批叫帮手的（waves: [0.6, 0.3]）展开成几招，每次叫一只，
+    免得两只同时压上来打出爆发；第 5 层的入门版只有第一波"""
     n = 1 if depth < 10 else 2 if depth < ENRAGE_FROM else len(skills)
-    return skills[:n]
+    out = []
+    for s in skills[:n]:
+        if waves := s.get("waves"):
+            base = {k: v for k, v in s.items() if k != "waves"}
+            out += [{**base, "when": "hp_below", "value": w, "count": 1} for w in (waves[:1] if depth < 10 else waves)]
+        else:
+            out.append(s)
+    return out
 
 
 def due_skill(skills: list[dict], hp_ratio: float, acts: int, used: set) -> Optional[int]:
