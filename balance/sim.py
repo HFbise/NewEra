@@ -1,0 +1,855 @@
+"""
+数值模拟：经济（每层赚多少钱、回城时升到几级）+ 战斗（每层死亡率、掉血、每场打几轮、用几瓶药）。
+
+规则数值全部来自 rules.py（跟引擎共用：命中、减伤、伤害、升级费用和失败率、怪物数值、掉钱）和
+dungeon.yaml / loot.yaml / 物品表；这里只写"一层怎么走、一场仗怎么打"的流程，照着 dungeon._make_floor、
+engine.round_enemies / _enemy_act / do_attack 的顺序。随机种子固定，结果可复现。
+
+没模拟的（所以模拟会比真人难一点，见 balance/README）：环境物件、花样、逃跑、躲藏偷袭、事件房、走路时的随机事件、
+卖掉捡到的东西、带条件的装备特效（队友倒下、血少时才加的）、状态类装备特效（打中附带定身、中毒）。
+
+用法：python balance/sim.py [--trips 300] [--seed 1] [--out balance/result.md]
+"""
+import argparse
+import math
+import os
+import random
+import sys
+from dataclasses import dataclass, field
+from typing import Optional
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+import yaml  # noqa: E402
+
+import dungeon  # noqa: E402
+import rules as R  # noqa: E402
+
+MONSTERS = dungeon.data()["monsters"]
+THEMES = dungeon.data()["themes"]
+ITEMS = {}
+for _f in ("world.yaml", "items_dungeon.yaml"):
+    ITEMS.update(yaml.safe_load(open(_f, encoding="utf-8"))["items"])
+
+TRIP = 5                                # 一趟：两块传送石之间（1–5、6–10……），出发前回城买药、升级
+POTION = "blood_potion"                 # 血药
+HERB_HEAL = ITEMS["herb"]["heal"]
+TORCH_LIT = ITEMS["torch_lit"]["props"]["light"]
+TORCH_DIM = ITEMS["torch_dim"]["props"]["light"]
+TORCH_PRICE = ITEMS["torch"]["props"]["price"]
+DRINK_BELOW = 0.35                      # 血掉到这个比例以下就喝药（战斗里算一个动作）
+CAMP_BELOW = 0.6                        # 打完一场血在这以下、这层还没扎营，就去空房扎营
+SURVIVAL_LEVEL = 1                      # 扎营判定用的生存等级
+STASH_CHANCE = 0.5                      # 空房藏着的古币翻得到的几率（调查判定）
+FORAGE_CHANCE = 0.5                     # 空房搜到药草的几率
+ROUND_CAP = 60                          # 一场打这么多轮还没完就算僵住（记下来）
+
+
+# ============ 装备：按"走到这一段实际拿得到的"拼，数字是模板的基础值，升级另算 ============
+# 每段一行：第 1 趟（1–5 层）、第 2 趟（6–10）、第 3 趟（11–15）、第 4 趟（16–20）
+# 护甲：差装备只有开局的皮甲和古旧护符（地窖桌上人人拿得到），一直不升级；
+#       正常：第 1 趟是莉娜店里的全套（皮帽、皮甲、皮靴）+ 护符；第 2 趟锁子甲；第 3 趟起头目的胸甲（3）和典狱长的头盔（2）
+ARMOR = {
+    "poor": [[("皮甲", 1), ("古旧护符", 2)]] * 4,
+    "normal": [[("皮帽", 1), ("皮甲", 1), ("皮靴", 1), ("古旧护符", 2)],
+               [("皮帽", 1), ("锁子甲", 2), ("皮靴", 1), ("古旧护符", 2)],
+               [("头盔", 2), ("头目胸甲", 3), ("皮靴", 1), ("古旧护符", 2)],
+               [("头盔", 2), ("头目胸甲", 3), ("皮靴", 1), ("古旧护符", 2)]],
+}
+ARMOR["fav"] = ARMOR["normal"]
+# 盾：剑盾打法第 1 趟木盾，之后塔盾（挡远程 2 点）
+SHIELD = [("木盾", 2, 0), ("塔盾", 3, 2), ("塔盾", 3, 2), ("塔盾", 3, 2)]
+
+
+@dataclass
+class Weapon:
+    name: str
+    damage: int
+    ranged: bool = False
+    steady: bool = False
+    reload_steps: int = 1
+    pierce: int = 0
+    first_bonus: int = 0                # 这场第一次出手加（猎手之戒）
+    free_reload: bool = False           # 箭袋腰带：每场白给一次装填
+
+
+def melee_weapons(build: str, trip: int) -> list[tuple[str, int]]:
+    """(名字, 伤害) 主手在前"""
+    sword = ("闪亮的短剑", 6) if trip == 0 else ("精钢短剑", 7)
+    if build == "dual":
+        return [sword, ("铁斧", 5) if trip == 0 else ("闪亮的短剑", 6) if trip == 1 else ("精钢短剑", 7)]
+    if build in ("sword_shield", "sword_torch", "sling_sword", "mcb_sword"):
+        return [sword]
+    return []
+
+
+def ranged_weapon(build: str, trip: int) -> Optional[Weapon]:
+    if build == "bow":
+        return Weapon("猎弓", 10, True, first_bonus=3 if trip >= 2 else 0, free_reload=trip >= 2)
+    if build == "xbow":
+        return (Weapon("猎弓", 10, True) if trip == 0
+                else Weapon("绞盘重弩", 13, True, steady=True, reload_steps=2, pierce=1, free_reload=trip >= 2))
+    if build == "sling_sword":
+        return Weapon("投石索", 6, True)
+    if build == "mcb_sword":
+        return Weapon("麦琪的轻弩", ITEMS["maggie_crossbow"]["damage"], True, steady=True)
+    return None
+
+
+BUILDS = {"dual": "双持", "sword_shield": "剑盾", "sword_torch": "剑+火把", "bow": "猎弓", "xbow": "绞盘重弩",
+          "sling_sword": "投石索配剑", "mcb_sword": "麦琪的弩配剑"}
+QUALITY = {"poor": "装备差", "normal": "正常", "fav": "好感全满"}
+
+
+def endurance_hp(depth: int) -> int:
+    """走到这一层时的血量上限：耐性熟练大约每层涨 2 次（玩家A到第 6 层是 13 次、上限 26）"""
+    return 20 + R.ENDURANCE_HP * R.skill_level(round(2.2 * (depth - 1)))
+
+
+# ============ 经济：按期望走一遍每层（不打仗，假设都活着），算每层收入；回城时买药、火把，剩下的钱升级 ============
+
+def floor_income(depth: int, size: int, torch: bool) -> int:
+    """这一层捡到的钱（一个人分到的）：怪掉的、宝箱房钱袋、空房古币。越暗掉得越多"""
+    theme = THEMES[random.choice(list(THEMES))]
+    gold = 0.0
+
+    def light() -> int:
+        return room_light(theme, torch_light=TORCH_LIT if torch else 0)
+
+    def group_gold(rank: str) -> float:
+        lo, hi = R.monster_gold(depth, rank)
+        return random.randint(lo, hi) * (1 + 0.5 * R.dark_factor(light()))
+    for _ in range(4):                                  # 四个战斗房
+        count = random.randint(1, R.max_groups(depth))
+        for i in range(count):
+            gold += group_gold("elite" if i == 0 and random.random() < R.elite_chance(depth) else "normal")
+    gold += group_gold("boss" if depth % R.BOSS_EVERY == 0 else "elite")        # 楼梯间
+    if random.random() < R.TREASURE_GUARD:
+        gold += group_gold("elite" if random.random() < R.elite_chance(depth) else "normal")
+    dark = (50 - (theme.get("light", 35) + dungeon.LIGHT_OFFSET.get(theme["treasure"].get("light", "dim"), 0))) / 50
+    gold += R.treasure_gold(depth, dark, size) / size
+    if random.random() < STASH_CHANCE:
+        gold += R.stash_gold(depth, size) / size
+    return round(gold)
+
+
+@dataclass
+class Kit:
+    """回城时的状态：升级到几级、带几瓶药"""
+    weapon_plus: list[int]
+    armor_plus: list[int]
+    potions: int
+    gold_left: int
+    spent_upgrade: int
+
+
+def upgrade_run(gold: int, weapons: list[int], armor: list[int], w_plus: list[int], a_plus: list[int],
+                discount: float, oil: int) -> tuple[int, int]:
+    """把钱一半花在武器、一半花在防具上升级，按引擎的费用和失败率掷骰（失败退一级、钱照收）。
+    每样按"最便宜的一次"先升；失败率超过 60% 的不再碰。返回 (剩下的钱, 花掉的钱)"""
+    spent = 0
+    for pool, base, plus in (("w", weapons, w_plus), ("a", armor, a_plus)):
+        budget = gold // 2 if pool == "w" else gold - spent
+        while True:
+            opts = []
+            for k, b in enumerate(base):
+                lvl = plus[k] + 1
+                if lvl > R.UPGRADE_MAX:
+                    continue
+                cost, risk = R.upgrade_cost("damage" if pool == "w" else "defense", b + plus[k], lvl)
+                if risk > 0.6:
+                    continue
+                opts.append((round(cost * discount), risk, k))
+            if not opts:
+                break
+            cost, risk, k = min(opts)
+            if oil > 0:                  # 淬火油：必成、不收钱，先用在最贵的武器上
+                oil -= 1
+                plus[k] += 1
+                continue
+            if cost > budget:
+                break
+            budget -= cost
+            spent += cost
+            if random.random() < risk:
+                plus[k] = max(0, plus[k] - 1)
+            else:
+                plus[k] += 1
+    return gold - spent, spent
+
+
+def economy(quality: str, build: str, trips: int = 4, size: int = 1) -> list[Kit]:
+    """每一趟出发时的装备等级和药（差装备不升级，只带能买得起的药）"""
+    kits, gold = [], 0
+    w_plus = [0] * len(upgradable_weapons(build, 0, quality))
+    a_plus = [0] * 8
+    oil = 1 if quality == "fav" else 0
+    discount = R.UPGRADE_DISCOUNT if quality == "fav" else 1.0
+    potion_price = ITEMS[POTION]["props"]["price"]
+    for trip in range(trips):
+        want = {"poor": 2, "normal": 4, "fav": 4}[quality]
+        potions = min(want, gold // potion_price)
+        gold -= potions * potion_price
+        torches = 3 if build == "sword_torch" else 0
+        gold -= min(gold, torches * TORCH_PRICE)
+        spent = 0
+        if quality != "poor":
+            weapons = upgradable_weapons(build, trip, quality)
+            if len(w_plus) != len(weapons):
+                w_plus = [0] * len(weapons)
+            armor = [d for _, d in ARMOR[quality][trip]] + ([SHIELD[trip][1]] if build == "sword_shield" else [])
+            a_plus = (a_plus + [0] * len(armor))[:len(armor)]
+            gold, spent = upgrade_run(gold, weapons, armor, w_plus, a_plus, discount, oil)
+            oil = 0
+        kits.append(Kit(list(w_plus), list(a_plus), potions, gold, spent))
+        for depth in range(trip * TRIP + 1, trip * TRIP + TRIP + 1):
+            gold += floor_income(depth, size, build == "sword_torch")
+    return kits
+
+
+def upgradable_weapons(build: str, trip: int, quality: str) -> list[int]:
+    """升级的钱花在哪几件武器上（伤害基础值）：远程打法升远程武器，双持两把都升，别的升主手"""
+    r = ranged_weapon(build, trip)
+    if build in ("bow", "xbow"):
+        return [r.damage]
+    ws = melee_weapons(build, trip)
+    if quality == "fav" and ws:
+        ws = [("无铭", blade_damage(trip * TRIP))] + ws[1:]
+    return [d for _, d in ws][:2 if build == "dual" else 1]
+
+
+def blade_damage(deepest: int) -> int:
+    """莉娜的专属剑无铭：伤害 5 + 最深层数/3（最多 12），dungeon.arrived"""
+    return min(12, 5 + deepest // 3)
+
+
+# ============ 战斗 ============
+
+def room_light(theme: dict, torch_light: int = 0) -> int:
+    """房间的光亮：主题的底子 + 房间本身亮暗 + 点着的火盆（每个 +20）+ 火把"""
+    text = random.choice(theme["rooms"])
+    level = theme.get("light", 35) + dungeon.LIGHT_OFFSET.get(text.get("light", "dim"), 0)
+    feats = random.sample(theme["features"], random.randint(1, 2))
+    level += dungeon.LAMP_LIGHT * sum(1 for f in feats if f.get("lamp"))
+    return max(0, min(100, level + torch_light))
+
+
+@dataclass
+class Mon:
+    name: str
+    hp: int
+    max_hp: int
+    atk: int
+    df: int
+    depth: int
+    props: dict
+    rank: str
+    attacks: int = 1
+    status: Optional[dict] = None       # {"escape": n, "attempts": n}
+    backs: int = 0
+    heals: int = 0
+
+
+@dataclass
+class Hero:
+    max_hp: int
+    hp: int
+    atk: int
+    defense: int
+    melee: list[tuple[str, int]]        # (名字, 伤害)，已含升级
+    ranged: Optional[Weapon]
+    guard_ranged: int = 0               # 塔盾：远程伤害 −2
+    torch_light: int = 0               # 手上点着的火把给的光（点燃 35、弱光 20）
+    potions: int = 0
+    herbs: int = 0
+    perks: set = field(default_factory=set)
+    effects: dict = field(default_factory=dict)     # kind -> {"value", "left", "hp"}
+    status: Optional[dict] = None
+    loaded: bool = True
+    wound: int = 0
+    reloaded_free: bool = False
+    struck: bool = False
+    down: bool = False
+    # 统计
+    taken: int = 0
+    drank: int = 0
+    # 回礼每层 / 每趟一次的
+    floor_used: set = field(default_factory=set)
+    trip_used: set = field(default_factory=set)
+    cheer: bool = False
+
+
+def power(h: Hero, shooter: Optional[Weapon]) -> int:
+    base = h.atk + (shooter.damage if shooter else sum(d if k == 0 else int(d * R.OFFHAND_SHARE)
+                                                         for k, (_, d) in enumerate(h.melee)))
+    return round(base * (1 + R.CHEER_ATTACK / 100 if h.cheer else 1))
+
+
+def hero_def(h: Hero) -> int:
+    c = h.effects.get("corrode")
+    return max(0, h.defense - (c["value"] if c else 0))
+
+
+def spawn(depth: int, kind: str, rank: str, theme_key: str, size: int, groups: int, boss_room: bool) -> list[Mon]:
+    """一群怪（dungeon._spawn_group / _spawn_boss）"""
+    m = THEMES[theme_key]["boss"] if rank == "boss" else MONSTERS[kind]
+    hp, atk, df = R.monster_stats(depth, m, rank)
+    props = {k: m[k] for k in ("animal", "light_averse", "undead", "keen", "ranged", "healer", "on_hit", "guard_allies")
+             if m.get(k)}
+    name = m["name"] if rank != "elite" else f"凶悍的{m['name']}"
+    if boss_room:
+        mult = 1 + R.BOSS_PARTY_HP * (size - 1)
+        return [Mon(name, max(2, round(hp * mult)), max(2, round(hp * mult)), atk, df, depth, props, rank, attacks=size)]
+    copies = R.party_copies(size, groups)
+    mult = size / copies
+    return [Mon(name, max(2, round(hp * mult)), max(2, round(hp * mult)), atk, df, depth, props, rank,
+                attacks=max(1, round(size / copies))) for _ in range(copies)]
+
+
+def pick_target(mon: Mon, heroes: list[Hero], hits: dict) -> Hero:
+    """engine._pick_target：野兽扑血最少的；怕光的躲开拿火把的；远程的先射拿火把的；别的先打上一轮打它的人"""
+    live = [h for h in heroes if not h.down]
+    if mon.props.get("animal"):
+        return min(live, key=lambda h: (h.hp / h.max_hp, random.random()))
+    cands = live
+    if mon.props.get("light_averse") and (dark := [h for h in live if not h.torch_light]):
+        cands = dark
+    elif mon.props.get("ranged") and (lit := [h for h in live if h.torch_light]):
+        cands = lit
+    if (h := hits.get(id(mon))) is not None and h in cands:
+        return h
+    return random.choice(cands)
+
+
+class Fight:
+    def __init__(self, heroes: list[Hero], mons: list[Mon], light: int, cover: bool, depth: int):
+        self.heroes, self.mons, self.base_light, self.cover, self.depth = heroes, mons, light, cover, depth
+        self.dist = {(id(h), id(m)): 2 for h in heroes for m in mons}      # START_DISTANCE
+        self.hits: dict = {}
+        self.rounds = 0
+        for h in heroes:
+            h.struck, h.reloaded_free = False, False
+
+    def light(self) -> int:
+        return min(100, self.base_light + max([h.torch_light for h in self.heroes if not h.down] or [0]))
+
+    def alive(self) -> list[Mon]:
+        return [m for m in self.mons if m.hp > 0]
+
+    # ---- 玩家 ----
+    def hurt_hero(self, h: Hero, dmg: int) -> None:
+        if dmg >= h.hp and "bookmark" in h.perks and "bookmark" not in h.floor_used:
+            h.floor_used.add("bookmark")        # 守护书签：每层挡一次致命
+            return
+        h.hp -= dmg
+        h.taken += dmg
+        if h.hp <= 0:
+            h.hp, h.down = 0, True
+
+    def drink(self, h: Hero) -> bool:
+        if h.potions:
+            h.potions -= 1
+            h.drank += 1
+            h.hp = min(h.max_hp, h.hp + R.heal_amount(ITEMS[POTION]["heal"], h.max_hp))
+            return True
+        if "flask" in h.perks and "flask" not in h.trip_used:
+            h.trip_used.add("flask")            # 麦琪的私酿：回满，这一层攻击 +25%
+            h.hp, h.cheer = h.max_hp, True
+            return True
+        if h.herbs:
+            h.herbs -= 1
+            h.hp = min(h.max_hp, h.hp + R.heal_amount(HERB_HEAL, h.max_hp))
+            return True
+        return False
+
+    def tick_action(self, h: Hero) -> None:
+        """流血：每个动作前掉血"""
+        b = h.effects.get("bleed")
+        if b:
+            if b["left"] <= 0:
+                del h.effects["bleed"]
+            else:
+                self.hurt_hero(h, b["value"])
+                b["left"] -= 1
+
+    def tick_turn(self, h: Hero) -> None:
+        """中毒、看不清、腐蚀：每回合"""
+        for kind in ("poison", "blind", "corrode"):
+            e = h.effects.get(kind)
+            if not e:
+                continue
+            if e["left"] <= 0:
+                if e.get("hp"):
+                    h.max_hp += e["hp"]
+                del h.effects[kind]
+                continue
+            if kind == "poison" and not h.down:
+                self.hurt_hero(h, e["value"])
+            e["left"] -= 1
+
+    def target(self, h: Hero) -> Mon:
+        """先打治疗的，再打远程的，再打血少的"""
+        live = self.alive()
+        return min(live, key=lambda m: (not m.props.get("healer"), not m.props.get("ranged"), m.hp))
+
+    def hero_turn(self, h: Hero) -> None:
+        self.tick_turn(h)
+        if h.down:
+            return
+        if h.status:
+            st = h.status
+            if st["kind"] == "incapacitated":
+                if random.random() < R.escape_chance(st["escape"], st["attempts"]):
+                    h.status = None
+                else:
+                    st["attempts"] += 1
+                return
+        acts = R.ENEMY_EVERY
+        while acts > 0 and not h.down and self.alive():
+            self.tick_action(h)
+            if h.down:
+                return
+            acts -= 1
+            if h.status:                         # 绊倒：爬起来；缠住：挣脱
+                st = h.status
+                if st["kind"] == "prone" or random.random() < R.escape_chance(st["escape"], st["attempts"]):
+                    h.status = None
+                else:
+                    st["attempts"] += 1
+                continue
+            if h.hp < h.max_hp * DRINK_BELOW and self.drink(h):
+                continue
+            live = self.alive()
+            # 回礼：诺艾尔的书（每层一次，全场定住）、一口倒（每趟一次，放倒一只）
+            if "tome" in h.perks and "tome" not in h.floor_used and (len(live) >= 2 or live[0].rank == "boss"):
+                h.floor_used.add("tome")
+                for m in live:
+                    m.status = {"escape": 3, "attempts": 0}
+                continue
+            if "drug" in h.perks and "drug" not in h.trip_used and live[0].rank in ("boss", "elite") \
+                    and (big := max(live, key=lambda m: m.max_hp)).status is None:
+                h.trip_used.add("drug")
+                big.status = {"escape": 2, "attempts": 0}
+                continue
+            m = self.target(h)
+            key = (id(h), id(m))
+            d = self.dist[key]
+            # 只带远程武器的：近战怪贴上来先退开两步再射（真人会这么打；远程怪贴不贴无所谓，它们自己会跳开）
+            if not h.melee and h.ranged and not h.ranged.steady and d == 0 and not m.props.get("ranged"):
+                self.dist[key] = 2
+                continue
+            shooter = h.ranged if h.ranged and (d > 0 or not h.melee or h.ranged.steady) else None
+            if shooter and not h.loaded:
+                if not h.melee or d > 0:
+                    h.wound += 1                   # 装填（绞盘重弩要摇两次）
+                    if h.wound >= shooter.reload_steps:
+                        h.loaded, h.wound = True, 0
+                    continue
+                shooter = None
+            if not shooter and d > 0:
+                self.dist[key] = max(0, d - 2)     # 冲上去（MAX_STEP）
+                continue
+            self.attack(h, m, shooter, d)
+
+    def attack(self, h: Hero, m: Mon, shooter: Optional[Weapon], d: int) -> None:
+        if shooter:
+            base = R.STEADY_HIT if shooter.steady else R.RANGED_HIT.get(d, R.RANGED_HIT[max(R.RANGED_HIT)])
+            base -= R.RANGED_COVER if self.cover else 0
+            if not shooter.free_reload or h.reloaded_free:
+                h.loaded = False
+            else:
+                h.reloaded_free = True
+        else:
+            base = R.MELEE_HIT.get(d, 0)
+        chance = R.light_hit(self.light(), base) * (R.BLIND_HIT if "blind" in h.effects else 1)
+        chance -= R.POISON_HIT if "poison" in h.effects else 0
+        first = not h.struck
+        h.struck = True
+        if random.random() >= max(0.0, chance):
+            return
+        bonus = shooter.first_bonus if shooter and first else 0
+        pierce = shooter.pierce if shooter else 0
+        dmg = R.hurt_npc_by(power(h, shooter) + bonus, m.df - pierce)
+        if "bleed" in h.effects:
+            dmg = max(1, math.floor(dmg * R.BLEED_DAMAGE))
+        m.hp -= dmg
+        self.hits[id(m)] = h
+        # 被定住、迷倒的挨打时掷一次挣脱（engine._npc_counter）
+        if m.hp > 0 and m.status and not m.status.get("freed"):
+            if random.random() < R.escape_chance(m.status["escape"], m.status["attempts"]):
+                m.status = {"freed": True}
+            else:
+                m.status["attempts"] += 1
+
+    # ---- 怪 ----
+    def enemies_turn(self) -> None:
+        for m in self.alive():
+            if m.status:
+                if m.status.get("freed") or m.rank == "boss":      # 刚挣开的这轮来不及还手；头目只困一轮
+                    m.status = None
+                continue
+            for _ in range(m.attacks):
+                if all(h.down for h in self.heroes):
+                    return
+                self.enemy_act(m, pick_target(m, self.heroes, self.hits))
+
+    def enemy_act(self, m: Mon, h: Hero) -> None:
+        props = m.props
+        if (share := props.get("healer")) and random.random() < R.HEALER_CHANCE and m.heals < R.HEALER_MAX:
+            hurt = [n for n in self.alive() if n is not m and n.hp < n.max_hp * R.HEALER_BELOW]
+            if hurt:
+                n = min(hurt, key=lambda n: n.hp / n.max_hp)
+                n.hp = min(n.max_hp, n.hp + max(1, math.ceil(R.monster_stats(m.depth, {})[0] * share)))
+                m.heals += 1
+                return
+        key = (id(h), id(m))
+        d = self.dist[key]
+        pinned = self.hits.get(id(m)) is h
+        if props.get("ranged"):
+            if d == 0 and not pinned and m.backs < R.RANGED_BACKS:
+                m.backs += 1
+                self.dist[key] = 1
+                return
+            chance = R.ENEMY_RANGED_HIT.get(d, R.ENEMY_RANGED_HIT[max(R.ENEMY_RANGED_HIT)])
+            chance -= R.RANGED_COVER if self.cover else 0
+            if not h.torch_light:
+                chance = R.light_hit(self.light(), chance)
+            self.strike(m, h, chance, ranged=True)
+            return
+        if d > 0:
+            d = self.dist[key] = d - 1
+        if d in R.MELEE_HIT:
+            self.strike(m, h, R.MELEE_HIT[d], ranged=False)
+
+    def strike(self, m: Mon, h: Hero, chance: float, ranged: bool) -> None:
+        if random.random() >= chance:
+            return
+        light = self.light()
+        atk = m.atk + R.dark_attack(light) - (1 if m.props.get("light_averse") and light >= R.LIGHT_BRIGHT else 0)
+        dmg = R.hurt_player_by(atk, hero_def(h), m.depth, guard=h.guard_ranged if ranged else 0)
+        self.hurt_hero(h, dmg)
+        if h.down or not (hit := m.props.get("on_hit")) or random.random() >= hit.get("chance", 0.25):
+            return
+        kind = hit["kind"]
+        if kind in ("restrained", "prone", "stun"):
+            if not h.status:
+                h.status = {"kind": "incapacitated" if kind == "stun" else kind, "escape": hit.get("escape", 2), "attempts": 0}
+            return
+        if kind in h.effects:
+            h.effects[kind]["left"] = R.EFFECT_TURNS[kind]
+            return
+        e = {"value": R.effect_value(kind, m.depth), "left": R.EFFECT_TURNS[kind]}
+        if kind == "corrode":
+            e["hp"] = min(h.max_hp - 1, max(1, round(h.max_hp * R.CORRODE_HP)))
+            h.max_hp -= e["hp"]
+            h.hp = min(h.hp, h.max_hp)
+        h.effects[kind] = e
+
+    def run(self) -> str:
+        """打到一边倒下；返回 "win" / "wipe" / "stall" """
+        while self.rounds < ROUND_CAP:
+            self.rounds += 1
+            for h in self.heroes:
+                if self.alive():
+                    self.hero_turn(h)
+            if not self.alive():
+                return "win"
+            self.enemies_turn()
+            if all(h.down for h in self.heroes):
+                return "wipe"
+        return "stall"
+
+
+# ============ 一层、一趟 ============
+
+@dataclass
+class FloorStat:
+    reached: int = 0
+    died: int = 0                       # 人次（两人队算两个人）
+    people: int = 0
+    taken: float = 0.0                  # 掉的血 / 血量上限
+    potions: float = 0.0
+    fights: int = 0
+    rounds: int = 0
+    stalls: int = 0
+
+
+def make_heroes(build: str, quality: str, trip: int, kit: Kit, size: int, depth: int) -> list[Hero]:
+    heroes = []
+    for _ in range(size):
+        ws = melee_weapons(build, trip)
+        if quality == "fav" and ws:
+            ws = [("无铭", blade_damage(trip * TRIP))] + ws[1:]
+        r = ranged_weapon(build, trip)
+        wp = kit.weapon_plus
+        if build in ("bow", "xbow"):
+            r.damage += wp[0] if wp else 0
+        else:
+            ws = [(n, d + (wp[k] if k < len(wp) else 0)) for k, (n, d) in enumerate(ws)]
+        armor = [d for _, d in ARMOR[quality][trip]]
+        guard = 0
+        if build == "sword_shield":
+            armor.append(SHIELD[trip][1])
+            guard = SHIELD[trip][2]
+        defense = sum(d + (kit.armor_plus[k] if k < len(kit.armor_plus) else 0) for k, d in enumerate(armor))
+        hp = endurance_hp(depth)
+        perks = {"bookmark", "tome", "flask", "drug"} if quality == "fav" else set()
+        heroes.append(Hero(hp, hp, 2, defense, ws, r, guard_ranged=guard,
+                           potions=kit.potions, perks=perks))
+    return heroes
+
+
+def floor_rooms(depth: int, theme_key: str) -> list[tuple[str, list[tuple[str, str]], bool]]:
+    """这一层要打的仗：[(房间种类, [(怪, 等级)], 有没有掩体)]，楼梯间最后"""
+    theme = THEMES[theme_key]
+    kinds = dungeon._kinds(theme, depth)
+    rooms = []
+    for _ in range(4):
+        count = random.randint(1, R.max_groups(depth))
+        groups = [(random.choice(kinds), "elite" if i == 0 and random.random() < R.elite_chance(depth) else "normal")
+                  for i in range(count)]
+        rooms.append(("combat", groups, bool(random.choice(theme["rooms"]).get("cover"))))
+    if random.random() < R.TREASURE_GUARD:
+        rooms.append(("treasure", [(random.choice(kinds), "elite" if random.random() < R.elite_chance(depth) else "normal")],
+                      False))
+    random.shuffle(rooms)
+    boss = depth % R.BOSS_EVERY == 0
+    rooms.append(("stairs", [("boss" if boss else random.choice(kinds), "boss" if boss else "elite")], False))
+    return rooms
+
+
+def run_trip(build: str, quality: str, trip: int, kit: Kit, size: int, stats: dict[int, FloorStat],
+             room_log: Optional[dict] = None) -> None:
+    depth0 = trip * TRIP + 1
+    heroes = make_heroes(build, quality, trip, kit, size, depth0)
+    recent: list[str] = []
+    torch_age = 0
+    for depth in range(depth0, depth0 + TRIP):
+        live = [h for h in heroes if not h.down]
+        if not live:
+            return
+        theme_key = random.choice([k for k in THEMES if k not in recent[-dungeon.THEME_GAP:]] or list(THEMES))
+        recent.append(theme_key)
+        st = stats.setdefault(depth, FloorStat())
+        st.reached += 1
+        st.people += len(live)
+        for h in live:
+            new_max = endurance_hp(depth)        # 耐性涨了，上限跟着涨
+            h.hp += new_max - h.max_hp if not h.effects.get("corrode") else 0
+            h.max_hp = new_max if not h.effects.get("corrode") else h.max_hp
+            h.floor_used, h.cheer, h.taken, h.drank = set(), False, 0, 0
+            h.torch_light = (TORCH_LIT if torch_age == 0 else TORCH_DIM) if build == "sword_torch" else 0
+        torch_age = 1 - torch_age               # 一支火把两层（点燃、弱光），第三层换新的
+        camped = False
+        for h in live:
+            h.herbs += 1                         # 宝箱房的药草
+            if random.random() < FORAGE_CHANCE:
+                h.herbs += 1                     # 空房搜到的
+        for kind, groups, cover in floor_rooms(depth, theme_key):
+            if all(h.down for h in heroes):
+                break
+            mons = []
+            for monster, rank in groups:
+                mons += spawn(depth, monster, rank, theme_key, size, len(groups), kind == "stairs")
+            light = room_light(THEMES[theme_key])
+            fight = Fight([h for h in heroes if not h.down], mons, light, cover, depth)
+            hp_before = {id(h): h.hp for h in fight.heroes}
+            result = fight.run()
+            st.fights += 1
+            st.rounds += fight.rounds
+            st.stalls += result == "stall"
+            if room_log is not None:
+                key = "boss" if groups[0][1] == "boss" else "ranged" if any(MONSTERS.get(g, {}).get("ranged") for g, _ in groups) \
+                    else "healer" if any(MONSTERS.get(g, {}).get("healer") for g, _ in groups) else "melee"
+                lost = sum(hp_before[id(h)] - h.hp for h in fight.heroes) / sum(h.max_hp for h in fight.heroes)
+                room_log.setdefault((depth, key), []).append((lost, result == "wipe"))
+            # 打完：倒下的队友急救（医药 0 级对难度 1），醒过来 1 点血
+            standing = [h for h in fight.heroes if not h.down]
+            if standing:
+                for h in fight.heroes:
+                    if h.down and random.random() < R.skill_chance(0, 1):
+                        h.down, h.hp = False, 1
+                        h.status, h.effects = None, {}
+            for h in heroes:
+                h.status = None
+                h.loaded, h.wound = True, 0        # 打完顺手装好
+                if not h.down and h.hp < h.max_hp * 0.3:
+                    fight.drink(h)
+            if not camped and any(not h.down and h.hp < h.max_hp * CAMP_BELOW for h in heroes):
+                camped = True
+                ok = random.random() < R.skill_chance(SURVIVAL_LEVEL, 1 + depth // 3)
+                share = (R.CAMP_BASE + (R.CAMP_SURVIVAL if ok else 0)) * R.CAMP_EMPTY
+                for h in heroes:
+                    if not h.down:
+                        for e in list(h.effects.values()):
+                            h.max_hp += e.get("hp", 0)
+                        h.effects = {}
+                        h.hp = min(h.max_hp, h.hp + round(h.max_hp * share))
+        for h in live:
+            st.taken += h.taken / h.max_hp
+            st.potions += h.drank
+            if h.down:
+                st.died += 1
+
+
+# ============ 报表 ============
+
+def pct(x: float) -> str:
+    return f"{x * 100:.0f}%"
+
+
+def fight_test(build: str, quality: str, trip: int, depth: int, groups: list[tuple[str, str]], theme: str,
+               size: int = 1, n: int = 400, light: Optional[int] = None) -> tuple[float, float, float]:
+    """单独一场：(平均掉血占上限, 团灭率, 平均轮数)。装备、升级按这一趟的经济结果，满血进场，不喝药"""
+    lost = wiped = rounds = 0.0
+    eco = [economy(quality, build) for _ in range(10)]
+    boss = groups[0][1] == "boss"
+    for i in range(n):
+        heroes = make_heroes(build, quality, trip, eco[i % len(eco)][trip], size, depth)
+        for h in heroes:
+            h.potions = 0
+        mons = []
+        for monster, rank in groups:
+            mons += spawn(depth, monster, rank, theme, size, len(groups), boss)
+        f = Fight(heroes, mons, room_light(THEMES[theme]) if light is None else light, False, depth)
+        before = sum(h.hp for h in heroes)
+        r = f.run()
+        lost += (before - sum(h.hp for h in heroes)) / sum(h.max_hp for h in heroes)
+        wiped += r == "wipe"
+        rounds += f.rounds
+    return lost / n, wiped / n, rounds / n
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--trips", type=int, default=300, help="每种组合每一趟跑几次")
+    ap.add_argument("--seed", type=int, default=1)
+    ap.add_argument("--out", default="balance/result.md")
+    args = ap.parse_args()
+    out = []
+
+    # ---- 经济 ----
+    random.seed(args.seed)
+    incomes = {d: sum(floor_income(d, 1, False) for _ in range(300)) / 300 for d in range(1, 21)}
+    out.append("## 1. 经济（剑盾，单人，假设一路活着；一半钱升武器、一半升防具，失败率超过 60% 就不升了）\n")
+    out.append("每层收入（金币）：" + "、".join(f"{d} 层 {incomes[d]:.0f}" for d in range(1, 21)) + "\n")
+    out.append("| 出发时 | 攒下的钱 | 带血药 | 花在升级 | 武器 | 防具（每件） |")
+    out.append("|---|---|---|---|---|---|")
+    for q in ("normal", "fav"):
+        eco = [economy(q, "sword_shield") for _ in range(100)]
+        for t in range(4):
+            def avg(f, t=t, eco=eco):
+                return sum(f(e[t]) for e in eco) / len(eco)
+            arm = [avg(lambda k_, k=k: k_.armor_plus[k]) for k in range(len(eco[0][t].armor_plus))]
+            out.append(f"| {QUALITY[q]}·第 {t * TRIP + 1} 层 | {avg(lambda k: k.gold_left + k.spent_upgrade + k.potions * 24):.0f} | "
+                       f"{avg(lambda k: k.potions):.1f} | {avg(lambda k: k.spent_upgrade):.0f} | "
+                       f"+{avg(lambda k: k.weapon_plus[0]):.1f} | {' '.join(f'+{x:.1f}' for x in arm)} |")
+    out.append("")
+
+    # ---- 一趟一趟走 ----
+    combos = []
+    for q in ("poor", "normal", "fav"):
+        for b in ("dual", "sword_shield", "sword_torch", "bow", "xbow", "sling_sword") + (("mcb_sword",) if q == "fav" else ()):
+            for size in (1, 2):
+                combos.append((q, b, size))
+    table, room_log = {}, {}
+    for q, b, size in combos:
+        random.seed(f"{args.seed}-{q}-{b}-{size}")
+        stats: dict[int, FloorStat] = {}
+        eco = [economy(q, b) for _ in range(30)]
+        for t in range(4):
+            for n in range(args.trips):
+                run_trip(b, q, t, eco[n % len(eco)][t], size, stats,
+                         room_log if (q, b, size) == ("normal", "sword_shield", 1) else None)
+        table[(q, b, size)] = stats
+
+    def seg(stats: dict, t: int) -> float:
+        surv = 1.0
+        for d in range(t * TRIP + 1, t * TRIP + TRIP + 1):
+            s = stats.get(d)
+            if s and s.people:
+                surv *= 1 - s.died / s.people
+        return surv
+
+    out.append("## 2. 走完一段（两块传送石之间）的存活率\n")
+    out.append("目标（正常装备）：1–5 层约 99%、6–10 层约 85%、11–15 层约 65%、16–20 层约 50%（16 层以后只当预警）\n")
+    out.append("| 装备 | 打法 | 人数 | 1–5 | 6–10 | 11–15 | 16–20 |")
+    out.append("|---|---|---|---|---|---|---|")
+    for (q, b, size), stats in table.items():
+        out.append(f"| {QUALITY[q]} | {BUILDS[b]} | {size} | " + " | ".join(pct(seg(stats, t)) for t in range(4)) + " |")
+    out.append("")
+
+    def per_floor(title: str, fn, qs=("normal",)) -> None:
+        out.append(title + "\n")
+        out.append("| 装备 | 打法 | 人数 | " + " | ".join(str(d) for d in range(1, 21)) + " |")
+        out.append("|---|---|---|" + "---|" * 20)
+        for (q, b, size), stats in table.items():
+            if q in qs:
+                out.append(f"| {QUALITY[q]} | {BUILDS[b]} | {size} | "
+                           + " | ".join(fn(stats[d]) if d in stats and stats[d].people else "-" for d in range(1, 21)) + " |")
+        out.append("")
+    per_floor("## 3. 每层死亡率（目标：1–5 层 ≤1%，6–10 ≤3%，11–15 ≤8%，16–20 ≤13%；头目层可以再高 5 个百分点）",
+              lambda s: pct(s.died / s.people), ("poor", "normal", "fav"))
+    per_floor("## 4. 每层掉血（这一层挨的伤害合计 ÷ 血量上限；目标 1–5 层 30–40%，6–10 约 50%，11–15 约 60%）",
+              lambda s: pct(s.taken / s.people))
+    per_floor("## 5. 每层用掉几瓶血药", lambda s: f"{s.potions / s.people:.1f}")
+    per_floor("## 6. 每场平均几轮", lambda s: f"{s.rounds / max(1, s.fights):.1f}")
+
+    out.append("## 7. 各种房间（正常装备、剑盾、单人，跟着一趟走下来的真实状态进场）：一场掉的血 / 团灭率\n")
+    out.append("| 层 | 普通近战 | 有远程 | 有治疗 | 头目 |")
+    out.append("|---|---|---|---|---|")
+    for d in range(1, 21):
+        cells = []
+        for k in ("melee", "ranged", "healer", "boss"):
+            v = room_log.get((d, k))
+            cells.append(f"{pct(sum(x for x, _ in v) / len(v))} / {pct(sum(w for _, w in v) / len(v))}" if v else "-")
+        out.append(f"| {d} | " + " | ".join(cells) + " |")
+    out.append("")
+
+    # ---- 担心会冒尖的几处：满血单独打一场，不喝药 ----
+    random.seed(args.seed)
+    out.append("## 8. 担心冒尖的几处（满血单独打一场、不喝药）：掉血 / 团灭率 / 轮数\n")
+    out.append("| 场面 | 层 | 正常装备 | 好感全满 |")
+    out.append("|---|---|---|---|")
+    for depth, theme in ((5, "mine"), (10, "castle"), (15, "graveyard")):
+        t = (depth - 1) // TRIP
+        for size in (1, 2):
+            cells = [" / ".join((pct(a), pct(w), f"{r:.1f}")) for a, w, r in
+                     (fight_test("sword_shield", q, t, depth, [("boss", "boss")], theme, size=size) for q in ("normal", "fav"))]
+            out.append(f"| 头目（剑盾，{size} 人） | {depth} | " + " | ".join(cells) + " |")
+    for depth in (8, 12):
+        t = (depth - 1) // TRIP
+        base = fight_test("sword_shield", "normal", t, depth, [("animated_tome", "normal"), ("stone_gargoyle", "normal")], "library")
+        combo = fight_test("sword_shield", "normal", t, depth, [("ink_scribe", "normal"), ("ink_shade", "normal")], "library")
+        out.append(f"| 图书馆：书记 + 墨影（对照：活化书 + 石像鬼） | {depth} | "
+                   f"{pct(combo[0])} / {pct(combo[1])} / {combo[2]:.1f}（对照 {pct(base[0])} / {pct(base[1])}） | - |")
+        nun = fight_test("sword_shield", "normal", t, depth, [("grave_nun", "normal"), ("ghoul", "elite")], "graveyard")
+        alone = fight_test("sword_shield", "normal", t, depth, [("ghoul", "elite")], "graveyard")
+        out.append(f"| 招魂修女 + 精英食尸鬼（对照：精英食尸鬼单独） | {depth} | "
+                   f"{pct(nun[0])} / {pct(nun[1])} / {nun[2]:.1f}（对照 {pct(alone[0])} / {pct(alone[1])}） | - |")
+    for depth in (5, 10, 15):
+        t = (depth - 1) // TRIP
+        mcb = fight_test("mcb_sword", "fav", t, depth, [("kobold", "elite")], "mine")
+        sw = fight_test("sword_shield", "fav", t, depth, [("kobold", "elite")], "mine")
+        xb = fight_test("xbow", "normal", t, depth, [("kobold", "elite")], "mine")
+        out.append(f"| 精英狗头人：麦琪的弩配剑、剑盾（都是好感全满）；绞盘重弩（正常） | {depth} | "
+                   f"重弩 {pct(xb[0])}、{xb[2]:.1f} 轮 | 弩剑 {pct(mcb[0])}、{mcb[2]:.1f} 轮；剑盾 {pct(sw[0])}、{sw[2]:.1f} 轮 |")
+    out.append("")
+
+    # ---- 校准：装备差、剑盾单人的前 5 层，对照玩家A、玩家B 的真实记录 ----
+    s = table[("poor", "sword_shield", 1)]
+    out.append("## 9. 校准：模拟（装备差、剑盾、单人）对照真人（balance/calibrate.py）\n")
+    out.append("| 层 | 模拟掉血 | 模拟死亡率 | 玩家A | 玩家B |")
+    out.append("|---|---|---|---|---|")
+    real = {1: ("35%", "105%"), 2: ("58%", "0%（只走了几步）"), 3: ("12%", "-"), 4: ("146%（倒下一次）", "-"), 5: ("69%", "-")}
+    for d in range(1, 6):
+        out.append(f"| {d} | {pct(s[d].taken / s[d].people)} | {pct(s[d].died / s[d].people)} | {real[d][0]} | {real[d][1]} |")
+    text = "\n".join(out)
+    os.makedirs(os.path.dirname(args.out) or ".", exist_ok=True)
+    open(args.out, "w", encoding="utf-8").write(text + "\n")
+    print(text)
+
+
+if __name__ == "__main__":
+    main()
