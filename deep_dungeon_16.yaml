@@ -202,11 +202,11 @@ themes:
         while_alive: {def: 60}
         regrow_on_phase: true   # 转阶段时重新长满
       skills:
-        - {when: every, value: 3, do: telegraph, label: 她身上的晶簇一齐亮起，光越聚越强（下一次出手晃瞎所有睁着眼的人）,
+        - {when: every, value: 3, do: telegraph, label: 身上的晶簇一齐亮起，光越聚越强（下一次出手晃瞎所有睁着眼的人，闭上眼睛能躲过）,
            then: {do: combo, target: all, effects: [{kind: blind}], unless: eyes_closed}}
-        - {when: every, value: 4, do: telegraph, label: 洞顶的晶锥开始颤抖（下一次出手全场挨砸，躲到晶柱后面能少挨一半）,
+        - {when: every, value: 4, do: telegraph, label: 一声长鸣，洞顶的晶锥开始颤抖（下一次出手全场挨砸，躲到晶柱后面能少挨一半）,
            then: {do: strike, mult: 1.5, target: all, cover_halves: true}}
-        - {when: hp_below, value: 0.5, do: phase, label: 她蜷得更紧了，身上的晶簇一簇簇重新长了出来,
+        - {when: hp_below, value: 0.5, do: phase, label: 蜷得更紧了，身上的晶簇一簇簇重新长了出来,
            env: {light: 20}, then: {do: summon, kind: crystal_spider, count: 1}}
 
   # ======================= 静默神殿 =======================

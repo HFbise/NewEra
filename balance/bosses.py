@@ -19,6 +19,7 @@ def main() -> None:
     ap.add_argument("--build", default="sword_shield")
     ap.add_argument("--focus-boss", action="store_true", help="召唤战先打头目")
     ap.add_argument("--quality", default="normal", help="normal 正常装备 / cap 上限档（照玩家A）")
+    ap.add_argument("--themes", default="", help="只测这几个主题（逗号隔开，默认全部接好了的）")
     ap.add_argument("--depths", default="5,10,15,20,25,30", help="测哪几层（深层头目 16 层起按房间怪数涨血、一轮两动）")
     args = ap.parse_args()
     sim.VARIANT["dmg"] = args.dmg
@@ -26,7 +27,10 @@ def main() -> None:
     depths = [int(d) for d in args.depths.split(",")]
     print("| 头目 | " + " | ".join(f"第 {d} 层" for d in depths) + f" |（{sim.BUILDS[args.build]}，伤害 ×{args.dmg:g}，挨的伤害 / 团灭率）")
     print("|---|" + "---|" * len(depths))
+    only = set(args.themes.split(",")) if args.themes else None
     for key, th in sim.THEMES.items():
+        if (only and key not in only) or (not only and th.get("min_depth") and key not in sim.dungeon.DEEP_READY):
+            continue
         random.seed(key)
         cells = []
         for depth in depths:

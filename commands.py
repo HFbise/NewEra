@@ -197,6 +197,8 @@ def _parse_one(view: RoomView, t: str) -> dict:
         return {"action": "camp"}
     if re.fullmatch(r"住店|投宿|开房|开间房|要间房|住一晚|睡一觉|rest", t, re.I):
         return {"action": "rest"}
+    if re.fullmatch(r"(?:赶紧|马上|立刻)?(?:闭眼|闭上眼睛?|闭紧眼睛?|捂住眼睛?|背过身去?|转过身去?|别看)", t):
+        return {"action": "close_eyes"}
     if re.fullmatch(r"站起来|爬起来|起身|起来|站起|爬起|stand( up)?", t, re.I):
         return {"action": "stand"}
     if re.fullmatch(r"挣脱|挣扎|醒来|醒过来|struggle", t, re.I):

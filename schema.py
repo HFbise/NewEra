@@ -340,6 +340,11 @@ class Dodge(BaseModel):
     description: str = ""
 
 
+class CloseEyes(BaseModel):
+    """闭上眼睛、背过身去：这一轮不怕炫光、晃眼的大招（石化这类），代价是这一轮自己也看不清"""
+    action: Literal["close_eyes"]
+
+
 class Hide(BaseModel):
     """躲起来，不让敌人发现。难度由 AI 看藏身的地方判，引擎掷骰"""
     action: Literal["hide"]
@@ -377,7 +382,7 @@ class Reject(BaseModel):
 
 PlayerAction = Annotated[
     Union[Move, Look, Take, Drop, Use, Equip, Unequip, Attack, Talk, Give, Sell, Pay, Upgrade, Say, Revive, Respawn, Stand, Rest, Camp, Teleport, LeaveParty, Kick,
-          Follow, Unfollow, Challenge, AcceptDuel, DeclineDuel, Flee, Stunt, Struggle, Maneuver, Dodge, Tame, Uncurse, Reload, Refill, Transfer, Reroll, Rename, Write, Socket, Unsocket, Refine, Donate, TakeDonated, Dismantle, Hide, Search,
+          Follow, Unfollow, Challenge, AcceptDuel, DeclineDuel, Flee, Stunt, Struggle, Maneuver, Dodge, Tame, Uncurse, Reload, Refill, Transfer, Reroll, Rename, Write, Socket, Unsocket, Refine, Donate, TakeDonated, Dismantle, CloseEyes, Hide, Search,
           Freeform, Reject],
     Field(discriminator="action"),
 ]

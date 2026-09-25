@@ -54,7 +54,7 @@ LOOT_NOT_YET: set[str] = set()         # 机制还没做的物品先不掉（第
 DEEP_DUNGEON = ("deep_dungeon_16.yaml", "deep_dungeon_21.yaml")      # 深层主题（themes / monsters / events）
 DEEP_LOOT, DEEP_ITEMS = "deep_loot.yaml", "deep_items.yaml"
 # 机制接完了的深层主题才进主题池（一个一个接，接完用模拟对一下再放进来）
-DEEP_READY = {"forge"}
+DEEP_READY = {"forge", "crystal"}
 
 
 def _yaml(name: str) -> dict:
@@ -176,12 +176,13 @@ def deep_mult(depth: int) -> float:
     return d.get("deep_mult", 1) if depth >= d.get("deep_from_floor", 999) else 1
 
 
-def gem_count(rank: str, depth: int) -> int:
-    """这只怪身上带几颗宝石：头目必带（深层两颗），别的按掉率（深层翻倍）"""
+def gem_count(rank: str, depth: int, theme: Optional[str] = None) -> int:
+    """这只怪身上带几颗宝石：头目必带（深层两颗），别的按掉率（深层翻倍，宝石主题再乘 gems.theme_mult）"""
     d = gem_rules()["drops"]
     if rank == "boss":
         return d.get("boss_deep", 1) if depth >= d.get("deep_from_floor", 999) else 1
-    return int(random.random() < d.get(rank, 0) * deep_mult(depth))
+    mult = (gem_rules().get("theme_mult") or {}).get(theme, 1)
+    return int(random.random() < d.get(rank, 0) * deep_mult(depth) * mult)
 
 
 def pick_gem(theme: Optional[str], common_share: float = 0.0) -> str:
@@ -436,7 +437,7 @@ def _template(cur: Cursor, depth: int, kind: str, rank: str, theme: str, share: 
         # 技能按层数解锁（第 5 层一招、第 10 层两招、第 15 层全套），免疫、弱点
         if skills := unlocked_skills(m.get("skills") or [], depth):
             props["skills"] = skills
-        for key in ("stances", "quench"):      # 矮人王的铸像：冷却 / 熔化轮换、熔化时泼泉水裂开
+        for key in ("stances", "quench", "nodes"):     # 铸像的冷却 / 熔化、泼泉水裂开；晶母的晶簇
             if m.get(key):
                 props[key] = m[key]
     for flag in ("animal", "light_averse", "undead", "keen", "ranged"):
@@ -447,7 +448,7 @@ def _template(cur: Cursor, depth: int, kind: str, rank: str, theme: str, share: 
     for key in ("immune", "weak", "resist_element"):   # 不吃的状态、弱点、不怕的属性（熔炉的怪不怕火）
         if m.get(key):
             props[key] = m[key]
-    for key in ("healer", "verb", "guard_allies"):   # 治疗的比例、出手的说法（"甩出一颗石子"）、盾卫护同伴的几率
+    for key in ("healer", "verb", "guard_allies", "reflect_ranged", "shield_allies"):   # 治疗、出手的说法、护同伴、折回远程、套盾
         if m.get(key):
             props[key] = m[key]
     if rank == "boss" or fx.get("keen") or stair:
@@ -517,9 +518,53 @@ def _spawn_group(cur: Cursor, room: str, depth: int, kind: str, rank: str, theme
 
 def _spawn_boss(cur: Cursor, room: str, depth: int, kind: str, rank: str, theme: str, size: int) -> None:
     """头目、楼梯间守卫：只有一只，组队时多些血、一轮多动几次（不召小怪：组队时场面已经够乱）"""
-    _spawn(cur, room, depth, kind, rank, theme, hp_mult=1 + BOSS_PARTY_HP * (size - 1), attacks=size, stair=True,
-           affix=random.choice(list(ELITE_AFFIXES)) if rank == "elite" else None)
+    npc_id = _spawn(cur, room, depth, kind, rank, theme, hp_mult=1 + BOSS_PARTY_HP * (size - 1), attacks=size, stair=True,
+                    affix=random.choice(list(ELITE_AFFIXES)) if rank == "elite" else None)
+    if rank == "boss" and data()["themes"][theme]["boss"].get("nodes"):
+        spawn_nodes(cur, room, npc_id)
     # 深层头目一轮两动（第二下 ×BOSS_EXTRA_MULT）：组队时本来就一人一动，再各多一下
+
+
+def spawn_nodes(cur: Cursor, room: str, boss_id: UUID) -> int:
+    """头目身上能单独打的东西（晶母的晶簇，boss.nodes）：补到 count 个。它们不出手，头目一倒就散（minion），
+    还有活着的时候头目防御 +while_alive.def（engine._node_guard）。返回补了几个"""
+    cur.execute("select t.id, t.max_hp, t.props from npcs n join npc_templates t on t.id = n.template_id where n.id = %s", (boss_id,))
+    boss = cur.fetchone()
+    cfg = data()["themes"][boss["props"]["dungeon"]["theme"]]["boss"]["nodes"]
+    depth = boss["props"]["dungeon"]["depth"]
+    tid = f"{boss['id']}_node"
+    cur.execute("""insert into npc_templates (id, name, description, persona, hostile, max_hp, attack, defense, props)
+                   values (%s, %s, %s, '', true, %s, 0, 0, %s)
+                   on conflict (id) do update set max_hp = excluded.max_hp, props = excluded.props""",
+                (tid, cfg.get("name", "晶簇"), cfg.get("description", "长在头目身上的一簇发光的晶体，一明一暗地跟着它呼吸。"),
+                 max(SCALE, round(boss["max_hp"] * cfg.get("hp_pct", 0.08))),
+                 Jsonb({"inert": True, "minion": True, "node": True, "on_death": {}, "host": str(boss_id),
+                        "dungeon": {"depth": depth, "rank": "normal", "theme": boss["props"]["dungeon"]["theme"]}})))
+    cur.execute("""select count(*) as n from npcs where room_id = %s and alive and template_id = %s""", (room, tid))
+    missing = max(0, cfg.get("count", 3) - cur.fetchone()["n"])
+    for _ in range(missing):
+        cur.execute("insert into npcs (template_id, room_id, hp) select id, %s, max_hp from npc_templates where id = %s", (room, tid))
+    return missing
+
+
+def spawn_mirror(cur: Cursor, room: str, player_id: UUID, name: str, hp: int, atk: int, df: int, depth: int, theme: str,
+                 rewards: list) -> str:
+    """镜厅（service: mirror_duel）：放一个照着这个人打出来的倒影，打死了掉奖励（rewards：gem 是本主题的一颗宝石，别的是物品 id）"""
+    tid = f"dg_mirror_{player_id.hex[:12]}_{depth}"
+    cur.execute("""insert into npc_templates (id, name, description, persona, hostile, max_hp, attack, defense, props)
+                   values (%s, %s, %s, %s, true, %s, %s, %s, %s)
+                   on conflict (id) do update set max_hp = excluded.max_hp, attack = excluded.attack, defense = excluded.defense""",
+                (tid, f"{name}的倒影", f"镜子里走出来的另一个{name}，一模一样，只是眼睛里没有光。",
+                 "你怎么打，它就怎么打；它知道你所有的习惯。", hp, atk, df,
+                 Jsonb({"keen": True, "on_death": {}, "dungeon": {"depth": depth, "rank": "elite", "theme": theme}})))
+    cur.execute("insert into npcs (template_id, room_id, hp) select id, %s, max_hp from npc_templates where id = %s returning id", (room, tid))
+    npc_id = cur.fetchone()["id"]
+    for r in rewards:
+        if r == "gem":
+            put_gem(cur, pick_gem(theme), depth, npc=npc_id)
+        else:
+            _put_item(cur, r, depth, npc=npc_id)
+    return f"{name}的倒影"
 
 
 def spawn_minions(cur: Cursor, room: str, depth: int, kind: str, theme: str, count: int, elite: bool = False) -> list[str]:
@@ -534,7 +579,7 @@ def spawn_minions(cur: Cursor, room: str, depth: int, kind: str, theme: str, cou
 
 def _spawn(cur: Cursor, room: str, depth: int, kind: str, rank: str, theme: str, share: int = 1, hp_mult: float = 1.0,
            minion: bool = False, loot: bool = True, attacks: int = 1, stair: bool = False, affix: Optional[str] = None,
-           leader: bool = False) -> None:
+           leader: bool = False) -> UUID:
     tid = _template(cur, depth, kind, rank, theme, share, hp_mult, minion, attacks, affix, leader, stair)
     cur.execute("insert into npcs (template_id, room_id, hp) select id, %s, max_hp from npc_templates where id = %s"
                 " returning id", (room, tid))
@@ -543,10 +588,11 @@ def _spawn(cur: Cursor, room: str, depth: int, kind: str, rank: str, theme: str,
         _put_item(cur, item, depth, npc=npc_id, boss=rank == "boss",
                   rarity={"boss": "rare", "elite": "uncommon"}.get(rank, "common"))
     if loot:
-        for _ in range(gem_count(rank, depth)):
+        for _ in range(gem_count(rank, depth, theme)):
             put_gem(cur, pick_gem(theme), depth, npc=npc_id)
     for _ in range(ELITE_AFFIXES.get(affix, {}).get("minions", 0)):
         spawn_minions(cur, room, depth, kind, theme, 1)             # 号令的精英：带着一只同类小怪
+    return npc_id
 
 
 # ============ 地图 ============
@@ -629,13 +675,15 @@ def _make_floor(cur: Cursor, run: UUID, depth: int, above: Optional[str], size: 
                 else pool.pop() if pool else random.choice(theme["rooms"]))
         rid = _room_id(run, depth, cell)
         light = (STONE_LIGHT if kind == "entry" and is_stone(depth)
+                 else random.randint(*theme["light_range"]) if theme.get("light_range")      # 水晶洞窟：每间随机
                  else theme.get("light", 35) + LIGHT_OFFSET.get(text.get("light", "dim"), 0))
         props = {"dungeon": {"depth": depth, "theme": theme_key, "kind": kind},
                  # 头目层：楼梯间隔壁的房间是休息点，能多扎一次营（engine.do_camp）
                  **({"rest": True} if depth % BOSS_EVERY == 0 and kind != "stairs" and frozenset((cell, stairs)) in edges else {}),
                  "env": {"light": max(0, min(100, light)), "ground": text.get("ground", "normal"),
                          "cover": bool(text.get("cover")),
-                         **({"heat": theme["heat"]["pct"]} if theme.get("heat") else {})}}
+                         **({"heat": theme["heat"]["pct"]} if theme.get("heat") else {}),
+                         **({"glare": theme["glare"]} if theme.get("glare") else {})}}
         if kind == "entry" and is_stone(depth):
             props["stone"] = True
         if kind == "empty":

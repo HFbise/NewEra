@@ -381,7 +381,8 @@ def blade_damage(deepest: int) -> int:
 def room_light(theme: dict, torch_light: int = 0) -> int:
     """房间的光亮：主题的底子 + 房间本身亮暗 + 点着的火盆（每个 +20）+ 火把"""
     text = random.choice(theme["rooms"])
-    level = theme.get("light", 35) + dungeon.LIGHT_OFFSET.get(text.get("light", "dim"), 0)
+    level = (random.randint(*theme["light_range"]) if theme.get("light_range")
+             else theme.get("light", 35) + dungeon.LIGHT_OFFSET.get(text.get("light", "dim"), 0))
     feats = random.sample(theme["features"], random.randint(1, 2))
     level += dungeon.LAMP_LIGHT * sum(1 for f in feats if f.get("lamp"))
     return max(0, min(100, level + torch_light))
@@ -419,6 +420,8 @@ class Mon:
     regen: float = 0.0                  # 扎根：每轮回血
     stance: str = ""                    # 冷却 / 熔化（矮人王的铸像）
     stance_at: int = 0
+    shield: int = 0                     # 共鸣者套的光膜：挡下几次
+    shield_acts: int = 0
 
 
 @dataclass
@@ -439,6 +442,7 @@ class Hero:
     herbs: int = 0
     sneak: bool = False                 # 潜行打法：进门没被警觉的怪盯上就先偷袭一下
     guard: Optional[str] = None         # 刚挣脱、爬起来的那种控制：这个敌人回合里不再中
+    eyes: bool = False                  # 这一轮闭着眼（晶母的晃眼大招冲着所有睁眼的人）
     dodging: bool = False               # 这一轮闪避了（被蓄力重击盯上时，普通档一半几率会这么做，上限档总会）
     smart: float = 0.5
     stealth: int = 0                    # 隐匿等级
@@ -489,7 +493,8 @@ def spawn(depth: int, kind: str, rank: str, theme_key: str, size: int, groups: i
     m = THEMES[theme_key]["boss"] if rank == "boss" else MONSTERS[kind]
     hp, atk, df = R.monster_stats(depth, m, rank)
     props = {k: m[k] for k in ("animal", "light_averse", "undead", "keen", "ranged", "healer", "on_hit", "guard_allies",
-                               "immune", "weak", "stances", "resist_element") if m.get(k)}
+                               "immune", "weak", "stances", "resist_element", "reflect_ranged", "shield_allies", "nodes")
+             if m.get(k)}
     if m.get("pack"):
         props["pack"] = kind
     if boss_room:
@@ -531,7 +536,16 @@ def spawn(depth: int, kind: str, rank: str, theme_key: str, size: int, groups: i
                for _ in range(copies)]
     for _ in range(fx.get("minions", 0)):
         out += spawn(depth, kind, "normal", theme_key, 1, 1, False, minion=True)        # 号令的：带一只同类小怪
+    if rank == "boss" and props.get("nodes"):
+        out += make_nodes(out[0], props["nodes"])
     return out
+
+
+def make_nodes(boss: Mon, cfg: dict, n: Optional[int] = None) -> list[Mon]:
+    """晶母身上的晶簇（dungeon.spawn_nodes）：不出手，活着的时候头目防御 +while_alive.def，头目一倒就散"""
+    hp = max(R.SCALE, round(boss.max_hp * cfg.get("hp_pct", 0.08)))
+    return [Mon("晶簇", hp, hp, 0, 0, boss.depth, {"inert": True, "node": True}, "normal", minion=True, theme=boss.theme)
+            for _ in range(cfg.get("count", 3) if n is None else n)]
 
 
 def pick_target(mon: Mon, heroes: list[Hero], hits: dict) -> Hero:
@@ -619,6 +633,7 @@ class Fight:
             return True
         return False
 
+    glare: Optional[dict] = None        # 炫光（水晶洞窟）：光亮到 at 以上每个敌人回合 chance 几率看不清
     heat: float = 0.0                   # 灼热（地底熔炉）：每个动作掉血量上限的这个比例
     heat_mult: float = 1.0
 
@@ -660,6 +675,11 @@ class Fight:
                 if then.get("do") == "strike" and h in self.boss_targets(m, then.get("target", "highest_threat")):
                     return True
         return False
+
+    def flash_on(self) -> bool:
+        """有头目预告了闭眼能躲的招"""
+        return any(m.pending is not None and (m.skills[m.pending["i"]].get("then") or {}).get("unless") == "eyes_closed"
+                   for m in self.alive())
 
     def boss_targets(self, m: Mon, mode: str) -> list:
         live = [h for h in self.heroes if not h.down]
@@ -704,6 +724,10 @@ class Fight:
                     st["attempts"] += 1
                 continue
             if h.hp < h.max_hp * DRINK_BELOW and self.drink(h):
+                continue
+            if not h.eyes and self.flash_on() and random.random() < h.smart:
+                h.eyes = True                    # 看见晶簇一齐亮起：闭眼背过身，这一轮自己也看不清
+                h.effects.setdefault("blind", {"value": 1, "left": 1})
                 continue
             if not h.dodging and self.strike_on(h) and random.random() < h.smart:
                 h.dodging = True                 # 看见大招冲着自己来：这一下用来闪避
@@ -770,8 +794,16 @@ class Fight:
             return
         bonus = shooter.first_bonus if shooter and first else 0
         pierce = shooter.pierce if shooter else 0
+        guard = (m.props["nodes"].get("while_alive", {}).get("def", 0)
+                 if m.props.get("nodes") and any(x.props.get("node") for x in self.alive()) else 0)
         dmg = R.hurt_npc_by(power(h, shooter) + bonus + R.whole(h.gem_bonus),
-                            m.df + stance_of(m).get("def", 0) - pierce - R.whole(h.gem_pierce))
+                            m.df + guard + stance_of(m).get("def", 0) - pierce - R.whole(h.gem_pierce))
+        if shooter and (ref := m.props.get("reflect_ranged")) and random.random() < ref:
+            self.hurt_hero(h, max(R.SCALE, dmg // 2))      # 棱镜元素把这一箭折了回来
+            return
+        if m.shield > 0:
+            m.shield -= 1                        # 光膜挡下这一下
+            return
         if h.gem_crit and random.random() < h.gem_crit:
             dmg *= 2                             # 锋墨石会心一击
         if "bleed" in h.effects:
@@ -866,6 +898,8 @@ class Fight:
                 m.mark = None
         elif do == "combo":
             for h in self.boss_targets(m, sk.get("target", "all")):
+                if sk.get("unless") == "eyes_closed" and h.eyes:
+                    continue
                 hard = False
                 for e in sk.get("effects", []):
                     k = e["kind"]
@@ -888,11 +922,19 @@ class Fight:
                 self.base_light = max(0, min(100, self.base_light + sk["env"]["light"]))
             if "heat_mult" in (sk.get("env") or {}):
                 self.heat_mult = sk["env"]["heat_mult"]
+            if (cfg := m.props.get("nodes")) and cfg.get("regrow_on_phase"):
+                have = sum(1 for x in self.alive() if x.props.get("node"))
+                for x in make_nodes(m, cfg, max(0, cfg.get("count", 3) - have)):
+                    self.mons.append(x)
+                    for h in self.heroes:
+                        self.dist[(id(h), id(x))] = self.dist[(id(h), id(m))]
             if then := sk.get("then"):
                 self.skill_effect(m, then, targets)
 
     def enemies_turn(self) -> None:
         for m in self.alive():
+            if m.props.get("inert"):
+                continue
             if m.status:
                 if m.status.get("freed") or m.rank == "boss":      # 刚挣开的这轮来不及还手；头目只困一轮
                     m.status = None
@@ -910,9 +952,19 @@ class Fight:
         for h in self.heroes:
             h.guard = None
             h.dodging = False
+            if self.glare and not h.down and not h.eyes and self.light() >= self.glare.get("at", 70) \
+                    and random.random() < self.glare.get("chance", 0.25) and "blind" not in h.effects:
+                h.effects["blind"] = {"value": 1, "left": 1}       # 晶面反光晃眼（engine._glare）
+            h.eyes = False
 
     def enemy_act(self, m: Mon, h: Hero, mult: float = 1.0) -> None:
         props = m.props
+        if sh := props.get("shield_allies"):
+            m.shield_acts += 1
+            bare = [n for n in self.alive() if n is not m and not n.props.get("inert") and n.shield <= 0]
+            if m.shield_acts % sh.get("every", 3) == 0 and bare:
+                random.choice(bare).shield = sh.get("absorb", 1)
+                return
         if (share := props.get("healer")) and random.random() < R.HEALER_CHANCE and m.heals < R.HEALER_MAX:
             hurt = [n for n in self.alive() if n is not m and n.hp < n.max_hp * R.HEALER_BELOW]
             if hurt:
@@ -1162,6 +1214,7 @@ def run_trip(build: str, quality: str, trip: int, kit: Kit, size: int, stats: di
             light = room_light(THEMES[theme_key])
             fight = Fight([h for h in heroes if not h.down], mons, light, cover, depth)
             fight.heat = THEMES[theme_key].get("heat", {}).get("pct", 0)
+            fight.glare = THEMES[theme_key].get("glare")
             fight.sneak_open()
             hp_before = {id(h): h.taken for h in fight.heroes}
             result = fight.run()
@@ -1224,6 +1277,7 @@ def fight_test(build: str, quality: str, trip: int, depth: int, groups: list[tup
         mark_leader(mons)
         f = Fight(heroes, mons, room_light(THEMES[theme]) if light is None else light, False, depth)
         f.heat = THEMES[theme].get("heat", {}).get("pct", 0)
+        f.glare = THEMES[theme].get("glare")
         f.sneak_open()
         before = sum(h.taken for h in heroes)
         r = f.run()
@@ -1376,6 +1430,8 @@ def main() -> None:
     out.append("| 头目 | 第 5 层 | 第 10 层 | 第 15 层 |")
     out.append("|---|---|---|---|")
     for key, th in THEMES.items():
+        if th.get("min_depth"):
+            continue                             # 深层主题的头目用 bosses.py --depths 16,20 看
         cells = []
         for depth in (5, 10, 15):
             a, w, _ = fight_test("sword_shield", "normal", (depth - 1) // TRIP, depth, [("boss", "boss")], key, n=300)
