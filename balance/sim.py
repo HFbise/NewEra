@@ -73,6 +73,10 @@ ARMOR = {
 }
 ARMOR["fav"] = ARMOR["normal"]
 ARMOR["real"] = ARMOR["normal"]        # 真人档：地牢掉的防具照穿，只是一件都不升
+ARMOR["cap"] = ARMOR["normal"]         # 上限档：防具每件 +CAP_ARMOR_PLUS
+# 上限档（照玩家A第 41 层的配置）：头目的鹤嘴锄 +10（破甲 20）、完美血石加伤、防具每件 +6、每趟带 13 瓶血药
+CAP_WEAPON = ("工头的鹤嘴锄", ITEMS["foreman_mattock"]["damage"])
+CAP_WEAPON_PLUS, CAP_ARMOR_PLUS, CAP_POTIONS, CAP_GEM_BONUS, CAP_PIERCE = 10, 6, 13, 35, 20
 # 盾：剑盾打法第 1 趟木盾，之后塔盾（挡远程 2 点）；最后一项是格挡几率（物品表的 props.block）
 _TOWER = ("塔盾", ITEMS["tower_shield"]["defense"],
           next(e["value"] for e in ITEMS["tower_shield"]["props"]["effects"] if e["do"] == "guard"),
@@ -127,7 +131,7 @@ def ranged_weapon(build: str, trip: int) -> Optional[Weapon]:
 BUILDS = {"dual": "双持", "dual_sneak": "双持潜行", "sword_shield": "剑盾", "sword_torch": "剑+火把", "bow": "猎弓", "xbow": "绞盘重弩",
           "sling_sword": "投石索配剑", "mcb_sword": "麦琪的弩配剑", "hxb_sword": "手弩配剑",
           "sword_shield+bow": "剑盾 + 猎弓"}
-QUALITY = {"poor": "装备差", "normal": "正常", "fav": "好感全满", "real": "真人档"}
+QUALITY = {"poor": "装备差", "normal": "正常", "fav": "好感全满", "real": "真人档", "cap": "上限档"}
 # 真人档（照玩家A这一趟）：只升武器、钱攒着不花完（每趟最多花 REAL_SPEND），不升防具、不镶宝石、不买血药，只靠路上捡的药草
 REAL_SPEND = 0.1                        # 照玩家A调的：第 16 层主武器 +4、身上攒着约 4000 金
 
@@ -290,6 +294,9 @@ def upgrade_run(gold: int, weapons: list[int], armor: list[int], w_plus: list[in
 
 def economy(quality: str, build: str, trips: int = TRIPS, size: int = 1) -> list[Kit]:
     """每一趟出发时的装备等级和药（差装备不升级，只带能买得起的药）"""
+    if quality == "cap":
+        return [Kit([CAP_WEAPON_PLUS], [CAP_ARMOR_PLUS] * 5, CAP_POTIONS, 0, 0, CAP_GEM_BONUS, 0.0, 0, CAP_PIERCE)
+                for _ in range(trips)]
     kits, gold = [], 0
     w_plus = [0] * len(upgradable_weapons(build, 0, quality))
     a_plus = [0] * 8
@@ -917,6 +924,8 @@ def stealth_level(depth: int) -> int:
 
 
 SNEAK_LETHAL = 0.7                      # 偷袭时 AI 判成致命的比例（其余按重伤）
+SNEAK_PAST = 0.85                       # 潜行打法溜过一个房间的几率 = SNEAK_PAST ^ (1 + 群数)：一群 72%、两群 61%、三群 52%
+                                        # （照玩家A：第 35–41 层每层溜过 3–8 个房间，只打约 2.7 场）
 
 
 def make_heroes(build: str, quality: str, trip: int, kit, size: int, depth: int) -> list[Hero]:
@@ -925,6 +934,8 @@ def make_heroes(build: str, quality: str, trip: int, kit, size: int, depth: int)
     heroes = []
     for _ in range(size):
         ws = melee_weapons(build, trip)
+        if quality == "cap" and ws:
+            ws = [CAP_WEAPON]                   # 单手一把头目武器（玩家A左手空着）
         if quality == "fav" and ws:
             ws = [("无铭", blade_damage(trip * TRIP))] + ws[1:]
         r = ranged_weapon(build, trip)
@@ -1019,6 +1030,10 @@ def run_trip(build: str, quality: str, trip: int, kit: Kit, size: int, stats: di
         for kind, groups, cover in floor_rooms(depth, theme_key):
             if all(h.down for h in heroes):
                 break
+            if kind != "stairs" and all(h.sneak for h in heroes) \
+                    and not any(MONSTERS[g].get("keen") for g, _ in groups if g in MONSTERS) \
+                    and random.random() < SNEAK_PAST ** (1 + len(groups)):
+                continue                        # 潜行溜过去了（钱和掉落也没了，经济表里没扣）
             if kind == "stairs":
                 # 楼梯间守着头目或精英：血量低于七成先整备，这层还没扎营就扎营，再不够就喝药
                 # 头目层：楼梯间隔壁是休息点，能多扎一次营（不算这一层的次数，engine.do_camp）
@@ -1158,7 +1173,8 @@ def main() -> None:
         if q != "poor":
             combos.append((q, "sword_shield+bow", 2))
     # 真人档（只升武器、不买血药）和潜行打法（玩家A那样）
-    combos += [("normal", "dual_sneak", 1), ("real", "dual", 1), ("real", "dual_sneak", 1), ("real", "sword_shield", 1)]
+    combos += [("normal", "dual_sneak", 1), ("real", "dual", 1), ("real", "dual_sneak", 1), ("real", "sword_shield", 1),
+               ("cap", "dual", 1), ("cap", "dual_sneak", 1)]
     table, room_log = {}, {}
     for q, b, size in combos:
         random.seed(f"{args.seed}-{q}-{b}-{size}")
