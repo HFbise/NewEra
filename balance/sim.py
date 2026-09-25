@@ -444,6 +444,8 @@ class Hero:
     herbs: int = 0
     sneak: bool = False                 # 潜行打法：进门没被警觉的怪盯上就先偷袭一下
     guard: Optional[str] = None         # 刚挣脱、爬起来的那种控制：这个敌人回合里不再中
+    still: int = 0                      # 流沙里站着没挪几轮了
+    stepped: bool = False
     eyes: bool = False                  # 这一轮闭着眼（晶母的晃眼大招冲着所有睁眼的人）
     dodging: bool = False               # 这一轮闪避了（被蓄力重击盯上时，普通档一半几率会这么做，上限档总会）
     smart: float = 0.5
@@ -472,6 +474,13 @@ def power(h: Hero, shooter: Optional[Weapon]) -> int:
     return int(base * (1 + R.CHEER_ATTACK / 100 if h.cheer else 1) + 0.5)
 
 
+def sand_of(theme: dict) -> Optional[dict]:
+    """这间房是不是流沙：按主题房间里 ground: sand 的比例抽"""
+    rooms = theme.get("rooms", [])
+    share = sum(1 for r in rooms if r.get("ground") == "sand") / max(1, len(rooms))
+    return (theme.get("sand") or {"move_max": 1, "stuck_chance": 0.3, "sink_after": 1}) if random.random() < share else None
+
+
 def stance_of(m) -> dict:
     """铸像现在这个状态加减的攻防"""
     st = m.props.get("stances")
@@ -496,7 +505,7 @@ def spawn(depth: int, kind: str, rank: str, theme_key: str, size: int, groups: i
     hp, atk, df = R.monster_stats(depth, m, rank)
     props = {k: m[k] for k in ("animal", "light_averse", "undead", "keen", "ranged", "healer", "on_hit", "guard_allies",
                                "immune", "weak", "stances", "resist_element", "reflect_ranged", "shield_allies", "nodes",
-                               "dormant", "bell", "silence_field") if m.get(k)}
+                               "dormant", "bell", "silence_field", "swarm") if m.get(k)}
     if m.get("hearing"):
         props["keen"] = True                # 聆听者：偷袭要动身子，它听得见
     if m.get("pack"):
@@ -639,6 +648,7 @@ class Fight:
             return True
         return False
 
+    sand: Optional[dict] = None         # 流沙（沙漠迷城 ground: sand 的房间、法老转阶段）
     glare: Optional[dict] = None        # 炫光（水晶洞窟）：光亮到 at 以上每个敌人回合 chance 几率看不清
     heat: float = 0.0                   # 灼热（地底熔炉）：每个动作掉血量上限的这个比例
     heat_mult: float = 1.0
@@ -777,8 +787,14 @@ class Fight:
                         h.loaded, h.wound = True, 0
                     continue
                 shooter = None
+            if self.sand and h.still >= self.sand.get("sink_after", 1) and not h.stepped and random.random() < h.smart:
+                h.stepped = True                 # 流沙里挪一步，免得陷进去
+                continue
             if not shooter and d > 0:
-                self.dist[key] = max(0, d - 2)     # 冲上去（MAX_STEP）
+                h.stepped = True
+                if self.sand and random.random() < self.sand.get("stuck_chance", 0.3):
+                    continue                     # 陷在沙里没挪动
+                self.dist[key] = max(0, d - (self.sand.get("move_max", 1) if self.sand else 2))     # 冲上去（MAX_STEP）
                 continue
             self.attack(h, m, shooter, d)
 
@@ -814,6 +830,8 @@ class Fight:
             dmg *= 2                             # 锋墨石会心一击
         if "bleed" in h.effects:
             dmg = max(R.SCALE, math.floor(dmg * R.BLEED_DAMAGE))
+        if m.props.get("swarm"):
+            dmg = max(R.SCALE, dmg // 2)         # 虫群：单体只拍死一小片
         weak = m.props.get("weak")
         if (weak == "pierce" and pierce) or (weak in ("light", "bright") and self.light() >= R.LIGHT_BRIGHT):
             dmg = math.ceil(dmg * R.WEAK_MULT)
@@ -900,6 +918,8 @@ class Fight:
                 if h.dodging or (sk.get("cover_halves") and self.cover):
                     dmg //= 2
                 self.hurt_hero(h, max(R.SCALE, dmg))
+                for e in sk.get("effects", []):
+                    self.afflict(h, e["kind"], m.depth, e, dmg)
             if sk.get("target") == "marked":
                 m.mark = None
         elif do == "combo":
@@ -921,7 +941,9 @@ class Fight:
                         self.afflict(h, k, m.depth, e, R.expected_hit(m.atk, hero_def(h), m.depth))
         elif do == "phase":
             m.phased = True
-            m.extra_acts += sk.get("actions", 0)
+            m.extra_acts += sk.get("actions", 0) or sk.get("actions_add", 0)
+            if (sk.get("env") or {}).get("ground") == "sand":
+                self.sand = THEMES[m.theme].get("sand") or {"move_max": 1, "stuck_chance": 0.3, "sink_after": 1}
             m.phase_atk += sk.get("atk", 0)
             m.regen = sk.get("regen", m.regen)
             if "light" in (sk.get("env") or {}):
@@ -958,6 +980,12 @@ class Fight:
         for h in self.heroes:
             h.guard = None
             h.dodging = False
+            if self.sand and not h.down:
+                h.still = 0 if h.stepped else h.still + 1
+                if h.still > self.sand.get("sink_after", 1):
+                    h.still = 0
+                    self.afflict(h, "restrained", 0, {"escape": 1})      # 陷进流沙
+            h.stepped = False
             if self.glare and not h.down and not h.eyes and self.light() >= self.glare.get("at", 70) \
                     and random.random() < self.glare.get("chance", 0.25) and "blind" not in h.effects:
                 h.effects["blind"] = {"value": 1, "left": 1}       # 晶面反光晃眼（engine._glare）
@@ -1035,6 +1063,8 @@ class Fight:
         重复中招只延长一回合；刚挣脱、爬起来的这个敌人回合不再被同一种控制打中"""
         if h.down:
             return
+        if kind == "wrapped":
+            kind = "restrained"                  # 裹尸布：缠住的一种（药也喝不了，本来缠住就用不了东西）
         if kind in ("restrained", "prone", "stun"):
             k = "incapacitated" if kind == "stun" else kind
             if not h.status and h.guard != k:
@@ -1228,6 +1258,7 @@ def run_trip(build: str, quality: str, trip: int, kit: Kit, size: int, stats: di
             fight = Fight([h for h in heroes if not h.down], mons, light, cover, depth)
             fight.heat = THEMES[theme_key].get("heat", {}).get("pct", 0)
             fight.glare = THEMES[theme_key].get("glare")
+            fight.sand = sand_of(THEMES[theme_key]) if kind != "stairs" else None
             fight.sneak_open()
             hp_before = {id(h): h.taken for h in fight.heroes}
             result = fight.run()
@@ -1291,6 +1322,7 @@ def fight_test(build: str, quality: str, trip: int, depth: int, groups: list[tup
         f = Fight(heroes, mons, room_light(THEMES[theme]) if light is None else light, False, depth)
         f.heat = THEMES[theme].get("heat", {}).get("pct", 0)
         f.glare = THEMES[theme].get("glare")
+        f.sand = sand_of(THEMES[theme]) if not boss else None
         f.sneak_open()
         before = sum(h.taken for h in heroes)
         r = f.run()

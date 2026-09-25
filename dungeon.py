@@ -54,7 +54,7 @@ LOOT_NOT_YET: set[str] = set()         # 机制还没做的物品先不掉（第
 DEEP_DUNGEON = ("deep_dungeon_16.yaml", "deep_dungeon_21.yaml")      # 深层主题（themes / monsters / events）
 DEEP_LOOT, DEEP_ITEMS = "deep_loot.yaml", "deep_items.yaml"
 # 机制接完了的深层主题才进主题池（一个一个接，接完用模拟对一下再放进来）
-DEEP_READY = {"forge", "crystal", "silent"}
+DEEP_READY = {"forge", "crystal", "silent", "desert"}
 
 
 def _yaml(name: str) -> dict:
@@ -193,7 +193,7 @@ def pick_gem(theme: Optional[str], common_share: float = 0.0) -> str:
 
 
 def _put_item(cur: Cursor, template: str, depth: int, *, room: Optional[str] = None, npc: Optional[UUID] = None,
-              boss: bool = False, rarity: Optional[str] = None) -> None:
+              boss: bool = False, rarity: Optional[str] = None, player: Optional[UUID] = None) -> None:
     """放一件东西。头目的招牌装备每深 boss_upgrade_every 层自带 +1（10 层 +1，15 层 +2）；
     rarity 给了的是地牢掉落：武器、护具、饰品按稀有度随机带孔（common 普通怪 / uncommon 精英宝箱 / rare 头目）"""
     props = {}
@@ -211,8 +211,8 @@ def _put_item(cur: Cursor, template: str, depth: int, *, room: Optional[str] = N
             props |= {"plus": plus, "damage": t["damage"] + plus * UPGRADE_STEP["damage"], "name": f"{t['name']} +{plus}"}
         elif t["type"] == "armor" and t["defense"]:
             props |= {"plus": plus, "defense": t["defense"] + plus * UPGRADE_STEP["defense"], "name": f"{t['name']} +{plus}"}
-    cur.execute("insert into item_instances (template_id, room_id, npc_id, props) values (%s, %s, %s, %s)",
-                (template, room, npc, Jsonb(props)))
+    cur.execute("insert into item_instances (template_id, room_id, npc_id, player_id, props) values (%s, %s, %s, %s, %s)",
+                (template, room, npc, player, Jsonb(props)))
 
 
 def road_box_item(theme: str, depth: int) -> Optional[str]:
@@ -449,7 +449,7 @@ def _template(cur: Cursor, depth: int, kind: str, rank: str, theme: str, share: 
         if m.get(key):
             props[key] = m[key]
     for key in ("healer", "verb", "guard_allies", "reflect_ranged", "shield_allies", "dormant", "wake_noise", "hearing",
-                "bell", "silence_field", "noise_heal"):   # 治疗、出手的说法、护同伴、折回远程、套盾
+                "bell", "silence_field", "noise_heal", "swarm", "native"):   # 治疗、出手的说法、护同伴、折回远程、套盾
         if m.get(key):
             props[key] = m[key]
     if rank == "boss" or fx.get("keen") or stair:
@@ -524,7 +524,7 @@ def _spawn_group(cur: Cursor, room: str, depth: int, kind: str, rank: str, theme
                  lead: bool = False) -> int:
     """放一群同种的怪：一个人一只，组队时"人数"只（这个房间一共 groups 群，总数不超过 ROOM_CAP，多的折成血）。
     钱按只数分，东西只有第一只带。lead：成群的狗狼，第一只是头领。返回放了几只"""
-    copies = party_copies(size, groups)
+    copies = min(party_copies(size, groups), data()["monsters"].get(kind, {}).get("pack_max", 99))     # 胡狼卫独来独往
     affix = random.choice(list(ELITE_AFFIXES)) if rank == "elite" else None      # 同一群精英同一个词缀
     for i in range(copies):
         _spawn(cur, room, depth, kind, rank, theme, share=copies, hp_mult=size / copies, loot=i == 0,
@@ -645,6 +645,63 @@ def layout() -> tuple[tuple[int, int], tuple[int, int], set[frozenset]]:
     far = max(dist.values())
     stairs = random.choice([c for c, d in dist.items() if d == far])
     return start, stairs, edges
+
+
+def shift_exits(cur: Cursor, room_id: str, count: int = 3) -> bool:
+    """沙漠迷城、梦境回廊：随机两三间房的出口重新连接（theme.shifting_exits）。入口、楼梯间、有人在的房间不动，
+    整层还是连通的。返回改没改"""
+    run, depth = parse_room(room_id)
+    cur.execute("select entry_room, stairs_room from dungeon_floors where run_id = %s and depth = %s", (run, depth))
+    f = cur.fetchone()
+    cells = [(r, c) for r in range(GRID) for c in range(GRID)]
+    cur.execute("select distinct room_id from players where room_id like %s", (f"dg-{run.hex}-{depth}-%",))
+    busy = {r["room_id"] for r in cur.fetchall()} | {f["entry_room"], f["stairs_room"]}
+    cur.execute("select id as room_id from rooms where id like %s and (props->'env'->>'sealed')::boolean", (f"dg-{run.hex}-{depth}-%",))
+    busy |= {r["room_id"] for r in cur.fetchall()}
+    free = [c for c in cells if _room_id(run, depth, c) not in busy]
+    if not free:
+        return False
+    moved = set(random.sample(free, min(len(free), count)))
+    cur.execute("""select room_id, to_room from room_exits where room_id like %s and to_room like %s
+                   and direction in ('north', 'south', 'east', 'west')""", (f"dg-{run.hex}-{depth}-%", f"dg-{run.hex}-{depth}-%"))
+    index = {_room_id(run, depth, c): c for c in cells}
+    edges = {frozenset((index[r["room_id"]], index[r["to_room"]])) for r in cur.fetchall()
+             if r["room_id"] in index and r["to_room"] in index}
+    keep = {e for e in edges if not e & moved}
+    # 并查集：先连上留下的边，再给挪动的格子随机接到邻居上，直到整层连通，最后再随机多开一扇
+    parent = {c: c for c in cells}
+
+    def root(c):
+        while parent[c] != c:
+            parent[c] = parent[parent[c]]
+            c = parent[c]
+        return c
+    for e in keep:
+        a, b = tuple(e)
+        parent[root(a)] = root(b)
+    cand = [frozenset((c, n)) for c in moved for _, n in _neighbors(c)]
+    random.shuffle(cand)
+    new = set(keep)
+    for e in cand:
+        a, b = tuple(e)
+        if root(a) != root(b):
+            parent[root(a)] = root(b)
+            new.add(e)
+    if len({root(c) for c in cells}) > 1:
+        return False
+    spare = [e for e in cand if e not in new]
+    if spare:
+        new.add(random.choice(spare))
+    if new == edges:
+        return False
+    cur.execute("""delete from room_exits where room_id like %s and to_room like %s
+                   and direction in ('north', 'south', 'east', 'west')""", (f"dg-{run.hex}-{depth}-%", f"dg-{run.hex}-{depth}-%"))
+    for c in cells:
+        for direction, n in _neighbors(c):
+            if frozenset((c, n)) in new:
+                cur.execute("insert into room_exits (room_id, direction, to_room) values (%s, %s, %s)",
+                            (_room_id(run, depth, c), direction, _room_id(run, depth, n)))
+    return True
 
 
 def is_stone(depth: int) -> bool:

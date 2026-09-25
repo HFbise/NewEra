@@ -554,6 +554,7 @@ class Status(BaseModel):
     escape: Difficulty = 2              # 施加时 AI 判的挣脱难度
     attempts: int = 0                   # 挣脱失败过几次，每次失败下次更容易
     since: Optional[str] = None         # 施加时间（ISO），超过 engine.STATUS_MAX 自动解除
+    wrapped: bool = False               # 裹尸布缠住的（缠住的一种）：火一碰就烧断
 
     def describe(self) -> str:
         return f"{self.label}，" + {"incapacitated": "失去战斗能力", "restrained": "动弹不得",

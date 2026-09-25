@@ -173,6 +173,7 @@ def forage_labels(cur: Cursor, room: Room) -> list[str]:
 
 
 SERVICE_NAMES = {"free_upgrade": "锻造纹（照着敲，能把手上的兵器再打磨一番）", "mirror_duel": "自己的倒影",
+                 "treasure_pool": "一件宝物", "timed": "一袋古币（沙子流完之前拿了走人）",
                  "gem": "一颗宝石", "wish": "一个愿望（投钱许愿，要安静）", "cleanse": "忏悔（清掉身上的晦气）",
                  "reveal_next_floor": "碑文（下一层的路）"}
 
@@ -822,8 +823,9 @@ def _attack_extras(cur: Cursor, player: Player, npc: Npc, fired: list[dict]) -> 
     for e in fired:
         if e["do"] == "splash":
             for other in [n for n in _enemies(cur, player.room_id) if n.id != npc.id]:
-                hurt, _ = _hurt_npc(cur, player, other, int(e.get("value", 1)))
-                facts += [f"{other.name}被扫到，受到 {e.get('value', 1)} 点伤害"] + hurt
+                v = int(e.get("value", 1)) * (2 if other.template.props.get("swarm") else 1)     # 虫群怕横扫
+                hurt, _ = _hurt_npc(cur, player, other, v)
+                facts += [f"{other.name}被扫到，受到 {v} 点伤害"] + hurt
             facts += _noise(cur, player, "aoe")
         elif e["do"] == "self_damage":
             hurt, _ = _hurt_player(cur, player, int(e.get("value", 1)), "other", "手里的凶器")
@@ -1451,6 +1453,18 @@ def _take_from(cur: Cursor, player: Player, view: RoomView, d: Dispenser) -> lis
         return facts + _cleanse(cur, player)
     if d.service == "reveal_next_floor":
         return facts + _read_stele(cur, player, d)
+    if d.item == "treasure_pool":
+        f = dungeon.floor_info(cur, player.room_id)
+        item = dungeon._pick(dungeon.loot_data()["treasure"].get(f["theme"]), f["depth"]) or "herb"
+        dungeon._put_item(cur, item, f["depth"], player=player.id, rarity="uncommon")
+        cur.execute("select name from item_templates where id = %s", (item,))
+        return facts + [f"{player.name}从{d.container}{d.where}拿到了{cur.fetchone()['name']}"]
+    if d.service == "timed":
+        # 沙漏房：拿了钱就得在沙子流完之前走出去
+        f = dungeon.floor_info(cur, player.room_id)
+        coins = dungeon.treasure_gold(f["depth"], 0.3, f["party_size"] or 1)
+        cur.execute("update players set gold = gold + %s where id = %s", (coins, player.id))
+        return facts + [f"{player.name}一把抓起石台上的钱袋（{coins} 金币）：沙子流完之前得走出这间屋子"]
     if d.item == "gem":
         f = dungeon.floor_info(cur, player.room_id)
         gem = dungeon.put_gem(cur, dungeon.pick_gem(f["theme"]), f["depth"], player=player.id)
@@ -2535,11 +2549,34 @@ def _on_hit(cur: Cursor, player: Player, npc: Npc, base: Optional[int] = None) -
                    hit.get("value_mult", 1.0), base)
 
 
+def _on_you(name: str, label: str) -> str:
+    """怪打中附带效果的说法：写成"你"的（"一截裹尸布缠住了你的手"）把"你"换成名字，别的接在名字后面"""
+    return label.replace("你", name) if "你" in label else f"{name}{label}"
+
+
+def _by(npc: Npc, label: str, you: str = "众人") -> str:
+    """头目招式的说法：去掉开头的"他""她""它"接在名字后面，"你"换成挨招的人"""
+    return npc.name + (label[1:] if label[:1] in "他她它" else label).replace("你", you)
+
+
+def _you_of(cur: Cursor, npc: Npc, s: dict, targets: list) -> str:
+    """招式说法里的"你"是谁：只打一个人的就是那个人，全场的是众人"""
+    if "你" not in (s.get("label") or "") and "你" not in str(s):
+        return "众人"
+    if s.get("target", "all") == "all" or not targets:
+        return "众人"
+    hit = _boss_targets(cur, npc, s.get("target"), targets)
+    return hit[0].name if len(hit) == 1 else "众人"
+
+
 def _inflict(cur: Cursor, player: Player, kind: str, label: str, depth: int, source: str, escape: int = 2,
              turns: Optional[int] = None, value_mult: float = 1.0, base: Optional[float] = None,
              heal_mult: Optional[float] = None) -> list[str]:
     """给玩家上一个效果：怪打中时附带的（_on_hit），决斗里对手装备触发的（_pvp_hit_extras）。
     base：挂上它的那一下打出的伤害（中毒、流血按它的比例跳，rules.dot_value）"""
+    wrapped = kind == "wrapped"
+    if wrapped:
+        kind, label = "restrained", label or "被裹尸布缠住了，东西都拿不起来"
     if kind in ("restrained", "prone", "stun"):
         if player.status:
             return []
@@ -2548,10 +2585,11 @@ def _inflict(cur: Cursor, player: Player, kind: str, label: str, depth: int, sou
             return [f"{player.name}刚{'爬起来' if kind == 'prone' else '挣脱出来'}，还提防着，没再{(label if label.startswith('被') else '被' + label) if label else '被控住'}"]
         label = label or {"stun": "被打得晕头转向", "restrained": "被缠住了", "prone": "被撞倒在地"}[kind]
         st = Status(kind="incapacitated" if kind == "stun" else kind, label=label[:20], escape=escape,
-                    since=datetime.now(timezone.utc).isoformat())
+                    since=datetime.now(timezone.utc).isoformat(), wrapped=wrapped)
         _set_status(cur, "players", player.id, st)
         player.status = st
-        return [f"{player.name}{label}" + ("，得先挣脱" if kind == "restrained" else "，得先爬起来" if kind == "prone"
+        return [_on_you(player.name, label) + ("，得先挣脱（火一碰就能烧断）" if wrapped else "，得先挣脱" if kind == "restrained"
+                                            else "，得先爬起来" if kind == "prone"
                                             else "，失去战斗能力")] + (_noise(cur, player, "fall") if kind == "prone" else [])
     label = label or EFFECT_NAMES[kind]
     # 中毒、流血按那一下的伤害算（value_mult：这只怪的毒、血口子轻一点）；腐蚀、看不清照旧
@@ -2560,10 +2598,10 @@ def _inflict(cur: Cursor, player: Player, kind: str, label: str, depth: int, sou
     if old:
         full = turns or EFFECT_TURNS[kind]
         if old.left >= full:
-            return [f"{player.name}又{label}，不过{EFFECT_NAMES[kind]}已经挂满了"]
+            return [f"{_on_you(player.name, label)}，不过{EFFECT_NAMES[kind]}已经挂满了"]
         old.left += 1                           # 重复中招只延长一回合，封顶到原本的持续时间
         _save_effects(cur, player)
-        return [f"{player.name}又{label}，{EFFECT_NAMES[kind]}多挂了一回合（还剩 {old.left}）"]
+        return [f"{_on_you(player.name, label)}，{EFFECT_NAMES[kind]}多挂了一回合（还剩 {old.left}）"]
     e = Effect(kind=kind, value=value, left=turns or EFFECT_TURNS[kind], label=label[:20], source=source)     # turns：这只怪自己的持续轮数（on_hit.turns）
     what = {"poison": f"接下来 {e.left} 回合每回合掉 {value} 点血，出手也不准了",
             "bleed": f"接下来 {e.left} 个动作每动一下掉 {value} 点血，使不上劲",
@@ -2579,7 +2617,7 @@ def _inflict(cur: Cursor, player: Player, kind: str, label: str, depth: int, sou
         what = f"防御 -{value}，血量上限暂时 -{e.hp}，持续 {e.left} 回合"
     player.effects.append(e)
     _save_effects(cur, player)
-    return [f"{player.name}{label}（{EFFECT_NAMES[kind]}：{what}）"]
+    return [f"{_on_you(player.name, label)}（{EFFECT_NAMES[kind]}：{what}）"]
 
 
 def _floor_tag(room_id: str) -> str:
@@ -2748,9 +2786,43 @@ def _enemies(cur: Cursor, room_id: str) -> list[Npc]:
 AWAKE_SQL = "not (coalesce((t.props->>'dormant')::boolean, false) and not coalesce((n.tally->>'awake')::boolean, false))"
 
 
+def _sand(cur: Cursor, player: Player) -> Optional[dict]:
+    """这个人脚下是流沙（ground: sand，本主题 theme.sand 的规则），沙行靴不怕"""
+    if _room_env(cur, player.room_id).get("ground") != "sand" or not dungeon.is_dungeon(player.room_id) \
+            or gear_has(cur, player, "sand_immune"):
+        return None
+    return dungeon.data()["themes"][dungeon.floor_info(cur, player.room_id)["theme"]].get("sand") \
+        or {"move_max": 1, "stuck_chance": 0.3, "athletics_step": 0.05, "sink_after": 1}
+
+
+SAND_STILL = "_sand_still"              # players.flags：在流沙里站着没挪窝几轮了
+
+
+def _sand_sink(cur: Cursor, player: Player, done: list) -> list[str]:
+    """流沙：战斗里一轮都没挪（走、靠近退开、闪避、挣脱）就记一轮，超过 sink_after 轮往下陷（缠住）"""
+    sand = _sand(cur, player)
+    if not sand or player.hp <= 0:
+        return []
+    if any(a.action in ("move", "maneuver", "dodge", "struggle", "stand") for a, _ in done):
+        cur.execute("update players set flags = flags - %s where id = %s", (SAND_STILL, player.id))
+        return []
+    still = int(player.flags.get(SAND_STILL, 0)) + 1
+    if still <= sand.get("sink_after", 1):
+        cur.execute("update players set flags = flags || jsonb_build_object(%s::text, %s::int) where id = %s",
+                    (SAND_STILL, still, player.id))
+        return [f"（{player.name}脚下的沙子在慢慢往下陷：下一轮再不挪一挪就要陷进去了）"]
+    cur.execute("update players set flags = flags - %s where id = %s", (SAND_STILL, player.id))
+    return _inflict(cur, load_player(cur, player.id), "restrained", "陷进了流沙，半截身子埋在沙里", 0, "流沙", escape=1)
+
+
 def do_maneuver(cur: Cursor, player: Player, view: RoomView, a: Maneuver) -> list[str]:
     """在同一区域里走近、退开某个 NPC 或决斗对手"""
     steps = max(-MAX_STEP, min(MAX_STEP, a.steps))
+    if sand := _sand(cur, player):
+        steps = max(-sand.get("move_max", 1), min(sand.get("move_max", 1), steps))
+        stuck = sand.get("stuck_chance", 0.3) - sand.get("athletics_step", 0.05) * skill_level(player.skills.get("athletics", 0))
+        if steps and _roll(max(0.0, stuck)):
+            return [f"{player.name}想挪一步，脚却陷在流沙里拔不出来，原地没动"]
     if a.target not in view.refs:
         other, _ = _room_player(cur, player, a.target)
         duel = _active_duel(cur, player.id, other.id)
@@ -3067,7 +3139,7 @@ def enemy_turn(conn: Connection, player_id: UUID, actions: list[PlayerAction],
                     break
         _save_stealth(cur, player, st)
         _guard_tick(cur, player.id)
-        facts += _glare(cur, player, player.room_id)
+        facts += _glare(cur, player, player.room_id) + _sand_sink(cur, player, done)
         cur.execute("update players set flags = flags - %s where id = %s", (EYES_CLOSED, player.id))
         return stood + facts + _smoke_fades(cur, player.room_id), bool(facts)
 
@@ -3327,7 +3399,7 @@ def round_enemies(conn: Connection, room_id: str, done: dict[UUID, list[tuple[Pl
             _save_stealth(cur, c["p"], c["st"])
         for p in players:
             _guard_tick(cur, p.id)
-            facts += _glare(cur, p, room_id)
+            facts += _glare(cur, p, room_id) + _sand_sink(cur, load_player(cur, p.id), done.get(p.id, []))
             cur.execute("update players set flags = flags - %s where id = %s", (EYES_CLOSED, p.id))
         return facts + _smoke_fades(cur, room_id)
 
@@ -3407,7 +3479,7 @@ def _boss_turn(cur: Cursor, npc: Npc, targets: list[Player], dodging: Optional[s
         upd["pending"] = {"i": i, "hp": npc.hp}
         _tally_merge(cur, npc, upd)
         hint = STRIKE_HINT if (s.get("then") or {}).get("do") == "strike" else ""
-        return regen_facts + [f"{npc.name}{s.get('label', '在蓄一招大的')}{hint}"], True
+        return regen_facts + [_by(npc, s.get('label', '在蓄一招大的'), _you_of(cur, npc, s.get("then") or {}, targets)) + hint], True
     if s["do"] == "mark":
         target = random.choice(targets)
         upd |= {"mark": str(target.id), "mark_bonus": s.get("bonus", 2)}
@@ -3423,7 +3495,7 @@ def _boss_turn(cur: Cursor, npc: Npc, targets: list[Player], dodging: Optional[s
 
 
 STRIKE_HINT = "（这一轮狠狠砍它一下能打断；被它盯上的人「闪避」能躲开一半）"
-HARD_CONTROL = {"restrained", "prone", "stun"}
+HARD_CONTROL = {"restrained", "prone", "stun", "wrapped"}
 
 
 def _boss_targets(cur: Cursor, npc: Npc, mode: str, targets: list[Player]) -> list[Player]:
@@ -3443,7 +3515,7 @@ def _boss_targets(cur: Cursor, npc: Npc, mode: str, targets: list[Player]) -> li
 def _skill_effect(cur: Cursor, npc: Npc, s: dict, targets: list[Player], depth: int, theme: str,
                   dodging: Optional[set] = None) -> list[str]:
     """头目技能真正起作用的那一下：叫帮手、全场上状态、全场中毒腐蚀、回血、蓄力重击、组合技、转阶段"""
-    facts = [f"{npc.name}{s.get('label', '')}"] if s.get("label") else []
+    facts = [_by(npc, s["label"], _you_of(cur, npc, s, targets))] if s.get("label") else []
     do = s["do"]
     dodging = dodging or set()
     if do == "strike":
@@ -3459,6 +3531,8 @@ def _skill_effect(cur: Cursor, npc: Npc, s: dict, targets: list[Player], depth: 
                 dmg, note = dmg // 2, f"，{p.name}躲在掩体后面挡掉了一半"
             hurt, _ = _hurt_player(cur, p, max(SCALE, dmg), "npc", npc.name)
             facts += [f"{npc.name}这一击落在{p.name}身上，造成 {max(SCALE, dmg)} 点伤害{note}"] + hurt
+            for e in s.get("effects", []) if p.hp > 0 else []:
+                facts += _inflict(cur, p, e["kind"], e.get("label", ""), depth, npc.name, turns=e.get("turns"), base=dmg)
         if s.get("target") == "marked":
             _tally_merge(cur, npc, {"mark": None})
         return facts
@@ -3500,7 +3574,7 @@ def _skill_effect(cur: Cursor, npc: Npc, s: dict, targets: list[Player], depth: 
         # 转阶段：头目多一动、攻击加、扎根回血；房间变暗、变积水、封门；之后 phase: true 的招才放
         upd: dict = {"phased": True}
         t = _tallies(cur, npc)
-        if n := s.get("actions"):
+        if n := s.get("actions") or s.get("actions_add"):
             upd["extra_acts"] = t.get("extra_acts", 0) + n
             facts.append(f"（{npc.name}的动作快了，一轮多出手 {n} 次）")
         if n := s.get("atk"):
@@ -3518,7 +3592,7 @@ def _skill_effect(cur: Cursor, npc: Npc, s: dict, targets: list[Player], depth: 
                 facts.append(f"（房间{'暗' if env['light'] < 0 else '亮'}了下来，光亮 {new['light']}）")
             if env.get("ground"):
                 new["ground"] = env["ground"]
-                facts.append("（脚下变成了积水，行动不便）")
+                facts.append({"sand": "（脚下变成了流沙：挪一步都难，站着不动会往下陷）"}.get(env["ground"], "（脚下变成了积水，行动不便）"))
             if env.get("sealed"):
                 new["sealed"] = True
                 facts.append("（门被封死了，打完之前谁也出不去）")
@@ -3749,6 +3823,8 @@ def do_attack(cur: Cursor, player: Player, view: RoomView, a: Attack) -> list[st
     critted = bool(crit) and _roll(crit.get("chance", 0))
     if critted:
         dmg = math.ceil(dmg * crit.get("mult", 2))
+    if npc.template.props.get("swarm"):
+        dmg = max(SCALE, dmg // 2)              # 虫群：一下只拍死一小片
     if shooter and (reflect := npc.template.props.get("reflect_ranged")) and _roll(reflect):
         # 棱镜元素：远程的这一下被晶面折了回来，打在自己身上（一半）
         hurt, _ = _hurt_player(cur, player, max(SCALE, dmg // 2), "npc", npc.name)
@@ -4221,6 +4297,11 @@ def do_struggle(cur: Cursor, player: Player, view: RoomView, a: Struggle) -> lis
         raise ActionError(f"{player.name}没有被困住，用不着挣脱")
     if st.kind == "prone":
         return do_stand(cur, player, view, Stand(action="stand"))
+    if st.wrapped and (fire := next((w for w in _worn(cur, player) if _burning(w) or _prop(w, "fire")), None)):
+        # 裹尸布怕火：拿着点着的火把、带火的兵器，一碰就烧断
+        _set_status(cur, "players", player.id, None)
+        _guard_control(cur, player, st.kind)
+        return [f"{player.name}把{fire.name}往身上的裹尸布一燎，干透的布呼地烧断了", f"{player.name}摆脱了“{st.label}”的状态"]
     diff = max(1, max(a.difficulty, st.escape - 1) - st.attempts)
     ok, rolled = _check(cur, player, view, "acrobatics" if st.kind == "restrained" else None, diff)
     facts = [f"{player.name}尝试：{a.description or '挣脱'}"] + rolled
@@ -5298,7 +5379,59 @@ def execute(conn: Connection, view: RoomView, action: PlayerAction) -> ActionRes
                 raise
 
 
-NOISY = {"say": "talk", "talk": "talk", "flee": "flee"}      # 执行完加声响的动作（静默神殿）
+NOISY = {"say": "talk", "talk": "talk", "flee": "flee"}
+
+
+def _floor_clock(cur: Cursor, player_id: UUID) -> list[str]:
+    """地牢里每做一个动作：沙漠、梦境的出口到点重新连接；沙漏房里的沙子往下流"""
+    player = load_player(cur, player_id)
+    room = player.room_id
+    if not dungeon.is_dungeon(room):
+        return []
+    facts = []
+    theme = dungeon.data()["themes"][dungeon.floor_info(cur, room)["theme"]]
+    if shift := theme.get("shifting_exits"):
+        n = int(dungeon.floor_state(cur, room).get("acts", 0)) + 1
+        dungeon.set_floor_state(cur, room, {"acts": n})
+        if n % shift.get("every", 8) == 0 and dungeon.shift_exits(cur, room, random.randint(2, 3)):
+            facts.append(shift.get("label") or f"远处传来石墙挪动的闷响，{theme['name']}里有几条路变了（走过的地方可能不再相通）")
+    glass = player.flags.get(HOURGLASS)
+    if glass and glass.get("room") != room:
+        cur.execute("update players set flags = flags - %s where id = %s", (HOURGLASS, player.id))    # 及时走出来了
+        glass = None
+    timed = (_room_props(cur, room).get("dispensers") or {}).get("event") or {}
+    if not glass and timed.get("service") == "timed":
+        cur.execute("select 1 from dispenser_log where player_id = %s and room_id = %s and key = 'event'", (player.id, room))
+        if not cur.fetchone():
+            # 刚进沙漏房：身后的石门开始往下落
+            glass = {"room": room, "left": int(timed.get("actions", 3)) + 1}
+            cur.execute("update players set flags = flags || jsonb_build_object(%s::text, %s::jsonb) where id = %s",
+                        (HOURGLASS, Jsonb(glass), player.id))
+    if glass:
+        left = int(glass["left"]) - 1
+        if left > 0:
+            cur.execute("update players set flags = jsonb_set(flags, %s, to_jsonb(%s::int)) where id = %s",
+                        ([HOURGLASS, "left"], left, player.id))
+            facts.append(f"（沙漏里的沙子还够 {left} 个动作）")
+        else:
+            cur.execute("update players set flags = flags - %s where id = %s", (HOURGLASS, player.id))
+            cur.execute("""insert into dispenser_log (player_id, room_id, key) values (%s, %s, 'event')
+                           on conflict do nothing""", (player.id, room))
+            name = dungeon.spawn_wanderer(cur, room)
+            st = _stealth(player)
+            st.detected, st.hidden = True, False
+            _save_stealth(cur, player, st)
+            facts.append(f"最后一粒沙子落了下去，石门轰地关死，墙里走出了{name}：得打一架才能出去")
+    return facts
+
+
+HOURGLASS = "_hourglass"                # players.flags：沙漏房里还剩几个动作 {"room", "left"}
+
+
+def _room_props(cur: Cursor, room_id: str) -> dict:
+    cur.execute("select props from rooms where id = %s", (room_id,))
+    row = cur.fetchone()
+    return (row and row["props"]) or {}      # 执行完加声响的动作（静默神殿）
 
 
 def execute_all(conn: Connection, view: RoomView, actions: list[PlayerAction], enemies: bool = True) -> list[ActionResult]:
@@ -5314,6 +5447,9 @@ def execute_all(conn: Connection, view: RoomView, actions: list[PlayerAction], e
             action.message = slur(action.message)
         result = execute(conn, view, action)
         result.facts[:0], pending = pending, []
+        if result.success and dungeon.is_dungeon(view.room.id) and action.action not in ("look", "reject"):
+            with conn.transaction():
+                result.facts += _floor_clock(_cursor(conn), view.player.id)
         if result.success and action.action in NOISY and dungeon.is_dungeon(view.room.id):
             with conn.transaction():
                 cur = _cursor(conn)

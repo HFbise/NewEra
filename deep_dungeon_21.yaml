@@ -89,7 +89,7 @@ themes:
       name: 无面法老
       description: 一个身披金袍的高大木乃伊，头上戴着沉重的法老冠冕，冠冕下面却没有脸，只有一片平滑的金箔。
       persona: 他生前是这座城的王，为了永生把自己的脸献给了山岳之上的那一位。他恨一切有脸的人，要把他们也裹进布里，永远陪着他。
-      hp: 1.2
+      hp: 1.0                   # 初版1.2、两波木乃伊；模拟里裹尸布太多，第 21 层普通档团灭近五成
       atk: 10
       def: 20
       undead: true
@@ -97,7 +97,7 @@ themes:
       weak: fire
       actions: {16: 2, 31: 3}
       skills:
-        - {waves: [0.7, 0.4], do: summon, kind: mummy, label: 他抬起手，墓室里的一具木乃伊慢慢坐了起来}
+        - {waves: [0.6], do: summon, kind: mummy, label: 他抬起手，墓室里的一具木乃伊慢慢坐了起来}
         - {when: every, value: 3, do: combo, target: highest_threat, label: 他指向你，一截发黄的裹尸布像蛇一样缠了上来,
            effects: [{kind: wrapped}, {kind: mark, bonus: 20}]}
         - {when: every, value: 4, do: telegraph, label: 他张开双臂，四周的沙子开始旋转（下一次出手全场卷进沙暴，躲到石柱后面能少挨一半）,
