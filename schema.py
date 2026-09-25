@@ -597,6 +597,7 @@ class Stealth(BaseModel):
     distance: dict[str, int] = {}       # 和每只 NPC（id）隔几格，没记的是 engine.START_DISTANCE
     struck: bool = False                # 这场仗已经出过手了（伏击者短刀这类"每场第一次攻击"的效果用）
     reloaded: bool = False              # 这场仗箭袋腰带已经白给过一次装填了
+    alerted: bool = False               # 戒备：这个房间的怪发现过他（躲起来能暂时甩掉，但不能再偷袭），怪死光或换房间才清
 
 
 Player.model_rebuild()                  # stealth 引用了后面才定义的 Stealth

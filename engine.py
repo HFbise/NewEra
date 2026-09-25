@@ -80,6 +80,11 @@ DISTANCE_WORDS = {0: "贴身", 1: "一步之遥", 2: "几步开外"}
 
 # 徒手一击毙命、直接打晕：只有敌人没发现你时能偷袭，按隐匿判，难度至少这么高；对方有防备就不可能
 ASSASSINATE_DIFFICULTY = 4
+
+
+def assassinate_difficulty(depth: int) -> int:
+    """偷袭（暗杀）的难度下限：4 起，每 6 层 +1（连续涨），深层的怪不再跟第 1 层一样好秒"""
+    return ASSASSINATE_DIFFICULTY + round(steps(depth, 6))
 KEEN_EXTRA = 2                          # 对警觉的怪偷袭暗杀难度 +2（它们一见面就发现人，见 _keen_spotted）
 PRONE_DECISIVE_DIFFICULTY = 3           # 对刚被绊倒在地的下狠手（打晕、断手、一击毙命）难度至少这么高
 
@@ -946,7 +951,7 @@ def do_move(cur: Cursor, player: Player, view: RoomView, a: Move) -> list[str]:
     # 自己走就不再跟着别人
     spotted = _keen_spotted(cur, to)
     cur.execute("update players set room_id = %s, following = null, stealth = %s, updated_at = now() where id = %s",
-                (to, Jsonb(Stealth(room=to, chance=DETECT_START, detected=bool(spotted)).model_dump()), player.id))
+                (to, Jsonb(Stealth(room=to, chance=DETECT_START, detected=bool(spotted), alerted=bool(spotted)).model_dump()), player.id))
     room = load_room(cur, to)
     dungeon.mark_seen(cur, to)
     facts.append(f"{player.name}往{dir_name(a.direction)}走，来到了{room.name}")
@@ -973,7 +978,7 @@ def do_move(cur: Cursor, player: Player, view: RoomView, a: Move) -> list[str]:
         facts.append(f"{'、'.join(names)}跟着{player.name}一起来到了{room.name}")
         if spotted:
             cur.execute("update players set stealth = %s where name = any(%s)",
-                        (Jsonb(Stealth(room=to, chance=DETECT_START, detected=True).model_dump()), names))
+                        (Jsonb(Stealth(room=to, chance=DETECT_START, detected=True, alerted=True).model_dump()), names))
         if arrived:
             facts += dungeon.arrived(cur, names, dungeon.parse_room(to)[1]) + _torch_floor(cur, names, to)
     if spotted:
@@ -2422,6 +2427,8 @@ def env_text(cur: Cursor, room: Room) -> str:
 
 
 def _save_stealth(cur: Cursor, player: Player, st: Stealth) -> None:
+    if st.detected:
+        st.alerted = True                   # 发现过一次就一直戒备着，躲起来也只是暂时找不到，偷袭不了
     cur.execute("update players set stealth = %s where id = %s", (Jsonb(st.model_dump()), player.id))
 
 
@@ -2515,12 +2522,25 @@ def _dodge_bonus(player: Player) -> float:
     return DODGE_BONUS + DODGE_PER_LEVEL * skill_level(player.skills.get("perception", 0))
 
 
+HIDE_SEEN, HIDE_CLOSE = 3, 4              # 战斗中躲藏的难度下限：已被发现 / 有怪贴身
+HIDDEN_HIT = 0.5                        # 躲起来那一轮，贴身又早发现了他的怪摸黑乱挥，命中减半
+
+
 def do_hide(cur: Cursor, player: Player, view: RoomView, a: Hide) -> list[str]:
     """躲起来（隐匿）：成功了几率不再上涨；已经被发现的，躲成功就甩掉了（难度高一级）"""
     st = _stealth(player)
+    foes = [n for n in _enemies(cur, player.room_id) if n.status is None]
+    if keen := next((n for n in foes if n.template.props.get("keen")), None):
+        raise ActionError(f"鼻子灵的{keen.name}一直盯着{player.name}，藏不住")
     env = _room_env(cur, player.room_id)
     easier = bool(env.get("cover")) + (_light(cur, player.room_id, env) < LIGHT_DARK)
-    ok, rolled = _check(cur, player, view, "stealth", max(1, min(10, a.difficulty + st.detected - easier)))
+    diff = a.difficulty + st.detected - easier
+    # 战斗中躲藏的下限：已经被发现至少 HIDE_SEEN，有怪贴身至少 HIDE_CLOSE（以前 AI 给 1–3，隐匿 4 级 95% 必成）
+    if st.detected:
+        diff = max(diff, HIDE_SEEN)
+    if any(_distance(st, n) == 0 for n in foes):
+        diff = max(diff, HIDE_CLOSE)
+    ok, rolled = _check(cur, player, view, "stealth", max(1, min(10, diff)))
     facts = [f"{player.name}尝试：{a.description or '躲起来'}"] + rolled
     if not ok:
         return facts + [f"{player.name}没能藏好"]
@@ -2599,9 +2619,11 @@ def enemy_turn(conn: Connection, player_id: UUID, actions: list[PlayerAction],
         # 被放倒、被捆住的看不见也打不了人，正是偷袭的时候
         enemies = [n for n in alive if n.status is None]
         hid = dodge = False
+        seen = st.detected or st.alerted            # 躲之前就被发现过（躲藏已经先存了，看戒备）：贴身的怪这一轮照样摸黑乱挥
         for a, r in done:                           # 按先后顺序：先躲再动手就暴露，动完手再躲成了就藏住
             if a.action in ("attack", "stunt") and r.success:
                 st.detected, st.hidden, hid = bool(alive), False, False     # 动了手就暴露了
+                seen = True
             elif a.action in ("say", "talk"):
                 st.hidden = hid = False                                     # 出声就藏不住了
             elif a.action == "hide" and r.success:
@@ -2609,6 +2631,17 @@ def enemy_turn(conn: Connection, player_id: UUID, actions: list[PlayerAction],
             elif a.action == "dodge" and r.success:
                 dodge = True
         stood = ticked + _enemies_stand(cur, alive)          # 倒地的这一轮爬起来，不算打断
+        if hid and enemies and seen:
+            # 躲起来了：别的怪跟丢了他，贴身的那几只摸黑乱挥（命中减半）
+            close = [n for n in enemies if _distance(st, n) == 0]
+            facts = [f"{'、'.join(n.name for n in close)}就在跟前，朝着{player.name}刚才的位置乱挥"] if close else []
+            for npc in close:
+                for _ in range(npc.template.props.get("attacks", 1)):
+                    facts += _enemy_act(cur, player, st, npc, 0.0, False, HIDDEN_HIT)
+                if player.hp <= 0:
+                    break
+            _save_stealth(cur, player, st)
+            return stood + facts, bool(facts)
         if not enemies or hid:
             _save_stealth(cur, player, st)
             return stood, False
@@ -2818,9 +2851,11 @@ def round_enemies(conn: Connection, room_id: str, done: dict[UUID, list[tuple[Pl
         for p in players:
             st = _stealth(p)
             hid = dodge = False
+            seen = st.detected or st.alerted
             for a, r in done.get(p.id, []):             # 按先后顺序：先躲再动手就暴露，动完手再躲成了就藏住
                 if a.action in ("attack", "stunt") and r.success:
                     st.detected, st.hidden, hid = True, False, False
+                    seen = True
                 elif a.action in ("say", "talk"):
                     st.hidden = hid = False
                 elif a.action == "hide" and r.success:
@@ -2838,28 +2873,31 @@ def round_enemies(conn: Connection, room_id: str, done: dict[UUID, list[tuple[Pl
             bonus = _dodge_bonus(p) if dodge else 0.0
             if _room_env(cur, room_id).get("ground") == "water" and not gear_has(cur, p, "wade"):
                 bonus /= 2
-            entry = {"p": p, "st": st, "dodge": bonus}
+            entry = {"p": p, "st": st, "dodge": bonus, "hit": 1.0}
             if st.detected and not hid:
                 cands.append(entry)
+            elif hid and seen and any(_distance(st, n) == 0 for n in enemies):
+                cands.append(entry | {"hit": HIDDEN_HIT, "close": {n.id for n in enemies if _distance(st, n) == 0}})
             else:
                 _save_stealth(cur, p, st)
         for npc in enemies:
             if any(f.startswith(f"{npc.name}摆脱了") for f in freed):
                 continue                                # 挨打那一下刚摆脱状态的，这一轮来不及还手
             # 头目：该放技能就放（放技能就是这一次出手；判罪标完照样打）
-            skill, acted = _boss_turn(cur, npc, [c["p"] for c in cands if c["p"].hp > 0])
+            skill, acted = _boss_turn(cur, npc, [c["p"] for c in cands if c["p"].hp > 0 and "close" not in c])
             facts += skill
             if acted:
                 continue
             # 一轮出手几次：一般一次；组队时房间怪满了、折成血的那些多打几次（dungeon._spawn_group）
             for k in range(npc.template.props.get("attacks", 1)):
-                live = [c for c in cands if c["p"].hp > 0]
+                # 躲起来的人只有贴身、早发现他的怪够得着（摸黑乱挥，命中减半）
+                live = [c for c in cands if c["p"].hp > 0 and ("close" not in c or npc.id in c["close"])]
                 if not live:
                     break
                 if k >= npc.template.props.get("base_attacks", 99) and not _roll(npc.template.props["extra_chance"]):
                     continue                            # 迅捷的：多出来的那一下这回没赶上
                 c = _pick_target(cur, npc, live, hits, healers)
-                facts += _enemy_act(cur, c["p"], c["st"], npc, c["dodge"], hits.get(npc.id) == c["p"].id)
+                facts += _enemy_act(cur, c["p"], c["st"], npc, c["dodge"], hits.get(npc.id) == c["p"].id, c["hit"])
         for c in cands:
             _save_stealth(cur, c["p"], c["st"])
         return facts + _smoke_fades(cur, room_id)
@@ -2981,7 +3019,9 @@ def _count(cur: Cursor, npc: Npc, key: str) -> int:
     return cur.fetchone()["n"]
 
 
-def _enemy_act(cur: Cursor, player: Player, st: Stealth, npc: Npc, dodge: float, pinned: bool) -> list[str]:
+def _enemy_act(cur: Cursor, player: Player, st: Stealth, npc: Npc, dodge: float, pinned: bool,
+               hit: float = 1.0) -> list[str]:
+    """hit：命中倍数（躲起来那一轮贴身的怪摸黑乱挥是 HIDDEN_HIT）"""
     props = npc.template.props
     if (share := props.get("healer")) and _roll(HEALER_CHANCE) and _tally(cur, npc, "heals") < HEALER_MAX:
         hurt = [n for n in _enemies(cur, npc.room_id)
@@ -3010,13 +3050,13 @@ def _enemy_act(cur: Cursor, player: Player, st: Stealth, npc: Npc, dodge: float,
         if not _holds_fire(cur, player):        # 拿火把的人在暗处最显眼；别人在暗处不好瞄
             chance = light_hit(_light(cur, room), chance)
         chance *= _shot_smoke(cur, room, True)
-        return pinned_note + _npc_strike(cur, player, npc, props.get("verb") or "放了一箭", max(0.0, chance))
+        return pinned_note + _npc_strike(cur, player, npc, props.get("verb") or "放了一箭", max(0.0, chance) * hit)
     facts = []
     if d > 0:
         d = _set_distance(st, npc, d - ENEMY_STEP)
         facts.append(f"{npc.name}逼近过来，离{player.name} {distance_word(d)}")
     if d in MELEE_HIT:
-        facts += _npc_strike(cur, player, npc, props.get("verb") or "扑上来攻击", max(0.0, MELEE_HIT[d] - dodge))
+        facts += _npc_strike(cur, player, npc, props.get("verb") or "扑上来攻击", max(0.0, MELEE_HIT[d] - dodge) * hit)
     return facts
 
 
@@ -3132,7 +3172,7 @@ def do_attack(cur: Cursor, player: Player, view: RoomView, a: Attack) -> list[st
         facts = [f"正打在{npc.name}的弱点上（{weak}），伤害 ×{WEAK_MULT:g}"] + facts
     if critted:
         facts = [f"会心一击！这一下伤害 ×{crit.get('mult', 2)}"] + facts
-    facts += _assassinated(cur, player, view, npc, dead, not st.detected)
+    facts += _assassinated(cur, player, view, npc, dead, not st.detected and not st.alerted)
     facts = (guarded + [f"{player.name}{how}{npc.name}，造成 {dmg} 点伤害"]
              + _labels([e for e in fired if e["do"] in ("bonus", "pierce")]) + facts
              + _hit_extras(cur, player, npc, dmg, dead, fired)
@@ -3423,7 +3463,7 @@ def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]
             tier = a.tier if is_npc else _lower(a.tier, TIERS)
             finisher = is_npc
         else:
-            sneak = is_npc and target.template.hostile and not _stealth(player).detected
+            sneak = is_npc and target.template.hostile and not _stealth(player).detected and not _stealth(player).alerted
             downed = target.status is not None and target.status.kind == "prone"
             if downed and not sneak:
                 # 刚被绊倒在地：趁它爬起来之前下狠手，有机会但不容易
@@ -3436,7 +3476,8 @@ def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]
                 facts.append(f"{target.name}有防备，想这样一下制住{'它' if is_npc else '他'}根本不可能")
                 return facts + (_npc_counter(cur, player, target) if is_npc else [])
             else:
-                skill, diff = "stealth", max(diff, ASSASSINATE_DIFFICULTY) + (KEEN_EXTRA if target.template.props.get("keen") else 0)
+                depth = target.template.props.get("dungeon", {}).get("depth", 0)
+                skill, diff = "stealth", max(diff, assassinate_difficulty(depth)) + (KEEN_EXTRA if target.template.props.get("keen") else 0)
                 facts.append(f"{target.name}还没发现{player.name}，可以出其不意地偷袭")
                 tier, finisher = a.tier, True       # 偷袭得手不受徒手最多轻伤的限制
     if harmless_prank:
@@ -3456,6 +3497,10 @@ def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]
     down = stunned = False
     # 偷袭、补刀判成致命就是一击毙命（扭断脖子），其余按档位的区间随机
     lethal_blow = finisher and tier == "lethal"
+    double = False
+    if lethal_blow and is_npc and target.template.props.get("dungeon", {}).get("rank") in ("elite", "boss"):
+        lethal_blow, tier, double = False, "heavy", True
+        facts.append(f"{target.name}身板太硬，这一下没能要了它的命，但伤得不轻")
     # 只图伤害的花样（不上状态、不推不撞、没借地形、没用掉东西）打怪：按普攻的算法（面板攻击减防御）再加档位的伤害，
     # 比普攻重一点；带效果的照旧是档位 + 一半武器伤害（好处在效果上）
     pure = (is_npc and tier != "none" and not a.status and not a.push and not a.knockback and not feature and not material
@@ -3468,9 +3513,11 @@ def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]
                else _bled(player, swing) if pure
                else _bled(player, random.randint(*TIER_RANGE[tier])
                           + (int(weapon_damage(weapon) * WEAPON_STUNT_SHARE) if weapon and tier != "none" else 0))):
+        if double:
+            dmg *= 2                            # 对精英、头目的致命偷袭：重伤档的伤害翻倍
         if is_npc:
             hurt, down = _hurt_npc(cur, player, target, dmg)
-            hurt += _assassinated(cur, player, view, target, down, not _stealth(player).detected)
+            hurt += _assassinated(cur, player, view, target, down, not _stealth(player).detected and not _stealth(player).alerted)
         else:
             hurt, down = _hurt_player(cur, target, dmg, *(("poison", poison.name) if poison else ("player", player.name)))
         facts += [f"{target.name}受到 {dmg} 点伤害"] + hurt + ([] if is_npc else _duel_over(cur, down))
