@@ -422,6 +422,10 @@ class Mon:
     stance_at: int = 0
     rung: int = 0                       # 敲钟人摇铃加的攻击
     memory: int = 0                     # 永不醒来的人换过几段记忆
+    lured: bool = False                 # 雾中渔灯：第一下打在灯上
+    ambushed: bool = False              # 雾鳗：每场第一口 ×1.5
+    fare_acts: int = 0
+    fare_due: bool = False
     bell_acts: int = 0
     shield: int = 0                     # 共鸣者套的光膜：挡下几次
     shield_acts: int = 0
@@ -507,7 +511,8 @@ def spawn(depth: int, kind: str, rank: str, theme_key: str, size: int, groups: i
     hp, atk, df = R.monster_stats(depth, m, rank)
     props = {k: m[k] for k in ("animal", "light_averse", "undead", "keen", "ranged", "healer", "on_hit", "guard_allies",
                                "immune", "weak", "stances", "resist_element", "reflect_ranged", "shield_allies", "nodes",
-                               "dormant", "bell", "silence_field", "swarm", "mirror_attack", "revive_once", "memories")
+                               "dormant", "bell", "silence_field", "swarm", "mirror_attack", "revive_once", "memories",
+                               "lure", "ambush", "fare")
              if m.get(k)}
     if m.get("hearing"):
         props["keen"] = True                # 聆听者：偷袭要动身子，它听得见
@@ -591,7 +596,17 @@ class Fight:
             h.struck, h.reloaded_free, h.backs = False, False, 0
 
     def light(self) -> int:
-        return max(0, min(100, self.base_light + self.shift + max([h.torch_light for h in self.heroes if not h.down] or [0])))
+        torch = max([h.torch_light for h in self.heroes if not h.down] or [0])
+        if self.fog:
+            torch = round(torch * self.fog.get("torch_mult", 0.5))       # 浓雾里火把只照得见一半
+        return max(0, min(100, self.base_light + self.shift + torch))
+
+    def set_fog(self, fog: Optional[dict]) -> None:
+        """浓雾：一开战怪就在一步之遥"""
+        self.fog = fog
+        if fog:
+            for key in self.dist:
+                self.dist[key] = min(self.dist[key], fog.get("start_distance", 1))
 
     def sneak_open(self) -> None:
         """潜行打法（engine 第一批改完的规则）：房间里没有警觉的怪才能偷袭，每人开场一下（隐匿对暗杀难度）；
@@ -651,6 +666,7 @@ class Fight:
             return True
         return False
 
+    fog: Optional[dict] = None          # 浓雾（迷雾葬海）
     shift: int = 0                      # 梦境的光亮浮动、星光明暗（engine env.shift）
     jitter: int = 0
     dislocate: int = 0
@@ -813,6 +829,8 @@ class Fight:
         if shooter:
             base = R.STEADY_HIT if shooter.steady else R.RANGED_HIT.get(d, R.RANGED_HIT[max(R.RANGED_HIT)])
             base -= R.RANGED_COVER if self.cover else 0
+            if self.fog and d >= 2:
+                base *= self.fog.get("ranged_far_mult", 0.5)
             if not shooter.free_reload or h.reloaded_free:
                 h.loaded = False
             else:
@@ -843,6 +861,10 @@ class Fight:
             dmg = max(R.SCALE, math.floor(dmg * R.BLEED_DAMAGE))
         if m.props.get("swarm"):
             dmg = max(R.SCALE, dmg // 2)         # 虫群：单体只拍死一小片
+        if m.props.get("lure") and not m.lured:
+            m.lured = True
+            if random.random() < 0.7:
+                return                           # 打在灯上
         weak = m.props.get("weak")
         if (weak == "pierce" and pierce) or (weak in ("light", "bright") and self.light() >= R.LIGHT_BRIGHT):
             dmg = math.ceil(dmg * R.WEAK_MULT)
@@ -888,6 +910,16 @@ class Fight:
             m.stance = m.stance or st.get("start", "cold")
             if acts - m.stance_at >= st.get("every", 3):
                 m.stance, m.stance_at = ("molten" if m.stance == "cold" else "cold"), acts
+        if fare := m.props.get("fare"):
+            if m.fare_due:
+                m.fare_due = False
+                if random.random() >= min(h.smart for h in targets):
+                    self.skill_effect(m, fare["refuse"], targets)
+                return True
+            m.fare_acts += 1
+            if m.fare_acts % fare.get("every", 4) == 0:
+                m.fare_due = True
+                return True
         if m.pending is not None:
             pend, m.pending = m.pending, None
             if pend["hp"] - m.hp >= math.ceil(m.max_hp * R.INTERRUPT_SHARE):
@@ -967,6 +999,9 @@ class Fight:
                 self.base_light = max(0, min(100, self.base_light + sk["env"]["light"]))
             if "heat_mult" in (sk.get("env") or {}):
                 self.heat_mult = sk["env"]["heat_mult"]
+            if "fog_start_distance" in (sk.get("env") or {}):
+                for key in self.dist:
+                    self.dist[key] = min(self.dist[key], sk["env"]["fog_start_distance"])
             if (cfg := m.props.get("nodes")) and cfg.get("regrow_on_phase"):
                 have = sum(1 for x in self.alive() if x.props.get("node"))
                 for x in make_nodes(m, cfg, max(0, cfg.get("count", 3) - have)):
@@ -1054,6 +1089,8 @@ class Fight:
                 return
             chance = R.ENEMY_RANGED_HIT.get(d, R.ENEMY_RANGED_HIT[max(R.ENEMY_RANGED_HIT)])
             chance -= R.RANGED_COVER if self.cover else 0
+            if self.fog and d >= 2:
+                chance *= self.fog.get("ranged_far_mult", 0.5)
             if not h.torch_light:
                 chance = R.light_hit(self.light(), chance)
             self.strike(m, h, chance, ranged=True, mult=mult)
@@ -1082,6 +1119,9 @@ class Fight:
         if marked:
             atk += m.mark_bonus
         dmg = R.hurt_player_by(atk, hero_def(h), m.depth, guard=h.guard_ranged if ranged else 0)
+        if m.props.get("ambush") and not m.ambushed:
+            m.ambushed = True
+            mult *= m.props["ambush"]            # 雾鳗从雾里扑出来的第一口
         dmg = R.scale_damage(dmg, m.props.get("dmg_mult", 1) * mult)
         self.hurt_hero(h, dmg)
         if marked:
@@ -1096,6 +1136,11 @@ class Fight:
         """怪打中附带的、头目全场放的效果（engine._inflict）：中毒流血按那一下的伤害（rules.dot_value），
         重复中招只延长一回合；刚挣脱、爬起来的这个敌人回合不再被同一种控制打中"""
         if h.down:
+            return
+        if kind == "charm":
+            for key in self.dist:
+                if key[0] == id(h):
+                    self.dist[key] = min(2, self.dist[key] + 1)      # 迷迷糊糊往雾里走了一步
             return
         if kind == "dispel":
             h.cheer = False                      # 梦食貘把私酿的劲头吸走了
@@ -1295,6 +1340,7 @@ def run_trip(build: str, quality: str, trip: int, kit: Kit, size: int, stats: di
             fight = Fight([h for h in heroes if not h.down], mons, light, cover, depth)
             fight.heat = THEMES[theme_key].get("heat", {}).get("pct", 0)
             fight.glare = THEMES[theme_key].get("glare")
+            fight.set_fog(THEMES[theme_key].get("fog"))
             fight.jitter = THEMES[theme_key].get("light_jitter", 0)
             fight.dislocate = (THEMES[theme_key].get("dislocate") or {}).get("every", 0)
             fight.sand = sand_of(THEMES[theme_key]) if kind != "stairs" else None
@@ -1361,6 +1407,7 @@ def fight_test(build: str, quality: str, trip: int, depth: int, groups: list[tup
         f = Fight(heroes, mons, room_light(THEMES[theme]) if light is None else light, False, depth)
         f.heat = THEMES[theme].get("heat", {}).get("pct", 0)
         f.glare = THEMES[theme].get("glare")
+        f.set_fog(THEMES[theme].get("fog"))
         f.jitter = THEMES[theme].get("light_jitter", 0)
         f.dislocate = (THEMES[theme].get("dislocate") or {}).get("every", 0)
         f.sand = sand_of(THEMES[theme]) if not boss else None

@@ -176,7 +176,7 @@ SERVICE_NAMES = {"free_upgrade": "锻造纹（照着敲，能把手上的兵器�
                  "treasure_pool": "一件宝物", "timed": "一袋古币（沙子流完之前拿了走人）",
                  "gem": "一颗宝石", "wish": "一个愿望（投钱许愿，要安静）", "cleanse": "忏悔（清掉身上的晦气）",
                  "reveal_next_floor": "碑文（下一层的路）", "buff": "一个祝福", "shortcut": "出去的路",
-                 "memory": "一段往事"}
+                 "memory": "一段往事", "clear_fog": "灯室（点亮灯塔能散雾）", "player_note": "一张纸条"}
 
 
 def load_dispensers(cur: Cursor, room: Room, player_id: UUID) -> list[Dispenser]:
@@ -972,8 +972,14 @@ def do_move(cur: Cursor, player: Player, view: RoomView, a: Move) -> list[str]:
     # 自己走就不再跟着别人
     spotted = _keen_spotted(cur, to)
     cur.execute("update players set room_id = %s, following = null, stealth = %s, updated_at = now() where id = %s",
-                (to, Jsonb(Stealth(room=to, chance=DETECT_START, detected=bool(spotted), alerted=bool(spotted)).model_dump()), player.id))
+                (to, Jsonb(Stealth(room=to, chance=DETECT_START, detected=bool(spotted), alerted=bool(spotted),
+                                   start=_start_distance(cur, to)).model_dump()), player.id))
     room = load_room(cur, to)
+    if (fog := _fog(cur, to)) and (foes := _enemies(cur, to)):
+        # 浓雾：进门过一次察觉，过了就先听见怪在哪
+        ok, _ = _check(cur, player, view, "perception", int(fog.get("perception_reveal", 2)) + dungeon.parse_room(to)[1] // 6)
+        facts.append(f"雾里传来{'、'.join(n.name for n in foes)}的动静，{player.name}听出了它们在哪" if ok
+                     else f"浓雾把四周裹得严严实实，{player.name}什么都看不清，只觉得雾里有东西")
     dungeon.mark_seen(cur, to)
     facts.append(f"{player.name}往{dir_name(a.direction)}走，来到了{room.name}")
     stride = _stride(cur, player, view, "walk", 1)          # 走路也练运动（攒满了这条消息末尾报熟练）
@@ -1348,6 +1354,23 @@ MEMORY_FRAGMENTS = {
 }
 
 
+def _bottle(cur: Cursor, player: Player, d: Dispenser) -> list[str]:
+    """漂流瓶：随机一张别人写过的纸条（没有就是空的），另外有几率捡到 bonus_item"""
+    cur.execute("""select props from item_instances where props ? 'note' and coalesce(player_id::text, '') <> %s
+                   order by random() limit 1""", (str(player.id),))
+    row = cur.fetchone()
+    cur.execute("select id from item_templates where props ? 'writable' limit 1")
+    tpl = cur.fetchone()["id"]
+    props = {k: v for k, v in (row["props"] if row else {}).items() if k in ("note", "writable", "name")}
+    cur.execute("insert into item_instances (template_id, player_id, props) values (%s, %s, %s)", (tpl, player.id, Jsonb(props)))
+    facts = [f"{player.name}拔开瓶塞，倒出一张" + (f"写了字的纸条：“{props['note']}”" if props.get("note") else "空白的纸条")]
+    if (b := d.extra.get("bonus_item")) and _roll(b.get("chance", 0)):
+        _give_player_new(cur, player, b["item"])
+        cur.execute("select name from item_templates where id = %s", (b["item"],))
+        facts.append(f"瓶身上挂着的{cur.fetchone()['name']}也一起到了手里")
+    return facts
+
+
 def _memory_door(cur: Cursor, player: Player, d: Dispenser) -> list[str]:
     """回忆之门：推开一扇门，看见那个人很久以前的一段往事；第一次看到某个人的，好感 +3"""
     seen = set(player.flags.get("_memories") or [])
@@ -1479,6 +1502,11 @@ def _take_from(cur: Cursor, player: Player, view: RoomView, d: Dispenser) -> lis
         return facts + _mirror_duel(cur, player, d)
     if d.service == "wish":
         return facts + _wish(cur, player, d)
+    if d.service == "clear_fog":
+        dungeon.set_floor_state(cur, player.room_id, {"fog_clear": True})
+        return facts + [f"{player.name}点亮了灯塔，一束光扫过海面，这一层的雾散开了（远程、火把照常，怪不再一进门就在跟前）"]
+    if d.service == "player_note":
+        return facts + _bottle(cur, player, d)
     if d.service == "buff":
         b = d.extra.get("buff") or {}
         for stat in ("atk_pct", "hit_pct", "dodge"):
@@ -2491,7 +2519,10 @@ def _npc_strike(cur: Cursor, player: Player, npc: Npc, verb: str, chance: float 
     if marked:
         atk += int(_tallies(cur, npc).get("mark_bonus", 2))     # 典狱长判了罪的人
     guard = sum(int(e.get("value", 0)) for e in _fire(cur, player, "hurt", "guard", npc))       # 恶犬项圈
-    dmg = scale_damage(hurt_player_by(atk, _defense(cur, player), depth, guard=guard), props.get("dmg_mult", 1) * mult)
+    ambush = props.get("ambush") if props.get("ambush") and not _tally(cur, npc, "ambushed") else 1
+    if ambush != 1:
+        _tally_merge(cur, npc, {"ambushed": 1})         # 雾鳗：每场第一口从雾里扑出来
+    dmg = scale_damage(hurt_player_by(atk, _defense(cur, player), depth, guard=guard), props.get("dmg_mult", 1) * mult * ambush)
     saved = []
     if dmg >= player.hp and (mark := _carries(cur, player, "guard_once")) and _once_per_floor(cur, player, "cheat_death"):
         return [f"{npc.name}{verb}，这一下本该要了{player.name}的命",
@@ -2543,7 +2574,33 @@ def distance_word(d: int) -> str:
 
 def _distance(st: Stealth, npc: Npc) -> int:
     # 长在头目身上的（晶簇，props.host）：离头目多远就离它多远
-    return st.distance.get(npc.template.props.get("host") or str(npc.id), START_DISTANCE)
+    return st.distance.get(npc.template.props.get("host") or str(npc.id), st.start)
+
+
+FOG_SPOT = 0.75                         # 浓雾里怪发现人的几率倍数（躲藏容易一级，双方都看不清）
+FOG_FAR = 0.5                           # 浓雾里远程打"几步开外"的命中倍数（theme.fog.ranged_far_mult）
+
+
+def _fog(cur: Cursor, room_id: str, player: Optional[Player] = None) -> Optional[dict]:
+    """这个房间有没有浓雾（迷雾葬海 theme.fog）：灯塔点亮了（整层 fog_clear）、雾笛吹散了（env.fog_off）、
+    带着不怕雾的东西的人不算"""
+    if not dungeon.is_dungeon(room_id):
+        return None
+    cfg = dungeon.data()["themes"][dungeon.floor_info(cur, room_id)["theme"]].get("fog")
+    if not cfg or dungeon.floor_state(cur, room_id).get("fog_clear") or int(_room_env(cur, room_id).get("fog_off", 0)) > 0:
+        return None
+    if player and gear_has(cur, player, "fog_immune"):
+        return None
+    return cfg
+
+
+def _start_distance(cur: Cursor, room_id: str) -> int:
+    """进门时怪离你几格：平时 START_DISTANCE，浓雾里 fog.start_distance，渡魂者吹熄了灯就贴身"""
+    env = _room_env(cur, room_id)
+    if "fog_start" in env:
+        return int(env["fog_start"])
+    fog = _fog(cur, room_id)
+    return int(fog.get("start_distance", START_DISTANCE)) if fog else START_DISTANCE
 
 
 def _set_distance(st: Stealth, npc: Npc, d: int) -> int:
@@ -2597,6 +2654,13 @@ def _on_hit(cur: Cursor, player: Player, npc: Npc, base: Optional[int] = None) -
     if resist <= 0 or not _roll(hit.get("chance", 0.25) * resist):
         return []
     depth = npc.template.props.get("dungeon", {}).get("depth", 1)
+    if hit["kind"] == "charm":
+        # 迷惑：迷迷糊糊往雾里走了一步，离所有怪都远一格
+        st = _stealth(player)
+        for n in _enemies(cur, player.room_id):
+            _set_distance(st, n, _distance(st, n) + 1)
+        _save_stealth(cur, player, st)
+        return [_on_you(player.name, hit.get("label", "被迷住了，往后退了一步")) + "（离怪都远了一格）"]
     return _inflict(cur, player, hit["kind"], hit.get("label", ""), depth, npc.name, hit.get("escape", 2), hit.get("turns"),
                    hit.get("value_mult", 1.0), base)
 
@@ -2774,7 +2838,14 @@ def _light(cur: Cursor, room_id: str, env: Optional[dict] = None, player: Option
                        where p.room_id = %s and (t.props ? 'light' or i.props ? 'gem_light') and i.equipped_slot is not null""",
                     (room_id,))
         row = cur.fetchone()
-        level += (row["torch"] or 0) + (row["lamp"] or 0)
+        torch, lamp = row["torch"] or 0, row["lamp"] or 0
+        if (torch or lamp) and (fog := _fog(cur, room_id)):
+            cur.execute("""select 1 from item_instances i join item_templates t on t.id = i.template_id join players p on p.id = i.player_id
+                           where p.room_id = %s and i.equipped_slot is not null and (t.props->>'fog_ignore')::boolean limit 1""",
+                        (room_id,))
+            mult = 1.0 if cur.fetchone() else fog.get("torch_mult", 0.5)        # 灯塔的提灯在雾里照常亮
+            torch, lamp = round(torch * mult), round(lamp * mult)
+        level += torch + lamp
     if env and (scroll := env.get("scroll")):
         cur.execute("select 1 from players where id = %s and room_id = %s", (scroll["by"], room_id))
         if cur.fetchone():
@@ -3051,6 +3122,10 @@ def _room_turn(cur: Cursor, room_id: str) -> list[str]:
     facts, upd = [], {}
     if j := theme.get("light_jitter"):
         upd["shift"] = random.randint(-j, j)
+    if int(env.get("fog_off", 0)) > 0:
+        upd["fog_off"] = int(env["fog_off"]) - 1
+        if upd["fog_off"] == 0:
+            facts.append("雾又慢慢合拢了")
     if dis := theme.get("dislocate"):
         n = int(env.get("turns", 0)) + 1
         upd["turns"] = n
@@ -3096,6 +3171,7 @@ def do_hide(cur: Cursor, player: Player, view: RoomView, a: Hide) -> list[str]:
     env = _room_env(cur, player.room_id)
     easier = bool(env.get("cover")) + (_light(cur, player.room_id, env) < LIGHT_DARK)
     # 最敏锐的那只怪说了算（迟钝 -1、敏锐 +1）；手里拿着点着的火把 +1
+    easier += int((_fog(cur, player.room_id) or {}).get("stealth_bonus", 0))       # 浓雾里好躲
     diff = a.difficulty + st.detected - easier + max([_perception(n) for n in foes] or [0]) + _holds_fire(cur, player)
     # 战斗中躲藏的下限：已经被发现至少 HIDE_SEEN，有怪贴身至少 HIDE_CLOSE（以前 AI 给 1–3，隐匿 4 级 95% 必成）
     if st.detected:
@@ -3180,7 +3256,7 @@ def enemy_turn(conn: Connection, player_id: UUID, actions: list[PlayerAction],
         ticked = _tick_npc_effects(cur, player, alive)          # 被装备打中毒、流血的怪先掉血
         alive = [n for n in alive if n.alive]
         if not alive:
-            st = Stealth(room=player.room_id, chance=DETECT_START)   # 敌人都死了，下一只（搜出来、刷回来的）重新算
+            st = Stealth(room=player.room_id, chance=DETECT_START, start=_start_distance(cur, player.room_id))   # 敌人都死了，重新算
         # 被放倒、被捆住的看不见也打不了人，正是偷袭的时候
         enemies = [n for n in alive if n.status is None]
         hid = dodge = False
@@ -3216,7 +3292,7 @@ def enemy_turn(conn: Connection, player_id: UUID, actions: list[PlayerAction],
         facts = []
         if not st.detected:
             keen = any(n.template.props.get("keen") for n in enemies)     # 狼、恶犬、石像鬼、头目：藏不住
-            if keen or _roll(min(1.0, st.chance * _sharpness(enemies))):
+            if keen or _roll(min(1.0, st.chance * _sharpness(enemies) * (FOG_SPOT if _fog(cur, player.room_id) else 1))):
                 st.detected, st.hidden = True, False
                 facts.append(f"{'、'.join(n.name for n in enemies)}发现了{player.name}")
             elif not st.hidden:
@@ -3466,7 +3542,7 @@ def round_enemies(conn: Connection, room_id: str, done: dict[UUID, list[tuple[Pl
                 facts.append(heard.replace("{who}", p.name))
             if enemies and not hid and not st.detected:
                 keen = any(n.template.props.get("keen") for n in enemies)
-                if keen or _roll(min(1.0, st.chance * _sharpness(enemies))):
+                if keen or _roll(min(1.0, st.chance * _sharpness(enemies) * (FOG_SPOT if _fog(cur, room_id) else 1))):
                     st.detected, st.hidden = True, False
                     facts.append(f"{'、'.join(n.name for n in enemies)}发现了{p.name}")
                 elif not st.hidden:
@@ -3535,6 +3611,23 @@ def _tally_merge(cur: Cursor, npc: Npc, values: dict) -> None:
     cur.execute("update npcs set tally = tally || %s where id = %s", (Jsonb(values), npc.id))
 
 
+def _fare(cur: Cursor, npc: Npc, targets: list[Player], depth: int, theme: str, dodging: set) -> tuple[list[str], bool]:
+    """渡魂者（props.fare）：每出手 every 次伸手要钱（gold_per_depth × 层数），这一下不打人；
+    下一次出手前有人付了（「给渡魂者 N 金币」），他收手；没人付就是一记重击（refuse）"""
+    fare = npc.template.props.get("fare")
+    t = _tallies(cur, npc)
+    if t.get("fare_due"):
+        _tally_merge(cur, npc, {"fare_due": None, "fare_paid": None})
+        if t.get("fare_paid"):
+            return [f"{npc.name}把钱收进斗篷里，船桨慢慢放了下来（这一下不打了）"], True
+        return [f"没人给钱。{npc.name}把船桨高高抡了起来"] + _skill_effect(cur, npc, fare["refuse"], targets, depth, theme, dodging), True
+    if _count(cur, npc, "fare_acts") % fare.get("every", 4) == 0:
+        gold = int(fare.get("gold_per_depth", 5)) * depth
+        _tally_merge(cur, npc, {"fare_due": gold})
+        return [_by(npc, fare.get("label", "伸手要钱")) + f"（船费 {gold} 金币：说「给{npc.name} {gold} 金币」）"], True
+    return [], False
+
+
 def _memory(cur: Cursor, npc: Npc) -> list[str]:
     """永不醒来的人（props.memories）：血掉到 at 以下，房间整个换成另一段记忆（名字、光亮、掩体、环境物件、灼热）"""
     mems = npc.template.props.get("memories") or []
@@ -3565,6 +3658,11 @@ def _boss_turn(cur: Cursor, npc: Npc, targets: list[Player], dodging: Optional[s
     skills = props.get("skills")
     if not skills or not targets or npc.hp is None:
         return [], False
+    if props.get("fare"):
+        info = props.get("dungeon", {})
+        fared, took = _fare(cur, npc, targets, info.get("depth", 1), info.get("theme", ""), dodging or set())
+        if took:
+            return fared, True
     t = _tallies(cur, npc)
     acts, used = t.get("acts", 0), set(t.get("used", []))
     upd: dict = {"acts": acts + 1}
@@ -3728,6 +3826,14 @@ def _skill_effect(cur: Cursor, npc: Npc, s: dict, targets: list[Player], depth: 
             if env.get("ground"):
                 new["ground"] = env["ground"]
                 facts.append({"sand": "（脚下变成了流沙：挪一步都难，站着不动会往下陷）"}.get(env["ground"], "（脚下变成了积水，行动不便）"))
+            if "fog_start_distance" in env:
+                new["fog_start"] = env["fog_start_distance"]
+                for p in load_players_in(cur, npc.room_id):
+                    st = _stealth(p)
+                    for n in _enemies(cur, npc.room_id):
+                        _set_distance(st, n, min(_distance(st, n), int(env["fog_start_distance"])))
+                    _save_stealth(cur, p, st)
+                facts.append("（雾浓得伸手不见五指，所有东西都贴到了跟前）")
             if env.get("sealed"):
                 new["sealed"] = True
                 facts.append("（门被封死了，打完之前谁也出不去）")
@@ -3847,6 +3953,8 @@ def _enemy_act(cur: Cursor, player: Player, st: Stealth, npc: Npc, dodge: float,
         if not _holds_fire(cur, player):        # 拿火把的人在暗处最显眼；别人在暗处不好瞄
             chance = light_hit(_light(cur, room), chance)
         chance *= _shot_smoke(cur, room, True)
+        if d >= 2 and _fog(cur, room):
+            chance *= FOG_FAR                   # 浓雾里隔着几步开外射不准
         return pinned_note + _npc_strike(cur, player, npc, props.get("verb") or "放了一箭", max(0.0, chance) * hit, dmg)
     facts = []
     if d > 0:
@@ -3925,7 +4033,8 @@ def do_attack(cur: Cursor, player: Player, view: RoomView, a: Attack) -> list[st
         light = _light(cur, player.room_id, player=player)
         if gear_has(cur, player, "darkvision") and not _effect(player, "blind"):
             light = max(light, LIGHT_FULL)      # 石像鬼之眼：暗处命中不打折
-        chance = light_hit(light, _hit_base(shooter, d) - _cover(cur, player.room_id, shooter)) \
+        fogged = FOG_FAR if shooter and d >= 2 and _fog(cur, player.room_id, player) else 1.0
+        chance = fogged * light_hit(light, _hit_base(shooter, d) - _cover(cur, player.room_id, shooter)) \
             * _shot_smoke(cur, player.room_id, shooter) * _blind(player)
         if not _roll(max(0.0, chance - _drunk(player) - _poisoned(player) + _prone_bonus(npc, d))):
             swung = _fire(cur, player, "attack", npc=npc)
@@ -3969,11 +4078,21 @@ def do_attack(cur: Cursor, player: Player, view: RoomView, a: Attack) -> list[st
         dmg = math.ceil(dmg * crit.get("mult", 2))
     if npc.template.props.get("swarm"):
         dmg = max(SCALE, dmg // 2)              # 虫群：一下只拍死一小片
+    if npc.template.props.get("lure") and not _tally(cur, npc, "lured"):
+        _tally_merge(cur, npc, {"lured": 1})
+        ok, rolled = _check(cur, player, view, "perception", 2 + npc.template.props.get("dungeon", {}).get("depth", 0) // 6)
+        if not ok:
+            return [f"{player.name}{how}{npc.name}，却只打中了它挂在前面的那盏灯，灯晃了一下又亮了"] + rolled
+        rolled.append(f"{player.name}看穿了那盏灯只是个饵，一下打在了灯后面的身子上")
+        dmg_note = rolled
+    else:
+        dmg_note = []
     if shooter and (reflect := npc.template.props.get("reflect_ranged")) and _roll(reflect):
         # 棱镜元素：远程的这一下被晶面折了回来，打在自己身上（一半）
         hurt, _ = _hurt_player(cur, player, max(SCALE, dmg // 2), "npc", npc.name)
         return [f"{player.name}{how}{npc.name}，被它身上的晶面折了回来，自己挨了 {max(SCALE, dmg // 2)} 点"] + hurt
     facts, dead = _hurt_npc(cur, player, npc, dmg)
+    facts[:0] = dmg_note
     if not shooter and not dead and (thorns := npc.template.props.get("thorns"))             and _roll(npc.template.props.get("thorns_chance", 1.0)):
         hurt, _ = _hurt_player(cur, player, thorns, "npc", npc.name)          # 荆棘的精英：近战砍它被扎回来
         facts += [f"{npc.name}身上的硬刺扎了回来，{player.name}受到 {thorns} 点伤害"] + hurt
@@ -4241,6 +4360,9 @@ def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]
                     (feature["id"],))
     env = _room_env(cur, player.room_id)
     doused = _feature_break(cur, player.room_id, feature["name"]) if feature and feature["uses_left"] <= 1 else []
+    if feature and (n := _feature_cfg(cur, player.room_id, feature["name"]).get("clears_fog")):
+        cur.execute("update rooms set props = jsonb_set(props, '{env,fog_off}', to_jsonb(%s::int)) where id = %s", (n, player.room_id))
+        doused.append(f"{feature['name']}一声长鸣，四周的雾被震得散开了（{n} 个回合里看得清）")
     if feature:
         doused += _noise(cur, player, _feature_cfg(cur, player.room_id, feature["name"]).get("noise")
                          or ("break" if feature["max_tier"] in ("heavy", "lethal") else 0))
@@ -4676,6 +4798,15 @@ def do_pay(cur: Cursor, player: Player, view: RoomView, a: Pay) -> list[str]:
         cur.execute("update players set gold = gold + %s where id = %s", (a.amount, other.id))
         return [f"{player.name}给了{other.name} {a.amount} 金币"]
     npc = _room_npc(cur, view, player, a.target)
+    if npc.template.props.get("fare"):
+        due = _tally(cur, npc, "fare_due")
+        if not due:
+            raise ActionError(f"{npc.name}这会儿没伸手要钱")
+        if a.amount < due:
+            raise ActionError(f"{npc.name}要的是 {due} 金币，{player.name}只给了 {a.amount}")
+        cur.execute("update players set gold = gold - %s where id = %s", (a.amount, player.id))
+        _tally_merge(cur, npc, {"fare_paid": 1})
+        return [f"{player.name}把 {a.amount} 金币放进了{npc.name}干枯的手心"]
     offers = _offers(cur, player.id, npc)
     deals = {k: v for k, v in offers.items() if k != "tip"}
     if deals:

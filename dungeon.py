@@ -54,7 +54,7 @@ LOOT_NOT_YET: set[str] = set()         # 机制还没做的物品先不掉（第
 DEEP_DUNGEON = ("deep_dungeon_16.yaml", "deep_dungeon_21.yaml")      # 深层主题（themes / monsters / events）
 DEEP_LOOT, DEEP_ITEMS = "deep_loot.yaml", "deep_items.yaml"
 # 机制接完了的深层主题才进主题池（一个一个接，接完用模拟对一下再放进来）
-DEEP_READY = {"forge", "crystal", "silent", "desert", "dream"}
+DEEP_READY = {"forge", "crystal", "silent", "desert", "dream", "fog"}
 
 
 def _yaml(name: str) -> dict:
@@ -449,7 +449,8 @@ def _template(cur: Cursor, depth: int, kind: str, rank: str, theme: str, share: 
         if m.get(key):
             props[key] = m[key]
     for key in ("healer", "verb", "guard_allies", "reflect_ranged", "shield_allies", "dormant", "wake_noise", "hearing",
-                "bell", "silence_field", "noise_heal", "swarm", "native", "mirror_attack", "revive_once", "memories"):   # 治疗、出手的说法、护同伴、折回远程、套盾
+                "bell", "silence_field", "noise_heal", "swarm", "native", "mirror_attack", "revive_once", "memories",
+                "lure", "ambush", "fare"):   # 治疗、出手的说法、护同伴、折回远程、套盾
         if m.get(key):
             props[key] = m[key]
     if rank == "boss" or fx.get("keen") or stair:
