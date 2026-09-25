@@ -1940,6 +1940,18 @@ def _npc_gone(cur: Cursor, player: Player, npc: Npc, tamed: bool = False) -> lis
     cur.execute("update item_instances set npc_id = null, room_id = %s where npc_id = %s",
                 (player.room_id, npc.id))
     facts = [f"{npc.name}平静下来，慢慢走开了" if tamed else f"{npc.name}被击败了"]
+    rank = npc.template.props.get("dungeon", {}).get("rank")
+    if rank in ("boss", "elite"):
+        dungeon.log_fights(cur, [npc.id], "tamed" if tamed else "killed")
+        # 召来、带来的小怪没了主心骨，四散逃走（它们不掉东西，留着只是白打一架）
+        cur.execute("""select 1 from npcs n join npc_templates t on t.id = n.template_id
+                       where n.room_id = %s and n.alive and t.props->'dungeon'->>'rank' in ('boss', 'elite')""", (npc.room_id,))
+        if not cur.fetchone():
+            cur.execute("""update npcs n set hp = 0, alive = false, died_at = now(), status = null from npc_templates t
+                           where t.id = n.template_id and n.room_id = %s and n.alive and (t.props->>'minion')::boolean
+                           returning t.name""", (npc.room_id,))
+            if fled := list(dict.fromkeys(r["name"] for r in cur.fetchall())):
+                facts.append(f"{'、'.join(fled)}见{npc.name}倒下了，四散逃进了黑暗里")
     flag = npc.template.props.get("on_death", {}).get("set_flag")
     if flag:
         # 同一房间的队友一起记上标记
@@ -2083,6 +2095,12 @@ def _npc_strike(cur: Cursor, player: Player, npc: Npc, verb: str, chance: float 
     hit = (f"{npc.name}{verb}，这一下本该要了{player.name}的命" if saved
            else f"{npc.name}{verb}，对{player.name}造成 {dmg} 点伤害")
     facts = [hit, f"{player.name} HP {player.hp}/{player.max_hp}"] + saved
+    if props.get("dungeon", {}).get("rank") in ("boss", "elite"):
+        cur.execute("""update npcs set tally = tally || jsonb_build_object(
+                         'dealt', coalesce((tally->>'dealt')::int, 0) + %s, 'downs', coalesce((tally->>'downs')::int, 0) + %s,
+                         'foes', (select coalesce(jsonb_agg(distinct x), '[]'::jsonb)
+                                  from jsonb_array_elements_text(coalesce(tally->'foes', '[]'::jsonb) || to_jsonb(%s::text)) x))
+                       where id = %s""", (dmg, int(player.hp == 0), player.name, npc.id))
     if marked:
         _tally_merge(cur, npc, {"mark": None})
         facts.append(f"{npc.name}这一下落在了被判罪的人身上，判罪了结")
@@ -2809,15 +2827,18 @@ def _boss_turn(cur: Cursor, npc: Npc, targets: list[Player]) -> tuple[list[str],
     if (pend := t.get("pending")) is not None:
         upd["pending"] = None
         s = skills[pend["i"]]
-        _tally_merge(cur, npc, upd)
         if pend["hp"] - npc.hp >= math.ceil(npc.template.max_hp * INTERRUPT_SHARE):
+            upd["interrupted"] = t.get("interrupted", 0) + 1
+            _tally_merge(cur, npc, upd)
             return [f"{npc.name}挨了这一下重的，聚起来的招一下子散了（打断了）"], True
+        _tally_merge(cur, npc, upd)
         return _skill_effect(cur, npc, s["then"], targets, depth, theme), True
     i = due_skill(skills, npc.hp / npc.template.max_hp, acts, used)
     if i is None:
         _tally_merge(cur, npc, upd)
         return [], False
     s = skills[i]
+    upd["casts"] = t.get("casts", []) + [s["do"]]
     if s.get("when") in ("hp_below", "fight_start"):
         upd["used"] = sorted(used | {i})
     if s["do"] == "telegraph":
@@ -2848,7 +2869,7 @@ def _skill_effect(cur: Cursor, npc: Npc, s: dict, targets: list[Player], depth: 
         room = max(0, SUMMON_MAX - cur.fetchone()["n"])
         if room <= 0:
             return facts + ["可是这一回没人应声（场上的帮手已经够多了）"]
-        names = dungeon.spawn_minions(cur, npc.room_id, depth, s["kind"], theme, min(s.get("count", 1), room))
+        names = dungeon.spawn_minions(cur, npc.room_id, depth, s["kind"], theme, min(summon_count(s, depth), room))
         return facts + [f"{'、'.join(names)}加入了战斗"]
     if do in ("status_all", "effect_all"):
         for p in targets:
@@ -4737,7 +4758,8 @@ def _skill_note(s: dict) -> str:
     when = {"hp_below": f"血量低于 {round(s.get('value', 0) * 100)}% 时", "every": f"每出手 {s.get('value')} 次",
             "fight_start": "一开打就"}.get(s.get("when"), "")
     helper = dungeon.data()["monsters"].get(s.get("kind"), {}).get("name", s.get("kind"))
-    what = {"summon": f"叫来帮手（{helper}，最多同时 {SUMMON_MAX} 只，不掉东西）",
+    what = {"summon": f"叫来帮手（{helper}，第 5 层一只、第 10 层起 {s.get('count', 1)} 只，最多同时 {SUMMON_MAX} 只，"
+                      f"不掉东西，主子一死就跑）",
             "status_all": f"让所有人{STATE_NAMES.get(s.get('kind'), s.get('kind'))}",
             "effect_all": f"让所有人{EFFECT_NAMES.get(s.get('kind'), s.get('kind'))}",
             "telegraph": "先预告一招大的，下一次出手放出来（预告那一轮狠狠砍它一下能打断）",

@@ -340,13 +340,16 @@ def hero_def(h: Hero) -> int:
 
 
 def spawn(depth: int, kind: str, rank: str, theme_key: str, size: int, groups: int, boss_room: bool,
-          minion: bool = False) -> list[Mon]:
+          minion: bool = False, affix: Optional[str] = None) -> list[Mon]:
     """一群怪（dungeon._spawn_group / _spawn_boss / spawn_minions）：精英抽一个词缀，头目带上这一层解锁的招"""
     m = THEMES[theme_key]["boss"] if rank == "boss" else MONSTERS[kind]
     hp, atk, df = R.monster_stats(depth, m, rank)
     props = {k: m[k] for k in ("animal", "light_averse", "undead", "keen", "ranged", "healer", "on_hit", "guard_allies",
                                "immune", "weak") if m.get(k)}
-    affix = random.choice(list(R.ELITE_AFFIXES)) if rank == "elite" else None
+    if rank == "elite" and affix is None:
+        affix = random.choice(list(R.ELITE_AFFIXES))
+    elif rank != "elite":
+        affix = None
     fx = R.ELITE_AFFIXES.get(affix, {})
     hp *= fx.get("hp_mult", 1) * (R.SUMMON_HP if minion else 1)
     df += fx.get("def", 0)
@@ -562,6 +565,10 @@ class Fight:
         if (weak == "pierce" and pierce) or (weak == "light" and self.light() >= R.LIGHT_BRIGHT):
             dmg = math.ceil(dmg * R.WEAK_MULT)
         m.hp -= dmg
+        if m.hp <= 0 and m.rank in ("boss", "elite") and not any(x.rank in ("boss", "elite") for x in self.alive()):
+            for x in self.alive():
+                if x.minion:
+                    x.hp = 0                     # 主子倒了，帮手四散逃走
         if not shooter and m.hp > 0 and (thorns := m.props.get("thorns")):
             self.hurt_hero(h, thorns)
         self.hits[id(m)] = h
@@ -610,7 +617,7 @@ class Fight:
         do = sk["do"]
         if do == "summon":
             room = R.SUMMON_MAX - sum(1 for x in self.alive() if x.minion)
-            for _ in range(max(0, min(sk.get("count", 1), room))):
+            for _ in range(max(0, min(R.summon_count(sk, m.depth), room))):
                 for x in spawn(m.depth, sk["kind"], "normal", m.theme, 1, 1, False, minion=True):
                     self.mons.append(x)
                     for h in self.heroes:
@@ -882,7 +889,7 @@ def pct(x: float) -> str:
 
 
 def fight_test(build: str, quality: str, trip: int, depth: int, groups: list[tuple[str, str]], theme: str,
-               size: int = 1, n: int = 400, light: Optional[int] = None) -> tuple[float, float, float]:
+               size: int = 1, n: int = 400, light: Optional[int] = None, affix: Optional[str] = None) -> tuple[float, float, float]:
     """单独一场：(平均掉血占上限, 团灭率, 平均轮数)。装备、升级按这一趟的经济结果，满血进场，不喝药"""
     lost = wiped = rounds = 0.0
     eco = [economy(quality, build) for _ in range(10)]
@@ -893,7 +900,7 @@ def fight_test(build: str, quality: str, trip: int, depth: int, groups: list[tup
             h.potions = 0
         mons = []
         for monster, rank in groups:
-            mons += spawn(depth, monster, rank, theme, size, len(groups), boss)
+            mons += spawn(depth, monster, rank, theme, size, len(groups), boss, affix=affix)
         f = Fight(heroes, mons, room_light(THEMES[theme]) if light is None else light, False, depth)
         before = sum(h.taken for h in heroes)
         r = f.run()

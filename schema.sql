@@ -297,6 +297,25 @@ create index on ai_calls (created_at desc);
 alter table rooms          enable row level security;
 alter table room_exits     enable row level security;
 -- 远古地牢：每支队伍（没组队就是自己）一份，按需一层层生成（dungeon.py），房间 id 以 dg-<run>- 开头
+-- 头目战、精英战每场一行（dungeon.log_fights）：真人读不读得懂技能、校准模拟的系数都从这里算，比翻聊天记录准
+create table fight_log (
+  id           bigserial primary key,
+  created_at   timestamptz not null default now(),
+  npc_template text,
+  name         text,
+  rank         text,                              -- boss / elite
+  affix        text,                              -- 精英词缀（rules.ELITE_AFFIXES）
+  theme        text,
+  depth        int,
+  players      text[] not null default '{}',      -- 跟它交过手的人
+  casts        text[] not null default '{}',      -- 放了哪些招（按顺序）
+  interrupted  int not null default 0,            -- 预告的大招被打断几次
+  acts         int not null default 0,            -- 头目出手几次
+  dealt        int not null default 0,            -- 它打在玩家身上的伤害合计
+  downs        int not null default 0,            -- 打倒了几次人
+  outcome      text                               -- killed / tamed / unfinished（这一层回收时还活着）
+);
+
 create table dungeon_runs (
   id             uuid primary key default gen_random_uuid(),
   owner          uuid references players(id) on delete set null,
@@ -361,6 +380,7 @@ alter table duels          enable row level security;
 alter table npc_goods      enable row level security;
 alter table dungeon_runs   enable row level security;
 alter table dungeon_floors enable row level security;
+alter table fight_log      enable row level security;
 
 create policy "read static" on rooms          for select to authenticated using (true);
 create policy "read static" on room_exits     for select to authenticated using (true);

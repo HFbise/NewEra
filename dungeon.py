@@ -653,6 +653,22 @@ def touch(cur: Cursor, room_id: str) -> None:
         cur.execute("update dungeon_floors set last_active_at = now() where run_id = %s and depth = %s", (run, depth))
 
 
+def log_fights(cur: Cursor, npc_ids: list, outcome: str) -> None:
+    """头目、精英打完（或者这一层回收时还活着）记一行战斗记录（fight_log）：放了哪些招、有没有被打断、
+    打了玩家多少、打倒几次人。只记真交过手的（出过手或者打中过人）"""
+    cur.execute(
+        """insert into fight_log (npc_template, name, rank, affix, theme, depth, players, casts, interrupted, acts, dealt, downs, outcome)
+           select t.id, t.name, t.props->'dungeon'->>'rank', t.props->>'affix', t.props->'dungeon'->>'theme',
+                  (t.props->'dungeon'->>'depth')::int,
+                  coalesce(array(select jsonb_array_elements_text(n.tally->'foes')), '{}'),
+                  coalesce(array(select jsonb_array_elements_text(n.tally->'casts')), '{}'),
+                  coalesce((n.tally->>'interrupted')::int, 0), coalesce((n.tally->>'acts')::int, 0),
+                  coalesce((n.tally->>'dealt')::int, 0), coalesce((n.tally->>'downs')::int, 0), %s
+           from npcs n join npc_templates t on t.id = n.template_id
+           where n.id = any(%s) and t.props->'dungeon'->>'rank' in ('boss', 'elite')
+             and (n.tally ? 'acts' or n.tally ? 'dealt' or n.tally ? 'foes')""", (outcome, list(npc_ids)))
+
+
 def cleanup(cur: Cursor) -> None:
     """按层删：没人在、STALE 没动静的一层删掉（先删引用房间的事件、回合、怪，再删房间，出口、地形、地上的东西跟着删）。
     一份地牢的层都删光了，这份地牢也删掉。上面的层删了，从下面往上走的路就断了（传送石、回城水晶、复活照常）。
@@ -663,6 +679,8 @@ def cleanup(cur: Cursor) -> None:
                             where p.room_id like 'dg-' || replace(f.run_id::text, '-', '') || '-' || f.depth || '-%')""")
     for row in cur.fetchall():
         prefix = f"dg-{row['run_id'].hex}-{row['depth']}-%"
+        cur.execute("select id from npcs where room_id like %s and alive", (prefix,))
+        log_fights(cur, [r["id"] for r in cur.fetchall()], "unfinished")     # 打了一半的头目、精英也记一笔
         cur.execute("delete from events where room_id like %s", (prefix,))
         cur.execute("delete from combat_rounds where room_id like %s", (prefix,))
         cur.execute("delete from npcs where room_id like %s", (prefix,))

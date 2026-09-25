@@ -277,7 +277,7 @@ def stash_gold(depth: int, size: int) -> int:
 # ============ 精英词缀 ============
 # 每只精英从这里随机抽一个，名字前缀跟着变。同一只狗头人矿工，这次是迅捷的，下次是坚甲的，打法就不一样
 ELITE_AFFIXES = {
-    "swift": {"name": "迅捷的", "attacks": 2, "dmg_mult": 0.7, "note": "一轮出手两次，每下轻一点"},
+    "swift": {"name": "迅捷的", "attacks": 2, "dmg_mult": 0.55, "note": "一轮出手两次，每下轻一些"},
     "armored": {"name": "坚甲的", "def": 2, "hp_mult": 0.8, "note": "防御高、血少一点"},
     "frenzied": {"name": "狂暴的", "frenzy": 2, "note": "血量低于一半时攻击 +2"},
     "bloodthirsty": {"name": "嗜血的", "lifesteal": 1, "note": "打中人就回 1 点血"},
@@ -312,6 +312,11 @@ SUMMON_DMG = 0.5                        # 召唤的小怪下手也只有一半�
 INTERRUPT_SHARE = 0.15                  # 预告大招那一轮对它打出这么多（血量上限的比例）就打断了：打断靠重创，不算控制
 ENRAGE_FROM, ENRAGE_BELOW, ENRAGE_ATK = 15, 0.3, 2      # 第 15 层起的头目血量低于三成狂暴，攻击 +2
 WEAK_MULT = 1.5                         # 打中弱点（火、破甲、圣水、强光……）伤害 ×1.5
+
+
+def summon_count(skill: dict, depth: int) -> int:
+    """叫几只帮手：第 5 层的入门版只叫一只，第 10 层起按技能写的数"""
+    return min(skill.get("count", 1), 1 if depth < 10 else skill.get("count", 1))
 
 
 def unlocked_skills(skills: list[dict], depth: int) -> list[dict]:

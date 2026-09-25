@@ -104,7 +104,7 @@ themes:
       persona: 暴躁，嗓门大，把闯进矿坑的人当成偷矿的贼，会先吼叫着让手下围上来。
       on_hit: {kind: prone, chance: 0.3, label: 被鹤嘴锄撞翻在地}
       hp: 0.9
-      atk: -1
+      atk: 0
       def: 1
       # 技能按层数解锁（rules.unlocked_skills）：第 5 层只会第一招，第 10 层两招，第 15 层起全套加狂暴
       immune: [prone]                 # 免疫：玩家打不上去的状态、效果
@@ -181,7 +181,7 @@ themes:
       description: 一具身披破烂法袍的高大骸骨，胸口嵌着一块发着幽光的石头，手里的长柄镰刀比人还高。
       persona: 沉默，动作缓慢而精准，把一切活人都当作要被安葬的东西，从不追出墓室。
       on_hit: {kind: corrode, chance: 0.3, label: 被镰刃带走了一股生气}
-      hp: 0.8
+      hp: 0.9
       atk: 0
       def: 0
       immune: [bleed]                 # 一身骸骨，不会流血
@@ -424,15 +424,15 @@ themes:
       description: 一个佝偻的老妇人，下半身和一株巨大的蘑菇长在了一起，手里拄着一根挂满骨头的拐杖。
       persona: 阴沉又爱笑，喜欢用甜言蜜语引人走进泥沼深处，发起怒来尖啸着召唤毒雾。
       on_hit: {kind: poison, chance: 0.3, turns: 2, value_mult: 0.5, label: 被毒雾呛得喘不过气}
-      hp: 0.85
+      hp: 1.0
       atk: 1
       def: 0
       immune: [poison]
       weak: fire
       skills:
-        - {when: every, value: 3, do: telegraph, label: 举起骨杖念念有词，绿色的毒雾在她脚下翻涌（下一次出手全场中毒；这一轮狠狠砍她一下能打断）,
+        - {when: every, value: 4, do: telegraph, label: 举起骨杖念念有词，绿色的毒雾在她脚下翻涌（下一次出手全场中毒；这一轮狠狠砍她一下能打断）,
            then: {do: effect_all, kind: poison, turns: 2, value_mult: 0.5, label: 毒雾轰地炸开，灌满了整个房间}}
-        - {when: hp_below, value: 0.5, do: summon, kind: bog_toad, count: 2, label: 尖叫一声，泥水里拱出了两只巨蟾}
+        - {when: hp_below, value: 0.5, do: summon, kind: bog_toad, count: 1, label: 尖叫一声，泥水里拱出了一只巨蟾}
 
   library:
     name: 巨大图书馆
