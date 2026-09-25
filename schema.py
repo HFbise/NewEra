@@ -413,13 +413,15 @@ class Dispenser(BaseModel):
     key: str
     container: str                      # "武器桶"，在房间里跟 NPC 列在一起，但不会说话
     description: str = ""
-    item: str                           # 物品模板 id
-    item_name: str
+    item: str = ""                      # 物品模板 id（办事的没有）
+    item_name: str = ""
     unless: list[str] = []
     where: str = "里"                   # 东西放在"桶里""桌上"
     once: bool = False                  # 每人一辈子只能拿一次（丢了也不能再拿），记在 dispenser_log
     repeat: bool = False                # 身上已经有同样的东西也能拿（地牢里挖矿石、接泉水）
     donate: list[str] = []              # 能往里放的装备类型（weapon / armor），空的就不收
+    service: Optional[str] = None       # 不给东西、办一件事：free_upgrade 给手上的主武器免费升一级（熔炉的未熄锻炉）
+    bonus_gem: float = 0.0              # 成功时另有这个几率多掉一颗本主题的宝石
     donated: list[dict] = []            # 别人捐进来的：[{"id", "name"}]
     skill: Optional[str] = None         # 拿之前要过的技能判定（挖矿要运动、挑没坏的酒要自然），过了才拿得到
     difficulty: int = 0

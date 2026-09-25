@@ -172,13 +172,16 @@ def forage_labels(cur: Cursor, room: Room) -> list[str]:
     return labels
 
 
+SERVICE_NAMES = {"free_upgrade": "锻造纹（照着敲，能把手上的兵器再打磨一番）"}
+
+
 def load_dispensers(cur: Cursor, room: Room, player_id: UUID) -> list[Dispenser]:
     """房间里的取用处（武器桶、摆着护符的桌子），id 按房间和 key 算，每次都一样。
     available 按这个玩家算：身上已经有了（或有 unless 里的东西）就拿不了，只显示桶、桌子本身"""
     cfg = room.props.get("dispensers", {})
     if not cfg:
         return []
-    cur.execute("select id, name from item_templates where id = any(%s)", ([d["item"] for d in cfg.values()],))
+    cur.execute("select id, name from item_templates where id = any(%s)", ([d["item"] for d in cfg.values() if d.get("item")],))
     names = {r["id"]: r["name"] for r in cur.fetchall()}
     cur.execute("select distinct template_id from item_instances where player_id = %s", (player_id,))
     owned = {r["template_id"] for r in cur.fetchall()}
@@ -190,12 +193,14 @@ def load_dispensers(cur: Cursor, room: Room, player_id: UUID) -> list[Dispenser]
     for r in cur.fetchall():
         donated[r["container"]].append({"id": str(r["id"]), "name": r["name"]})
     return [Dispenser(id=uuid5(NAMESPACE_URL, f"newera:dispenser:{room.id}:{key}"), room=room.id, key=key,
-                      container=d["name"], description=d.get("description", ""), item=d["item"],
-                      item_name=names[d["item"]], unless=d.get("unless", []), where=d.get("where", "里"),
+                      container=d["name"], description=d.get("description", ""), item=d.get("item", ""),
+                      item_name=names.get(d.get("item"), "") or SERVICE_NAMES.get(d.get("service"), ""),
+                      unless=d.get("unless", []), where=d.get("where", "里"),
+                      service=d.get("service"), bonus_gem=d.get("bonus_gem", 0.0),
                       once=d.get("once", False), repeat=d.get("repeat", False), skill=d.get("skill"),
                       difficulty=d.get("difficulty", 0), fail=d.get("fail", ""), fail_damage=d.get("fail_damage", 0),
                       donate=d.get("donate", []), donated=donated.get(key, []),
-                      available=(d.get("repeat") or not owned & {d["item"], *d.get("unless", [])})
+                      available=(d.get("repeat") or not owned & {d.get("item"), *d.get("unless", [])})
                       and not (d.get("once") and key in taken))
             for key, d in cfg.items()]
 
@@ -969,6 +974,8 @@ def do_move(cur: Cursor, player: Player, view: RoomView, a: Move) -> list[str]:
     if heal := sum(int(e.get("value", 0)) for e in _fire(cur, player, "enter", "heal")):
         facts += _heal_player(cur, player, heal)
     facts += arrived + (_torch_floor(cur, [player.name], to) if arrived else [])
+    if arrived and _room_env(cur, to).get("heat"):
+        facts.append(HEAT_HINT)
     # 同房间跟着他的人一起走：睡着、倒下、带着负面状态的跟不上
     cur.execute(
         f"""update players set room_id = %s, updated_at = now()
@@ -1023,7 +1030,7 @@ def _road_event(cur: Cursor, player: Player, view: RoomView, to: str) -> list[st
     f = dungeon.floor_info(cur, to)
     depth, r = f["depth"], random.random()
     if r < ROAD_TRAP:
-        trap = random.choice(dungeon.data()["traps"])
+        trap = random.choice(dungeon.data()["themes"].get(f["theme"], {}).get("traps") or dungeon.data()["traps"])
         sense = _carries(cur, player, "trap_sense")          # 麦琪的陷阱图：难度降几级
         here = ":".join(map(str, dungeon.parse_room(to)))
         ease = player.flags.get(TRAP_EASE, {})
@@ -1320,6 +1327,23 @@ def _give_player_new(cur: Cursor, player: Player, template_id: str) -> None:
         cur.execute("insert into item_instances (template_id, player_id) values (%s, %s)", (template_id, player.id))
 
 
+def _free_upgrade(cur: Cursor, player: Player, d: Dispenser) -> list[str]:
+    """未熄的锻炉（service: free_upgrade）：照着锻造纹敲，手上的主武器免费升一级；满级了、手上没武器就给一份碎铁"""
+    weapon = next((w for w in _weapons(cur, player) if w.equipped_slot == "right_hand"), None) \
+        or next(iter(_weapons(cur, player)), None)
+    if weapon is None or weapon.props.get("plus", 0) >= upgrade_cap(player, weapon):
+        _give_player_new(cur, player, SCRAP)
+        return [f"{player.name}照着锻造纹敲了一阵，" + ("手上的兵器已经锻到头了" if weapon else "手上没拿兵器")
+                + "，只敲下来一份好铁（碎铁）"]
+    stat, level = "damage", weapon.props.get("plus", 0) + 1
+    name = re.sub(r" \+\d+$", "", weapon.name) + f" +{level}"
+    new = weapon.damage + _step(weapon, stat)
+    cur.execute("update item_instances set props = (props - 'upgrade_fails') || %s where id = %s",
+                (Jsonb({"plus": level, stat: new, "name": name}), weapon.id))
+    return [f"{player.name}照着铁砧上的锻造纹，把{weapon.name}放进炉火里敲打了一番",
+            f"{weapon.name}变成了{name}，伤害 {stat_text(new)}（没花钱）"]
+
+
 def _take_from(cur: Cursor, player: Player, view: RoomView, d: Dispenser) -> list[str]:
     """从武器桶这类地方拿一件：身上已经有同类的（锈剑、磨亮的剑）就不能拿；once 的拿过一次就再也不能拿。
     要技能判定的（挖矿、挑酒）先判，失败了这次拿不到（可能挨一下），下次还能再试"""
@@ -1357,8 +1381,14 @@ def _take_from(cur: Cursor, player: Player, view: RoomView, d: Dispenser) -> lis
                        on conflict do nothing returning 1""", (player.id, d.room, d.key))
         if not cur.fetchone():
             raise ActionError(f"{d.container}{d.where}已经没有{player.name}能拿的东西了")
+    if d.service == "free_upgrade":
+        return facts + _free_upgrade(cur, player, d)
     _give_player_new(cur, player, d.item)
     facts = facts + [f"{player.name}从{d.container}{d.where}拿了一件{d.item_name}"]
+    if d.bonus_gem and dungeon.is_dungeon(player.room_id) and _roll(d.bonus_gem):
+        f = dungeon.floor_info(cur, player.room_id)
+        gem = dungeon.put_gem(cur, dungeon.pick_gem(f["theme"]), f["depth"], player=player.id)
+        facts.append(f"敲下来的碎块里还滚出一颗{gem}")
     if d.item == UPGRADE_ORE and dungeon.is_dungeon(player.room_id) and _roll(dungeon.gem_rules()["drops"]["mining"]):
         depth = dungeon.parse_room(player.room_id)[1]
         gem = dungeon.put_gem(cur, dungeon.pick_gem("mine", 0.5), depth, player=player.id)
@@ -1406,6 +1436,8 @@ def do_drop(cur: Cursor, player: Player, view: RoomView, a: Drop) -> list[str]:
 
 def do_use(cur: Cursor, player: Player, view: RoomView, a: Use) -> list[str]:
     item = _inv_item(cur, view, player, a.item)
+    if _prop(item, "water") and a.target and a.target in view.refs:
+        return _douse_npc(cur, player, view, item, a.target)
     if _prop(item, "stun"):
         return _stun(cur, player, view, item, a.target)
     for key, fn in (("refuel", _refuel), ("whet", _whet), ("room_light", _room_light), ("holy", _holy), ("drug", _drug),
@@ -1585,6 +1617,35 @@ def _room_light(cur: Cursor, player: Player, view: RoomView, item: ItemInstance,
     return [f"{player.name}展开{item.name}，上面的字一个接一个亮起来，把整个房间照得雪亮"]
 
 
+def _douse_npc(cur: Cursor, player: Player, view: RoomView, item: ItemInstance, target: str) -> list[str]:
+    """泼泉水：熔化状态的矮人王铸像淬火裂开（到它下一次出手：防御归零、挨的伤害 ×1.5，那一次出手跳过）；
+    怕水的怪（炉火精）重伤档 ×1.5；泼别的只是泼湿了"""
+    npc = _room_npc(cur, view, player, target)
+    _consume(cur, item)
+    facts = [f"{player.name}把{item.name}泼向{npc.name}"]
+    p = npc.template.props
+    if p.get("quench") and _stance(cur, npc)[0] == "molten":
+        _tally_merge(cur, npc, {"cracked": True, "stance": p["quench"].get("then_stance", "cold"), "stance_at": _tally(cur, npc, "acts")})
+        return facts + [p["quench"].get("label", f"{npc.name}淬火裂开了"),
+                        f"（{npc.name}裂开了：它下一次出手之前防御归零，挨的伤害 ×{WEAK_MULT:g}，那一次出手也会跳过）"]
+    if p.get("quench"):
+        return facts + [f"泉水泼在冰冷的青铜上，顺着纹路淌了下去，什么事也没有（得等它烧红、熔化的时候泼）"]
+    if p.get("weak") != "water":
+        return facts + [f"{npc.name}只是被泼湿了，什么事也没有"]
+    dmg = math.ceil(random.randint(*TIER_RANGE["heavy"]) * WEAK_MULT)
+    hurt, _ = _hurt_npc(cur, player, npc, dmg)
+    return facts + [f"{npc.name}尖叫着缩成一团，冒起一大股白烟，受到 {dmg} 点伤害"] + hurt
+
+
+def _stance(cur: Cursor, npc: Npc) -> tuple[str, dict]:
+    """头目现在的状态（props.stances：冷却 / 熔化轮换），(名字, {def, atk})；没有状态轮换的是 ("", {})"""
+    st = npc.template.props.get("stances")
+    if not st:
+        return "", {}
+    name = _tallies(cur, npc).get("stance") or st.get("start", "cold")
+    return name, st.get(name, {})
+
+
 def _holy(cur: Cursor, player: Player, view: RoomView, item: ItemInstance, target: Optional[str]) -> list[str]:
     """圣水：泼向亡灵或怕光的怪，按档位重创它；泼别的没用（水也没了）"""
     if not target or target not in view.refs:
@@ -1740,6 +1801,10 @@ def _eat_effect(cur: Cursor, eater: Player, item: ItemInstance, user: Player) ->
     if hp > 0 and item.knockout:
         _knock_out(cur, "players", eater.id, item.knockout)
         facts.append(f"{eater.name}{item.knockout}，失去战斗能力")
+    if (q := _prop(item, "quench")) and hp > 0:
+        cur.execute("update players set flags = flags || jsonb_build_object(%s::text, %s::int) where id = %s",
+                    (QUENCH, int(q), eater.id))
+        facts.append(f"凉水下肚，{eater.name}接下来 {int(q)} 个动作不怕灼热")
     if _prop(item, "sober"):
         cur.execute("update players set drunk_until = null where id = %s", (eater.id,))
         facts.append(f"{eater.name}酒醒了，脑子清楚了")
@@ -2201,6 +2266,7 @@ def _npc_strike(cur: Cursor, player: Player, npc: Npc, verb: str, chance: float 
         atk += ENRAGE_ATK                       # 深层头目血少了狂暴
     if props.get("skills"):
         atk += int(_tallies(cur, npc).get("phase_atk", 0))     # 转阶段加的攻击
+    atk += int(_stance(cur, npc)[1].get("atk", 0))             # 矮人王的铸像：冷却时手软、熔化时手重
     marked = props.get("skills") and _tallies(cur, npc).get("mark") == str(player.id)
     if marked:
         atk += int(_tallies(cur, npc).get("mark_bonus", 2))     # 典狱长判了罪的人
@@ -2761,6 +2827,8 @@ def enemy_turn(conn: Connection, player_id: UUID, actions: list[PlayerAction],
                     continue
                 skill, acted = _boss_turn(cur, npc, [player], {player.id} if dodge else set())
                 facts += skill
+                if acted == "skip":
+                    continue
                 props = npc.template.props
                 for k in range(props.get("attacks", 1) + _extra_acts(cur, npc)):
                     extra = k >= props.get("base_attacks", 99)
@@ -3007,6 +3075,8 @@ def round_enemies(conn: Connection, room_id: str, done: dict[UUID, list[tuple[Pl
             skill, acted = _boss_turn(cur, npc, [c["p"] for c in cands if c["p"].hp > 0 and "close" not in c],
                                       {c["p"].id for c in cands if c["dodge"] > 0})
             facts += skill
+            if acted == "skip":
+                continue
             # 一轮出手几次：一般一次；组队时房间怪满了、折成血的那些多打几次（dungeon._spawn_group）；
             # 深层头目主动作放了技能，副动作照打
             for k in range(npc.template.props.get("attacks", 1) + _extra_acts(cur, npc)):
@@ -3064,6 +3134,16 @@ def _boss_turn(cur: Cursor, npc: Npc, targets: list[Player], dodging: Optional[s
     depth, theme = info.get("depth", 1), info.get("theme", "mine")
     dodging = dodging or set()
     regen_facts = []
+    if t.get("cracked"):
+        # 淬火裂开：这一次出手跳过，裂口合上
+        _tally_merge(cur, npc, upd | {"cracked": False})
+        return [f"{npc.name}身上的裂口还冒着白气，这一下动弹不得"], "skip"
+    if st := props.get("stances"):
+        name = t.get("stance") or st.get("start", "cold")
+        if acts - t.get("stance_at", 0) >= st.get("every", 3):
+            name = "molten" if name == "cold" else "cold"
+            upd |= {"stance": name, "stance_at": acts}
+            regen_facts.append(f"{npc.name}{st[name].get('label', '')}")
     if regen := t.get("regen"):
         # 扎根（古树守卫转阶段）：每轮回血，被火打中的那一轮不回
         if t.get("singed"):
@@ -3390,11 +3470,14 @@ def do_attack(cur: Cursor, player: Player, view: RoomView, a: Attack) -> list[st
     bonus = whole(sum(e.get("value", 0) for e in swung + fired if e["do"] == "bonus"))
     pierce = whole(sum(e.get("value", 0) for e in fired if e["do"] == "pierce"))
     corrode = _npc_effect(npc, "corrode")
-    armor = max(0, npc.template.defense - pierce - (corrode.value if corrode else 0))
+    armor = max(0, npc.template.defense + int(_stance(cur, npc)[1].get("def", 0)) - pierce - (corrode.value if corrode else 0))
+    cracked = bool(npc.template.props.get("quench") and _tallies(cur, npc).get("cracked"))
+    if cracked:
+        armor = 0                               # 淬火裂开：防御归零
     whet = _effect(player, "whet")
     dmg = _bled(player, hurt_npc_by(power + (whet.value if whet else 0) + bonus + _aura(cur, player, "attack"), armor))
     weak = _weak_spot(cur, player, npc, melee, shooter, loaded, fired)
-    if weak:
+    if weak or cracked:
         dmg = math.ceil(dmg * WEAK_MULT)
         if npc.template.props.get("weak") == "fire" and npc.template.props.get("skills"):
             _tally_merge(cur, npc, {"singed": True})     # 扎根的古树守卫：被火燎过这一轮长不回来
@@ -3427,14 +3510,14 @@ def do_attack(cur: Cursor, player: Player, view: RoomView, a: Attack) -> list[st
 # 命中表：rules.RANGED_HIT、STEADY_HIT、BLIND_HIT、SMOKE_*
 
 
-WEAK_WORDS = {"fire": "怕火", "pierce": "甲缝", "light": "怕光", "holy": "怕圣物", "poison": "怕毒"}
+WEAK_WORDS = {"fire": "怕火", "pierce": "甲缝", "light": "怕光", "holy": "怕圣物", "poison": "怕毒", "water": "怕水"}
 
 
 def _weak_spot(cur: Cursor, player: Player, npc: Npc, melee: list[ItemInstance], shooter: Optional[ItemInstance],
                loaded: Optional[str], fired: list[dict]) -> Optional[str]:
     """这一下打没打在弱点上（头目的 props.weak）：带火的（火把、火油箭、余烬长剑）、破甲的、强光下（光亮 70 以上）"""
     weak = npc.template.props.get("weak")
-    if not weak:
+    if not weak or weak in (npc.template.props.get("resist_element") or []):
         return None
     hit = False
     if any(e.get("do") == "element" and e.get("kind") == weak for e in fired):
@@ -3747,7 +3830,9 @@ def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]
             and not poison and not harmless_prank)
     if pure:
         corrode = _npc_effect(target, "corrode")
-        armor = max(0, target.template.defense - (corrode.value if corrode else 0))
+        armor = max(0, target.template.defense + int(_stance(cur, target)[1].get("def", 0)) - (corrode.value if corrode else 0))
+        if target.template.props.get("quench") and _tallies(cur, target).get("cracked"):
+            armor = 0
         swing = hurt_npc_by(_how(player, weapon, None)[1] + random.randint(*TIER_RANGE[tier]), armor)
     if dmg := (0 if harmless_prank else poison.harm if poison else target.hp if lethal_blow
                else _bled(player, swing) if pure
@@ -3959,6 +4044,10 @@ def _nudge_mark(cur: Cursor, player: Player, key: str) -> None:
 # 更新告示：改了玩法就往 NEWS 前面加一条（版本号、麦琪的八卦、更新说明），玩家上线后第一次进酒馆听到最新那条
 # （不然玩家只觉得"被热补丁削弱了"）。看过的版本记在 players.flags._news
 NEWS = [
+    ("2026-09-26", "有人说第十六层往下挖到了一座矮人的熔炉，锤声到现在都没停……",
+     "新区域「地底熔炉」（第 16 层起）：整层灼热，每个动作都掉一点血，喝泉水能撑 4 个动作，每层有两间冷却水池；"
+     "这里的怪不怕火，破甲和泉水才好使；守着熔炉的是矮人王的铸像，会在冷却和熔化之间来回变，熔化的时候泼它一瓶泉水。"
+     "深层装备（孔更多）、熔岩吊桥上的锻造纹拓片送给莉娜，深层装备能升到 +15"),
     ("2026-09-25b", "地牢深处的东西醒了。",
      "第 16 层起的头目一轮出手两次，会预告大招（这一轮狠狠砍它能打断，被盯上的人闪避能躲开一半）、"
      "一招挂好几个效果，血掉到一半会变阵：灯灭了、泥水涨上来、牢门封死、古树扎根回血……"
@@ -4229,6 +4318,17 @@ def do_give(cur: Cursor, player: Player, view: RoomView, a: Give) -> list[str]:
     # 送她心爱的礼物（world.yaml props.gift_likes 里的种类）：好感固定 +LIKED_GIFT，东西她收下（从世界里拿走）
     if (gift := _prop(item, "gift")) and gift in npc.template.props.get("gift_likes", []):
         # 小礼物（props.gift_value，村里互相卖的怪酒、木炭、游记）：好感加得少，每人每天只收一件，跨得过好感的坎
+        if (unlock := _prop(item, "unlock")) and npc.template.props.get("upgrades") and not player.flags.get(unlock):
+            _consume(cur, item)
+            new = min(100, _affinity(cur, player, npc) + int(_prop(item, "gift_value") or 0))
+            cur.execute("""insert into player_npc_relations (player_id, npc_template, affinity) values (%s, %s, %s)
+                           on conflict (player_id, npc_template) do update set affinity = excluded.affinity""",
+                        (player.id, npc.template.id, new))
+            cur.execute("update players set flags = flags || jsonb_build_object(%s::text, true) where id = %s", (unlock, player.id))
+            return [f"{player.name}把{item.name}送给了{npc.name}",
+                    f"{npc.name}盯着拓片上的锻造纹看了很久，手指跟着纹路一圈圈描过去，最后低声说了句：“……原来是这么打的。”",
+                    f"（莉娜学会了深层锻造：深层装备（第 16 层以后掉的）能升到 +{UPGRADE_DEEP_MAX}）",
+                    f"{npc.name}对{player.name}的好感上升（当前 {new}）"]
         if small := _prop(item, "gift_value"):
             cur.execute("""select 1 from player_npc_relations where player_id = %s and npc_template = %s
                            and gift_day = (now() at time zone 'Asia/Shanghai')::date""", (player.id, npc.template.id))
@@ -4263,6 +4363,12 @@ def do_give(cur: Cursor, player: Player, view: RoomView, a: Give) -> list[str]:
 # 奥利哈刚（UPGRADE_ORE）：这一次成功率翻倍，用掉；碎铁（SCRAP，莉娜拆装备得来）每份 +5%，一次最多四份。
 # 莉娜的淬火油（UPGRADE_OIL，好感 40 的回礼）：这一次必定成功，不收钱。等级上限 UPGRADE_MAX
 UPGRADE_ORE = "ore"
+UPGRADE_DEEP_MAX, DEEP_FORGE = 15, "lina_deep_forge"     # 深层锻造（拓片解锁）：深层装备（props.tier）升级上限
+
+
+def upgrade_cap(player: Player, item: ItemInstance) -> int:
+    """这件能升到几级：一般 +10；深层装备、而且莉娜学会了深层锻造（players.flags.lina_deep_forge）是 +15"""
+    return UPGRADE_DEEP_MAX if _prop(item, "tier") and player.flags.get(DEEP_FORGE) else UPGRADE_MAX
 SCRAP = "scrap_iron"
 UPGRADE_OIL = "lina_oil"
 
@@ -4323,7 +4429,7 @@ def do_upgrade(cur: Cursor, player: Player, view: RoomView, a: Upgrade) -> list[
         if not items or not all(upgrade_stat(i) for i in items):
             raise ActionError(f"{player.name}身上没有能升级的武器、防具")
         disc = UPGRADE_DISCOUNT if "discount" in perks(cur, player.id, npc.template.id) else 1.0
-        return [f"{npc.name}看了看{player.name}的{i.name}：" + (f"已经 +{UPGRADE_MAX}，锻到头了" if i.props.get("plus", 0) >= UPGRADE_MAX
+        return [f"{npc.name}看了看{player.name}的{i.name}：" + (f"已经 +{upgrade_cap(player, i)}，锻到头了" if i.props.get("plus", 0) >= upgrade_cap(player, i)
                                                              else _upgrade_text(i, max(1, round(upgrade_terms(i)[1] * disc)))
                                                              + ("（熟客价九折）" if disc < 1 else "")) for i in items]
     if a.item:
@@ -4346,8 +4452,9 @@ def do_upgrade(cur: Cursor, player: Player, view: RoomView, a: Upgrade) -> list[
     stat = upgrade_stat(item)
     now = getattr(item, stat)
     level, cost, risk = upgrade_terms(item)
-    if level > UPGRADE_MAX:
-        raise ActionError(f"{item.name}已经 +{UPGRADE_MAX} 了，{npc.name}说再锻就要废了")
+    if level > upgrade_cap(player, item):
+        raise ActionError(f"{item.name}已经 +{upgrade_cap(player, item)} 了，{npc.name}说再锻就要废了"
+                          + ("（深层装备把矮人锻造纹拓片送给她，她能锻到 +15）" if _prop(item, "tier") and not player.flags.get(DEEP_FORGE) else ""))
     if "discount" in perks(cur, player.id, npc.template.id):
         cost = max(1, round(cost * UPGRADE_DISCOUNT))
     key = f"upgrade:{item.id}"
@@ -4857,6 +4964,37 @@ HANDLERS: dict[str, Callable[..., list[str]]] = {
 
 # ============ 入口 ============
 
+HEAT_HINT = ("热浪扑面：这一层一直在烤人，每做一个动作都掉一点血（说话、看不算）；喝一口泉水能撑 4 个动作，"
+             "这一层有两间冷却水池能接泉水")
+HEAT_FREE = {"say", "talk", "look", "reject"}     # 灼热的楼层里不算动作、不掉血的
+QUENCH = "_quench"                                # players.flags：喝了泉水，还有几个动作不怕灼热
+
+
+def _heat(cur: Cursor, player_id: UUID, action: str) -> list[str]:
+    """灼热（地底熔炉，房间 env.heat）：常驻，这一层每做一个动作掉血量上限的 heat 比例（打不打仗都算，不看防御，最少 1 点）。
+    喝泉水（props.quench）停几个动作；装备 heat_resist 减半或免疫；头目转阶段把房间的 heat_mult 翻倍"""
+    if action in HEAT_FREE:
+        return []
+    cur.execute("select room_id from players where id = %s", (player_id,))
+    room = cur.fetchone()["room_id"]
+    env = _room_env(cur, room)
+    if not env.get("heat"):
+        return []
+    player = load_player(cur, player_id)
+    if player.hp <= 0:
+        return []
+    if (left := int(player.flags.get(QUENCH, 0))) > 0:
+        cur.execute("update players set flags = flags || jsonb_build_object(%s::text, %s::int) where id = %s",
+                    (QUENCH, left - 1, player_id))
+        return [] if left > 1 else [f"{player.name}喝下去的那点凉意散了，热浪又贴了上来"]
+    resist = min([float(e.get("value", 1)) for e in _fx(_worn(cur, player), "heat_resist")] or [1.0])
+    if resist <= 0:
+        return []
+    dmg = max(1, round(player.max_hp * env["heat"] * env.get("heat_mult", 1) * resist))
+    hurt, _ = _hurt_player(cur, player, dmg, "other", "灼热")
+    return [f"热浪烤得{player.name}头昏眼花，掉了 {dmg} 点血"] + hurt
+
+
 def execute(conn: Connection, view: RoomView, action: PlayerAction) -> ActionResult:
     # 两个玩家同时互相动手（互殴、互相急救）会各自先锁自己再锁对方，Postgres 判死锁回滚其中一个，重来一次就行
     for attempt in range(2):
@@ -4872,6 +5010,7 @@ def execute(conn: Connection, view: RoomView, action: PlayerAction) -> ActionRes
                            or st.kind == "incapacitated" and action.action != "struggle"):
                     raise ActionError(f"{player.name}{st.label}，" + ("得先站起来" if st.kind == "prone" else "做不到"))
                 facts = HANDLERS[action.action](cur, player, view, action)
+                facts += _heat(cur, player.id, action.action)
             return ActionResult(action=action.action, success=True, facts=facts)
         except ActionError as e:
             return ActionResult(action=action.action, success=False, facts=[str(e)])
@@ -5552,6 +5691,11 @@ def monster_notes(npc: Npc) -> str:
         notes.append(f"血量低于 {round(ENRAGE_BELOW * 100)}% 会狂暴，攻击 +{ENRAGE_ATK}")
     if immune := p.get("immune"):
         notes.append("不吃：" + "、".join(EFFECT_NAMES.get(k, STATE_NAMES.get(k, k)) for k in immune))
+    if "fire" in (p.get("resist_element") or []):
+        notes.append("不怕火：火把、火油箭、余烬石打它都不算弱点")
+    if st := p.get("stances"):
+        notes.append(f"每出手 {st.get('every', 3)} 次在冷却和熔化之间换一次：冷却时又硬又手软，熔化时变软但下手更重；"
+                     "熔化的时候泼一瓶泉水，它会淬火裂开，下一次出手之前防御归零、挨的伤害 ×1.5")
     if weak := p.get("weak"):
         notes.append(f"弱点：{WEAK_WORDS.get(weak, weak)}（{WEAK_HOW.get(weak, '')}伤害 ×{WEAK_MULT:g}）")
     if p.get("pack"):
@@ -5560,7 +5704,7 @@ def monster_notes(npc: Npc) -> str:
 
 
 WEAK_HOW = {"fire": "火把、火油箭、带火的剑打它", "pierce": "破甲的武器打它", "light": "光亮 70 以上打它",
-            "holy": "圣水泼它", "poison": "它中毒时"}
+            "holy": "圣水泼它", "poison": "它中毒时", "water": "泼泉水（铸像要等它熔化）"}
 
 
 def _skill_note(s: dict) -> str:

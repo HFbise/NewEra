@@ -145,7 +145,7 @@ def endurance_hp(depth: int) -> int:
 
 def floor_income(depth: int, size: int, torch: bool) -> int:
     """这一层捡到的钱（一个人分到的）：怪掉的、宝箱房钱袋、空房古币。越暗掉得越多"""
-    theme = THEMES[random.choice(list(THEMES))]
+    theme = THEMES[dungeon._pick_theme(THEMES, depth, set())]
     gold = 0.0
 
     def light() -> int:
@@ -185,7 +185,7 @@ class Kit:
 
 def floor_gems(depth: int) -> list[tuple[str, int]]:
     """这一层捡到的宝石（按掉率估：普通怪大约 5 只、精英大约 1.3 只、头目、宝箱房）"""
-    theme = random.choice(list(THEMES))
+    theme = dungeon._pick_theme(THEMES, depth, set())
     pools, drops = GEMS["pools"], GEMS["drops"]
     got = []
     deep = drops.get("deep_mult", 1) if depth >= drops.get("deep_from_floor", 999) else 1
@@ -417,6 +417,8 @@ class Mon:
     extra_acts: int = 0                 # 转阶段多出来的副动作
     phase_atk: int = 0
     regen: float = 0.0                  # 扎根：每轮回血
+    stance: str = ""                    # 冷却 / 熔化（矮人王的铸像）
+    stance_at: int = 0
 
 
 @dataclass
@@ -464,6 +466,12 @@ def power(h: Hero, shooter: Optional[Weapon]) -> int:
     return int(base * (1 + R.CHEER_ATTACK / 100 if h.cheer else 1) + 0.5)
 
 
+def stance_of(m) -> dict:
+    """铸像现在这个状态加减的攻防"""
+    st = m.props.get("stances")
+    return st.get(m.stance or st.get("start", "cold"), {}) if st else {}
+
+
 def heal_scale(h: Hero, amount: int) -> int:
     """重伤：受到的治疗 × value%（engine._heal_scale）"""
     w = h.effects.get("wound")
@@ -481,7 +489,7 @@ def spawn(depth: int, kind: str, rank: str, theme_key: str, size: int, groups: i
     m = THEMES[theme_key]["boss"] if rank == "boss" else MONSTERS[kind]
     hp, atk, df = R.monster_stats(depth, m, rank)
     props = {k: m[k] for k in ("animal", "light_averse", "undead", "keen", "ranged", "healer", "on_hit", "guard_allies",
-                               "immune", "weak") if m.get(k)}
+                               "immune", "weak", "stances", "resist_element") if m.get(k)}
     if m.get("pack"):
         props["pack"] = kind
     if boss_room:
@@ -611,8 +619,16 @@ class Fight:
             return True
         return False
 
+    heat: float = 0.0                   # 灼热（地底熔炉）：每个动作掉血量上限的这个比例
+    heat_mult: float = 1.0
+
     def tick_action(self, h: Hero) -> None:
-        """流血：每个动作前掉血"""
+        """流血：每个动作前掉血；灼热的楼层每个动作也烤掉一点（engine._heat，不看防御）"""
+        if self.heat and not h.down:
+            h.hp -= max(1, round(h.max_hp * self.heat * self.heat_mult))
+            if h.hp <= 0:
+                h.hp, h.down = 0, True
+                return
         b = h.effects.get("bleed")
         if b:
             if b["left"] <= 0:
@@ -754,7 +770,8 @@ class Fight:
             return
         bonus = shooter.first_bonus if shooter and first else 0
         pierce = shooter.pierce if shooter else 0
-        dmg = R.hurt_npc_by(power(h, shooter) + bonus + R.whole(h.gem_bonus), m.df - pierce - R.whole(h.gem_pierce))
+        dmg = R.hurt_npc_by(power(h, shooter) + bonus + R.whole(h.gem_bonus),
+                            m.df + stance_of(m).get("def", 0) - pierce - R.whole(h.gem_pierce))
         if h.gem_crit and random.random() < h.gem_crit:
             dmg *= 2                             # 锋墨石会心一击
         if "bleed" in h.effects:
@@ -794,6 +811,10 @@ class Fight:
             m.silence -= 1
         if m.regen and m.hp < m.max_hp:
             m.hp = min(m.max_hp, m.hp + math.ceil(m.max_hp * m.regen))
+        if st := m.props.get("stances"):
+            m.stance = m.stance or st.get("start", "cold")
+            if acts - m.stance_at >= st.get("every", 3):
+                m.stance, m.stance_at = ("molten" if m.stance == "cold" else "cold"), acts
         if m.pending is not None:
             pend, m.pending = m.pending, None
             if pend["hp"] - m.hp >= math.ceil(m.max_hp * R.INTERRUPT_SHARE):
@@ -865,6 +886,8 @@ class Fight:
             m.regen = sk.get("regen", m.regen)
             if "light" in (sk.get("env") or {}):
                 self.base_light = max(0, min(100, self.base_light + sk["env"]["light"]))
+            if "heat_mult" in (sk.get("env") or {}):
+                self.heat_mult = sk["env"]["heat_mult"]
             if then := sk.get("then"):
                 self.skill_effect(m, then, targets)
 
@@ -928,7 +951,7 @@ class Fight:
             atk += m.props["frenzy"]
         if m.rank == "boss" and R.enraged(m.depth, ratio):
             atk += R.ENRAGE_ATK
-        atk += m.phase_atk
+        atk += m.phase_atk + stance_of(m).get("atk", 0)
         marked = m.mark is h
         if marked:
             atk += m.mark_bonus
@@ -999,6 +1022,7 @@ def stealth_level(depth: int) -> int:
     return min(8, 1 + depth // 4)
 
 
+HEAT_WALK, HEAT_QUENCH = 10, 8          # 灼热的一层战斗外大约几个动作、两瓶泉水压住几个
 SNEAK_LETHAL = 0.7                      # 偷袭时 AI 判成致命的比例（其余按重伤）
 SNEAK_PAST = 0.85                       # 潜行打法溜过一个房间的几率 = SNEAK_PAST ^ (1 + 群数)：一群 72%、两群 61%、三群 52%
                                         # （照玩家A：第 35–41 层每层溜过 3–8 个房间，只打约 2.7 场）
@@ -1087,7 +1111,7 @@ def run_trip(build: str, quality: str, trip: int, kit: Kit, size: int, stats: di
         live = [h for h in heroes if not h.down]
         if not live:
             return
-        theme_key = random.choice([k for k in THEMES if k not in recent[-dungeon.THEME_GAP:]] or list(THEMES))
+        theme_key = dungeon._pick_theme(THEMES, depth, set(recent[-dungeon.THEME_GAP:]))      # 熔炉这类深层主题 16 层起才有
         recent.append(theme_key)
         st = stats.setdefault(depth, FloorStat())
         st.reached += 1
@@ -1097,6 +1121,9 @@ def run_trip(build: str, quality: str, trip: int, kit: Kit, size: int, stats: di
             h.hp += new_max - h.max_hp if not h.effects.get("corrode") else 0
             h.max_hp = new_max if not h.effects.get("corrode") else h.max_hp
             h.floor_used, h.cheer, h.taken, h.drank = set(), False, 0, 0
+            if heat := THEMES[theme_key].get("heat", {}).get("pct", 0):
+                # 战斗外大约 HEAT_WALK 个动作，两瓶泉水（冷却水池）各压住 4 个，剩下的每个掉 1%
+                h.hp = max(1, h.hp - max(0, HEAT_WALK - HEAT_QUENCH) * max(1, round(h.max_hp * heat)))
             h.torch_light = (TORCH_LIT if torch_age == 0 else TORCH_DIM) if build == "sword_torch" else 0
         torch_age = 1 - torch_age               # 一支火把两层（点燃、弱光），第三层换新的
         camped = False
@@ -1134,6 +1161,7 @@ def run_trip(build: str, quality: str, trip: int, kit: Kit, size: int, stats: di
             mark_leader(mons)
             light = room_light(THEMES[theme_key])
             fight = Fight([h for h in heroes if not h.down], mons, light, cover, depth)
+            fight.heat = THEMES[theme_key].get("heat", {}).get("pct", 0)
             fight.sneak_open()
             hp_before = {id(h): h.taken for h in fight.heroes}
             result = fight.run()
@@ -1195,6 +1223,7 @@ def fight_test(build: str, quality: str, trip: int, depth: int, groups: list[tup
             mons += spawn(depth, monster, rank, theme, size, len(groups), boss, affix=affix)
         mark_leader(mons)
         f = Fight(heroes, mons, room_light(THEMES[theme]) if light is None else light, False, depth)
+        f.heat = THEMES[theme].get("heat", {}).get("pct", 0)
         f.sneak_open()
         before = sum(h.taken for h in heroes)
         r = f.run()

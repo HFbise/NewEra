@@ -172,11 +172,13 @@ def _put_item(cur: Cursor, template: str, depth: int, *, room: Optional[str] = N
     rarity 给了的是地牢掉落：武器、护具、饰品按稀有度随机带孔（common 普通怪 / uncommon 精英宝箱 / rare 头目）"""
     props = {}
     every = loot_data()["rules"].get("boss_upgrade_every", 0)
-    cur.execute("select name, type, slot, damage, defense from item_templates where id = %s", (template,))
+    cur.execute("select name, type, slot, damage, defense, props from item_templates where id = %s", (template,))
     t = cur.fetchone()
     if rarity and gem_category(t["type"], t["slot"]):
         props["rarity"] = rarity                # 拆解按稀有度出碎铁（engine.do_dismantle）
-        if n := roll_sockets(rarity, gem_rules()):
+        # 深层装备（props.tier ≥ 1）：孔数按稀有度再高一档
+        holes = {"common": "uncommon", "uncommon": "rare"}.get(rarity, rarity) if (t["props"] or {}).get("tier") else rarity
+        if n := roll_sockets(holes, gem_rules()):
             props["sockets"] = n
     if boss and every and (plus := depth // every - 1) > 0:
         if t["type"] == "weapon":
@@ -409,7 +411,7 @@ def _template(cur: Cursor, depth: int, kind: str, rank: str, theme: str, share: 
         # 技能按层数解锁（第 5 层一招、第 10 层两招、第 15 层全套），免疫、弱点
         if skills := unlocked_skills(m.get("skills") or [], depth):
             props["skills"] = skills
-        for key in ("immune", "weak"):
+        for key in ("stances", "quench"):      # 矮人王的铸像：冷却 / 熔化轮换、熔化时泼泉水裂开
             if m.get(key):
                 props[key] = m[key]
     for flag in ("animal", "light_averse", "undead", "keen", "ranged"):
@@ -417,6 +419,9 @@ def _template(cur: Cursor, depth: int, kind: str, rank: str, theme: str, share: 
             props[flag] = True
     if m.get("perception"):
         props["perception"] = m["perception"]   # 察觉：迟钝 -1 / 敏锐 +1（进门被发现的几率、躲藏难度）
+    for key in ("immune", "weak", "resist_element"):   # 不吃的状态、弱点、不怕的属性（熔炉的怪不怕火）
+        if m.get(key):
+            props[key] = m[key]
     for key in ("healer", "verb", "guard_allies"):   # 治疗的比例、出手的说法（"甩出一颗石子"）、盾卫护同伴的几率
         if m.get(key):
             props[key] = m[key]
@@ -558,6 +563,21 @@ def is_stone(depth: int) -> bool:
     return depth > 1 and (depth - 1) % BOSS_EVERY == 0
 
 
+DEEP_THEMES_MIN = 3                     # 深层主题（dungeon.yaml min_depth）凑够这么多个，老的六个主题 16 层以后就不再出
+DEEP_THEME_SHARE = 0.5                  # 凑够之前：深层楼层一半几率抽深层主题，一半还是老主题
+
+
+def _pick_theme(themes: dict, depth: int, recent: set) -> str:
+    """这一层的主题：到了 min_depth 的深层主题才进池；不跟上面 THEME_GAP 层重复"""
+    deep = [k for k, t in themes.items() if t.get("min_depth") and t["min_depth"] <= depth]
+    old = [k for k, t in themes.items() if not t.get("min_depth")]
+    if deep and (len(deep) >= DEEP_THEMES_MIN or random.random() < DEEP_THEME_SHARE):
+        pool = deep
+    else:
+        pool = old
+    return random.choice([k for k in pool if k not in recent] or pool)
+
+
 def _make_floor(cur: Cursor, run: UUID, depth: int, above: Optional[str], size: int) -> str:
     """生成第 depth 层，返回入口房间 id。above 是往上回去的房间（第 1 层是地窖，往后是上一层的楼梯间；
     从地窖直接传送来的没有上一层，就不开往上的路）；size 是队伍人数：怪的血量、钱袋里的钱跟着涨"""
@@ -566,7 +586,7 @@ def _make_floor(cur: Cursor, run: UUID, depth: int, above: Optional[str], size: 
     cur.execute("select theme from dungeon_floors where run_id = %s and depth between %s and %s",
                 (run, depth - THEME_GAP, depth - 1))
     recent = {r["theme"] for r in cur.fetchall()}
-    theme_key = random.choice([k for k in themes if k not in recent] or list(themes))
+    theme_key = _pick_theme(themes, depth, recent)
     theme = themes[theme_key]
     start, stairs, edges = layout()
     cells = [(r, c) for r in range(GRID) for c in range(GRID)]
@@ -575,10 +595,17 @@ def _make_floor(cur: Cursor, run: UUID, depth: int, above: Optional[str], size: 
     # 七个普通格子：一个宝箱房、一个空房、一个随机事件房、其余战斗房
     kinds = {start: "entry", stairs: "stairs", rest[0]: "treasure", rest[1]: "empty", rest[2]: "event"}
     kinds |= {c: "combat" for c in rest[3:]}
+    forced = {}                                 # 主题固定要有的事件房（fixed_events，熔炉的两间冷却水池）
+    spare = rest[3:]
+    for key, n in (theme.get("fixed_events") or {}).items():
+        for _ in range(n):
+            if len(spare) > 2:                  # 至少留两间战斗房
+                cell = spare.pop()
+                kinds[cell], forced[cell] = "event", key
     pool = random.sample(theme["rooms"], len(theme["rooms"]))
     for cell in cells:
         kind = kinds[cell]
-        event = data()["events"][random.choice(theme["events"])] if kind == "event" else None
+        event = data()["events"][forced.get(cell) or random.choice(theme["events"])] if kind == "event" else None
         text = (event if event else data()["stone"] if kind == "entry" and is_stone(depth)
                 else theme[kind] if kind in ("entry", "stairs", "treasure")
                 else pool.pop() if pool else random.choice(theme["rooms"]))
@@ -589,7 +616,8 @@ def _make_floor(cur: Cursor, run: UUID, depth: int, above: Optional[str], size: 
                  # 头目层：楼梯间隔壁的房间是休息点，能多扎一次营（engine.do_camp）
                  **({"rest": True} if depth % BOSS_EVERY == 0 and kind != "stairs" and frozenset((cell, stairs)) in edges else {}),
                  "env": {"light": max(0, min(100, light)), "ground": text.get("ground", "normal"),
-                         "cover": bool(text.get("cover"))}}
+                         "cover": bool(text.get("cover")),
+                         **({"heat": theme["heat"]["pct"]} if theme.get("heat") else {})}}
         if kind == "entry" and is_stone(depth):
             props["stone"] = True
         if kind == "empty":

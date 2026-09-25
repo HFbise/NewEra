@@ -532,6 +532,107 @@ themes:
         - {when: every, value: 5, min_depth: 16, do: telegraph, label: 抽出一本烧着蓝火的书，高高举过头顶, then: {do: strike, mult: 1.5, target: all, cover_halves: true, label: 蓝色的火舌卷过整排书架}}
         - {when: hp_below, value: 0.5, min_depth: 16, do: phase, label: 吹了一口气，馆里的灯一盏接一盏灭了, env: {light: -25}}
 
+  forge:
+    name: 地底熔炉
+    light: 60                   # 熔岩照着，自然光亮偏高：钱掉得少一点，这是这里的代价
+    min_depth: 16               # 第 16 层起才进主题池（dungeon._pick_theme）
+    heat:                       # 灼热：这一层每做一个动作（说话、看不算）掉血量上限的 pct（不看防御，最少 1 点；engine._heat）
+      pct: 0.01
+      free: [say, talk, look, reject]     # 不算动作、不掉血的
+    fixed_events: {cooling_cistern: 2}     # 每层固定刷两间冷却水池（泉水房）
+    intro: 石阶越往下越烫，空气里满是铁锈和硫磺的味道，远处传来一下一下沉闷的锤声，像是有什么东西几千年来一直没停过手。
+    entry:
+      name: 熔炉之门
+      light: bright
+      description: 一扇两人多高的青铜大门半开着，门缝里透出橘红色的光，热浪一阵一阵往外涌。
+      details: >-
+        门板上铸着一排排矮人的锻造纹，有些地方被烤得发黑。门槛下的石缝里淌着一线暗红的铁水，
+        早就凝成了一条弯弯曲曲的铁痕。越往里走，脚底下的石头越烫。
+    stairs:
+      name: 铁水瀑布旁的阶梯
+      light: bright
+      description: 一道铁水从高处的槽口倾泻下来，落进看不见底的深坑，旁边凿着一条窄窄的石阶往下盘。
+      details: >-
+        铁水落下的地方溅起一片火星，照得整面岩壁忽明忽暗。石阶被烤得发烫，扶手是一根一根嵌进岩壁的铁环，
+        摸上去要隔着袖子。往下看，深处还有更亮的光。
+    treasure:
+      name: 王室宝库
+      light: dim
+      cover: true
+      description: 一间用整块黑石凿出来的石室，墙上一格一格的石龛里摆着落满灰的东西。
+      details: >-
+        石龛上刻着每一件东西的名字，大多已经空了。地上倒着一尊只剩半截的矮人石像，手还指着最里面那一格。
+        角落里有几只包铁的箱子，锁早就被烤化了。
+    rooms:
+      - name: 熔岩河畔的长廊
+        light: bright
+        description: 一条沿着熔岩河修的石廊，河面翻着气泡，热得让人睁不开眼。
+        details: 石廊的栏杆早就塌了大半，剩下的几截被烤得发红。河对岸能看到一排排空着的炉口，像一张张张开的嘴。
+      - name: 傀儡装配间
+        light: dim
+        cover: true
+        description: 一间摆满了半成品傀儡的工坊，铁架上吊着没装好的手臂和躯干。
+        details: 地上散落着铆钉和熔渣，墙上钉着一张画满了傀儡图样的皮纸。有一具傀儡的胸口还嵌着一块微微发红的炉芯，像在呼吸。
+      - name: 铁砧广场
+        light: bright
+        cover: true
+        description: 一片开阔的石地上立着几十座铁砧，每座都有半人高，上面还留着没打完的东西。
+        details: 铁砧之间的地面被锤出了一个个浅坑。有几座铁砧旁边还靠着锻锤，锤柄上的皮条早就烂光了，锤头却一点锈都没有。
+      - name: 铸币坊
+        light: dim
+        description: 一间低矮的石室，墙边一排石模子里还嵌着没倒出来的金属圆饼。
+        details: 模子上的花纹是一顶王冠和一把锤子。地上撒着一些铸坏了的古币，边缘熔得歪歪扭扭，踩上去咯吱作响。
+      - name: 坍塌的风箱室
+        light: dark
+        description: 一只比房子还大的皮风箱塌在石室中央，破口里还时不时往外漏出一股热风。
+        details: 风箱的木架子断成了几截，拉绳垂在地上。每隔一阵，深处就传来一声长长的喘息，风箱跟着鼓一下，又瘪下去。
+      - name: 矮人的宿舍
+        light: dim
+        cover: true
+        description: 一排排凿进岩壁的石床，床上铺着早已发硬的毛毡。
+        details: 每张床头都刻着一个名字，有几张床上还摆着没带走的酒杯和烟斗。最里面那张床的墙上刻满了划痕，数到后来就乱了。
+    features:
+      - {name: 悬吊的铁水桶, max_tier: heavy}
+      - {name: 烧红的铁砧, max_tier: heavy}
+      - {name: 蒸汽阀门, max_tier: heavy}
+      - {name: 堆成山的熔渣, max_tier: light}
+      - {name: 断掉的传送链, max_tier: light}
+    traps:                      # 本主题的陷阱描写，没写的主题用全局的 traps
+      - 脚下一块铁板突然翻开，底下是一槽冒着热气的铁水
+      - 墙上的管道咔的一声，喷出一股滚烫的蒸汽
+      - 一排地砖被烧得通红，踩上去才发现鞋底在冒烟
+    monsters: [slag_golem, fire_salamander, dwarf_smith_shade, forge_wisp, bellows_worker]
+    events: [unquenched_forge, orichalcum_seam, lava_bridge]
+    eerie:
+      - 远处的锤声忽然停了，过了很久，又一下一下响了起来。
+      - 熔岩河里浮上来一个巨大的气泡，破开的时候，像是有人叹了口气。
+      - 一阵热风从背后吹过，带着一股烧焦的头发味。
+    boss:
+      name: 矮人王的铸像
+      description: 一尊三人高的青铜铸像，是一位戴着王冠的矮人，手里拄着一柄比人还高的锻锤。胸口开着一扇小小的炉门，里面的火一直没灭过。
+      persona: 它是按矮人王的样子铸的，也继承了他最后一道命令：守住熔炉，谁也不许把火带走。它不说话，只是一锤接一锤地砸，像在打一块永远打不完的铁。
+      hp: 1.3
+      atk: 10
+      def: 20
+      immune: [bleed, poison, restrained]
+      resist_element: [fire]
+      weak: water               # 熔化状态时被泼泉水：淬火裂开（quench）
+      stances:                  # 每出手 every 次在两种状态之间切换，开场是冷却（engine._stance）
+        every: 3
+        start: cold
+        cold:   {def: 40, atk: -20, label: 身上的红光一点点褪去，青铜又变得冰冷坚硬}
+        molten: {def: -20, atk: 20, label: 胸口炉门里的火猛地窜高，表面开始发红、软化，每一锤都带着铁水}
+      quench:                   # 熔化状态时往它身上泼泉水：这一瓶泉水用掉
+        label: 泉水泼在烧红的青铜上，嗤的一声腾起白雾，铸像身上裂开了一道口子
+        then_stance: cold       # 裂开到它下一次出手：防御归零、挨的伤害 ×1.5，这一次出手跳过
+      skills:
+        - {when: every, value: 4, do: telegraph, label: 把锻锤高高举起，锤头一点点烧红（下一次出手砸向打它最狠的人）,
+           then: {do: strike, mult: 2.5, target: highest_threat}}
+        - {when: every, value: 3, do: combo, target: all, label: 一脚踏碎熔渣槽，铁水溅了一地,
+           effects: [{kind: corrode}, {kind: prone}]}
+        - {when: hp_below, value: 0.5, do: phase, label: 胸口的炉门轰然打开，热浪扑面而来,
+           env: {light: 30, heat_mult: 2}, then: {do: summon, kind: slag_golem, count: 1}}
+
 # 传送石：打完头目（每 BOSS_EVERY 层）之后下一层的入口。摸一下能回到酒馆地窖；到过这里的人以后能从地窖直接传送过来
 stone:
   name: 传送石
@@ -543,6 +644,32 @@ stone:
   light: bright
 
 events:
+  cooling_cistern:             # 地底熔炉每层固定两间（fixed_events），就是这个主题的泉水房
+    name: 冷却水池
+    light: dim
+    description: 一方用黑石砌成的大水池，池边立着几只矮人淬火用的长柄铁勺，池水竟然还是凉的。
+    details: 水面上浮着一层薄薄的铁锈，底下却清得见底。墙上刻着一行矮人文字，旁边有人用炭笔歪歪扭扭地译了出来："先淬火，再干活"。
+    take: {name: 水池, item: spring_water, where: 里}
+  unquenched_forge:
+    name: 未熄的锻炉
+    light: bright
+    description: 一座小锻炉里的炭火居然还没灭，旁边的铁砧上摆着一把磨得发亮的锻锤。
+    details: 炉火烧得正旺，像是有人刚离开不久。铁砧上刻着一圈矮人的锻造纹，照着纹路敲，也许能把手里的兵器再打磨一番。火星迸得很凶，手上得稳。
+    take: {name: 锻炉, service: free_upgrade, where: 上, skill: sleight, difficulty: 2, fail: 火星迸进了袖口，烫得人直甩手, fail_damage: 40}
+    # service: free_upgrade：成功就给手上的主武器免费升一级（满级了就改成给一份碎铁；engine._take_from）
+  orichalcum_seam:
+    name: 奥利哈刚矿脉
+    light: bright
+    description: 一面被熔岩烤裂的岩壁里露出一条青灰色的矿脉，比上面矿坑里见过的都要粗。
+    details: 矿脉被烤得微微发红，敲下来的碎块还是烫的。岩缝里时不时喷出一股热气，挖的时候得看准时机。
+    take: {name: 矿脉, item: ore, where: 里, skill: athletics, difficulty: 2, bonus_gem: 0.5, fail: 一股热蒸汽从矿脉缝里喷了出来, fail_damage: 40}
+    # bonus_gem：成功时另有这个几率多掉一颗本主题的宝石
+  lava_bridge:
+    name: 熔岩吊桥
+    light: bright
+    description: 一条铁链吊桥横跨在熔岩河上，对岸的石台上摆着一只铜匣。
+    details: 吊桥只剩几块木板，大半是光秃秃的铁链，踩上去晃得厉害。桥下的熔岩翻着泡，热浪一阵一阵往上冲。铜匣上刻着和熔炉之门一样的锻造纹。
+    take: {name: 石台, item: forge_rubbing, where: 上, skill: athletics, difficulty: 2, fail: 铁链一晃，脚下踩空，被熔岩的热浪燎了一下, fail_damage: 60}
   ore_vein:
     name: 裸露的矿脉
     light: dim
@@ -642,6 +769,58 @@ traps:
   - 墙上的机关咔哒一响，一把生锈的刀片横扫过来
 
 monsters:
+  slag_golem:
+    name: 熔渣傀儡
+    description: 一具用熔渣和铁板胡乱拼起来的人形，胸口嵌着一块还在发红的炉芯，每走一步都往下掉火星。
+    persona: 没有意识，只会重复几千年前的命令：把挡路的东西搬走。被打了也不停，一直往前推。
+    hp: 1.4
+    atk: 0
+    def: 30
+    perception: -1
+    immune: [bleed, poison]
+    resist_element: [fire]      # 火属性（余烬石、火油箭、点燃的火把）对它不算弱点
+    weak: pierce
+    on_hit: {kind: prone, chance: 0.25, label: 被傀儡一把推翻在地}
+  fire_salamander:
+    name: 火蜥蜴
+    description: 一条比人还长的红皮蜥蜴，背上的鳞片像烧透的炭，爬过的地方留下一道焦痕。
+    persona: 喜欢趴在熔岩边上晒热，闻到生人的气味就昂起头，一口咬住不放。
+    hp: 0.8
+    atk: 10
+    animal: true
+    perception: 1
+    resist_element: [fire]
+    on_hit: {kind: corrode, chance: 0.3, label: 被烫得发红的牙咬穿了护甲}
+  dwarf_smith_shade:
+    name: 矮人亡魂铁匠
+    description: 一个半透明的矮壮身影，系着一条烧焦的皮围裙，手里的锻锤却是实实在在的铁。
+    persona: 还以为自己在干活，嘴里念叨着"火候、火候"。谁挡在铁砧前面，就把谁当成一块要打的铁。
+    undead: true
+    hp: 1.0
+    atk: 10
+    def: 10
+    on_hit: {kind: prone, chance: 0.2, label: 被铁锤砸得跪倒在地}
+  forge_wisp:
+    name: 炉火精
+    description: 一团飘在半空的火焰，火苗里隐约有一张咧嘴笑的脸，身后拖着一串熔渣。
+    persona: 淘气又恶毒，躲在熔岩河对岸往人身上甩熔渣，被泼水就尖叫着缩成一团。
+    hp: 0.6
+    atk: 10
+    ranged: true
+    verb: 甩出一团烧红的熔渣
+    resist_element: [fire]
+    weak: water
+    on_hit: {kind: corrode, chance: 0.2, label: 熔渣粘在护甲上烧出一个洞}
+  bellows_worker:
+    name: 风箱工
+    description: 一个佝偻的矮人亡魂，背上绑着一只破风箱，走到哪都呼哧呼哧地拉着。
+    persona: 不打人，只顾着给傀儡"回炉"：风箱一拉，傀儡身上的裂缝就又烧合了。
+    undead: true
+    hp: 0.8
+    atk: -10
+    ranged: true
+    healer: 0.25
+    verb: 拉了一下风箱，一股热风扑了过来
   # 远程的怪（ranged: true）：不主动靠近，离人一步以上就射；被贴身了先往后跳开（这一下不射），
   #   除非这一轮刚被这个人贴身砍中（被缠住了），那就只能贴身硬射。有掩体的房间射得没那么准。verb 是出手的说法
   # 治疗的怪（healer: 比例）：有同伴掉到六成血以下，这一下给伤得最重的那个回这么多血，不打人

@@ -72,6 +72,15 @@ monsters:
     - {item: ink_blade, chance: 0.04, min_floor: 4}
   stone_gargoyle:
     - {item: gargoyle_eye, chance: 0.04, min_floor: 4}
+  slag_golem:
+    - {item: dwarf_plate, chance: 0.04}
+  fire_salamander:
+    - {item: salamander_boots, chance: 0.06}
+  dwarf_smith_shade:
+    - {item: scrap_iron, chance: 0.4}           # 碎铁，亡魂铁匠身上常有
+    - {item: dwarf_hand_axe, chance: 0.04}
+  forge_wisp: []
+  bellows_worker: []
 
 # 头目：二选一必掉
 bosses:
@@ -81,6 +90,7 @@ bosses:
   forest:    {pick_one: [elder_bark_armor, heartwood_amulet]}
   swamp:     {pick_one: [witch_bone_ring, witch_staff]}
   library:   {pick_one: [curator_monocle, curator_ledger]}
+  forge:     {pick_one: [forge_king_hammer, forge_heart]}
 
 # 通用池：精英的额外掉落、宝箱房的一半从这里抽
 # 楼梯间守卫（精英）保底掉一件：身上的专属掉落一件都没掷中时，从这里抽。补给为主，不给好装备（保底只是不让人空手，不该比专属掉落还好）
@@ -135,6 +145,11 @@ pool:
 
 # 宝箱房的主题池
 treasure:
+  forge:
+    - {item: dwarf_hand_axe, weight: 8}
+    - {item: dwarf_warhammer, weight: 6}
+    - {item: dwarf_bulwark, weight: 6}
+    - {item: forge_rubbing, weight: 4}
   mine:
     - {item: miner_lamp, weight: 12, min_floor: 3}
     - {item: miner_pick, weight: 8}
@@ -214,4 +229,5 @@ gems:
     forest: [ember_stone, rootbind_stone]
     swamp: [venom_crystal, mossvein_stone]
     library: [inkward_opal, glowstone, keen_ink]
+    forge: [bloodstone, sunder_stone, ironheart_stone]     # 熔炉里余烬石没用，换成破甲和数值
     common: [prism_shard, vigor_garnet, bloodstone]

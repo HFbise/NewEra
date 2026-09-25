@@ -49,6 +49,77 @@
 # ---------------------------------------------------------------------------
 
 items:
+  forge_rubbing:                # 熔岩吊桥上拿的，送给莉娜：第一次送解锁"深层锻造"（tier 1 以上的装备升级上限 +15）
+    name: 矮人锻造纹拓片
+    description: 一张从铜匣上拓下来的厚皮纸，上面是一圈圈复杂的锻造纹，纹路的走向跟莉娜铁匠铺墙上那几道一模一样。
+    type: misc
+    props: {price: 30, gift: ore, gift_value: 10, unlock: lina_deep_forge}
+  dwarf_hand_axe:              # 深层第一档（tier 1，16 层起）：掉落时孔数按稀有度再高一档
+    name: 矮人手斧
+    description: 一把斧刃宽得像铲子的短柄斧，斧背铸着一个小小的王冠，拿在手里沉甸甸的。
+    type: weapon
+    damage: 95
+    props: {price: 180, tier: 1}
+  dwarf_warhammer:
+    name: 矮人战锤
+    description: 一柄双手长锤，锤头一面平一面尖，尖的那面专门用来凿穿铠甲。
+    type: weapon
+    damage: 135
+    props:
+      price: 260
+      tier: 1
+      two_handed: true
+      effects:
+        - {when: hit, do: pierce, value: 10}
+  dwarf_plate:
+    name: 矮人板甲
+    description: 一整套用黑铁锻打的胸甲，铆钉排得整整齐齐，内衬是还没烂的厚毛毡。
+    type: armor
+    slot: chest
+    defense: 40
+    props: {price: 200, tier: 1}
+  dwarf_bulwark:
+    name: 矮人壁盾
+    description: 一面方形的铁盾，边缘包着一圈铜，盾面上铸着一座熔炉的图案。
+    type: armor
+    slot: hand
+    defense: 40
+    props: {price: 200, tier: 1, block: 0.15}
+  salamander_boots:
+    name: 火蜥蜴皮靴
+    description: 用火蜥蜴的红鳞皮缝的靴子，鞋底厚实，踩在烧红的石头上也不觉得烫。
+    type: armor
+    slot: feet
+    defense: 20
+    props:
+      price: 120
+      tier: 1
+      effects:
+        - {when: passive, do: heat_resist, value: 0.5}      # 灼热掉的血减半
+  forge_king_hammer:           # 矮人王的铸像掉落，二选一
+    name: 矮人王的锻锤
+    description: 铸像手里那柄比人还高的锻锤，锤头上的锻造纹还在隐隐发红。
+    type: weapon
+    damage: 150
+    props:
+      price: 400
+      tier: 1
+      two_handed: true
+      effects:
+        - {when: hit, do: pierce, value: 20}
+        - {when: hit, do: status, kind: prone, chance: 0.2, label: 锻锤砸得地面一震，对方站不稳了}
+  forge_heart:
+    name: 熔炉之心
+    description: 从铸像胸口炉门里掏出来的一块炉芯，用铁链穿着，戴在胸前暖烘烘的，从来不会凉。
+    type: armor
+    slot: neck
+    defense: 20
+    props:
+      price: 350
+      tier: 1
+      effects:
+        - {when: passive, do: max_hp, value: 60}
+        - {when: passive, do: heat_resist, value: 0}         # 不怕灼热
   scrap_iron:                  # 找莉娜拆解地牢装备得来，垫在升级里（每份成功率 +5%，一次最多四份）；以后宝石打孔也用它
     name: 碎铁
     description: 一小块从拆开的装备上敲下来的好铁，莉娜说回炉的时候添一点，火候好掌握。

@@ -482,7 +482,7 @@ items:
     description: 一瓶从地下泉眼接来的清水，冰凉微甜，喝下去浑身一轻。
     type: consumable
     heal: 10
-    props: {price: 8, kind: drink}
+    props: {price: 8, kind: drink, quench: 4, water: true}     # quench：在灼热的楼层喝下，接下来 4 个动作不掉血；water：能泼向敌人（熔化的铸像、炉火精）
   # 地牢宝箱房里的钱袋：捡起来直接变成金币（数目在实例 props.gold）
   gold_pouch:
     name: 一袋古币
