@@ -225,7 +225,11 @@ def events(limit: int = 100, before: Optional[int] = None, player: Optional[str]
                    e.input, e.meta, e.facts, e.narrative, e.observer
             from events e join rooms r on r.id = e.room_id left join players p on p.id = e.player_id
             where (%(before)s::bigint is null or e.id < %(before)s)
-              and (%(player)s::text is null or p.name = %(player)s)
+              and (%(player)s::text is null or p.name = %(player)s
+                   -- 战斗回合的结算和叙事不记在谁名下：按 meta 里出手的人的名字找（老记录只有 players / inputs）
+                   or e.meta->'names' ? %(player)s
+                   or e.meta->'players' @> jsonb_build_array(jsonb_build_object('name', %(player)s))
+                   or e.meta->'inputs' @> jsonb_build_array(jsonb_build_array(%(player)s)))
               and (%(room)s::text is null or e.room_id = %(room)s)
             order by e.id desc limit %(limit)s""",
             {"before": before, "player": player or None, "room": room or None, "limit": min(limit, 500)})

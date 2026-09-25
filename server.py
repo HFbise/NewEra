@@ -740,7 +740,8 @@ def _resolve_round(room_id: str) -> None:
             with conn.transaction():
                 conn.execute("insert into events (room_id, kind, facts, observer, meta) values (%s, 'combat', %s, %s, %s)",
                              (room_id, Jsonb(lines), "\n".join(lines),
-                              Jsonb({"round": rnd, "inputs": [(n, t) for n, t, _ in turns], "players": parsed})))
+                              Jsonb({"round": rnd, "inputs": [(n, t) for n, t, _ in turns], "players": parsed,
+                                     "names": [n for n, _, _ in turns]})))
             room = engine.load_room(engine._cursor(conn), room_id)
             conn.commit()
         story = None
@@ -752,8 +753,9 @@ def _resolve_round(room_id: str) -> None:
         with pool.connection() as conn:
             if story:
                 with conn.transaction():
-                    conn.execute("insert into events (room_id, kind, observer) values (%s, 'combat_story', %s)",
-                                 (room_id, story))
+                    # 后台按玩家筛选时靠 meta.names 找到这一轮（结算、叙事都不记在谁名下）
+                    conn.execute("insert into events (room_id, kind, observer, meta) values (%s, 'combat_story', %s, %s)",
+                                 (room_id, story, Jsonb({"round": rnd, "names": [n for n, _, _ in turns]})))
             engine.end_round(conn, room_id)
             _kick_round(conn, room_id)                  # 写叙事的时候大家已经都出手了：马上结算下一轮
     except Exception:
