@@ -545,7 +545,8 @@ def do_flee(cur: Cursor, player: Player, view: RoomView, a: Flee) -> list[str]:
         if diff := FLEE_DIFFICULTY.get(near):
             diff += _room_env(cur, player.room_id).get("ground") == "water" and not gear_has(cur, player, "wade")
             diff = max(1, diff + int(gear_add(cur, player, "flee")))           # 狼皮靴 -1、铁皮甲 +1
-            ok, rolled = _check(cur, player, view, "athletics", diff)
+            ok, rolled = (True, [f"（{player.name}脚下的飞鞋一振，怎么都追不上）"]) if gear_has(cur, player, "flee_always") \
+                else _check(cur, player, view, "athletics", diff)
             facts += rolled
             if not ok:
                 return facts + [f"{player.name}没能甩开{'、'.join(n.name for n in foes)}"]
@@ -740,6 +741,11 @@ def _npc_affect(cur: Cursor, player: Player, npc: Npc, kind: str, label: str) ->
         return []
     if kind in (npc.template.props.get("immune") or []):
         return [f"{npc.name}不吃这一套（免疫{EFFECT_NAMES.get(kind, STATE_NAMES.get(kind, kind))}）"]
+    if kind == "wrapped":
+        kind = "restrained"
+    if kind == "silence":
+        _tally_merge(cur, npc, {"muted": 2})
+        return [f"{npc.name}{label or '被捂住了嘴'}（接下来两次出手放不了招）"]
     if kind in ("stun", "restrained", "prone"):
         if npc.status or _boss_resists(cur, npc):
             return []
@@ -850,6 +856,11 @@ def _hit_extras(cur: Cursor, player: Player, npc: Npc, dmg: int, dead: bool, fir
             facts += _labels([e])
             for other in _enemies(cur, player.room_id):
                 facts += _npc_affect(cur, player, other, e["kind"], "")
+        elif e["do"] == "knockback":
+            st = _stealth(player)
+            d = _set_distance(st, npc, _distance(st, npc) + 1)
+            _save_stealth(cur, player, st)
+            facts += [f"{npc.name}被打得往后退了一步（离{player.name} {distance_word(d)}）"]
         elif e["do"] == "chain":
             others = [n for n in _enemies(cur, player.room_id) if n.id != npc.id]
             if others:
@@ -2491,6 +2502,13 @@ def _npc_strike(cur: Cursor, player: Player, npc: Npc, verb: str, chance: float 
         chance *= NPC_BLIND_HIT                 # 被墨汁糊了眼的怪
     if not _roll(chance):
         return [f"{npc.name}{verb}，没打中{player.name}"]
+    if _fx(_worn(cur, player), "miss_next", when="hurt") and _once_per_fight(cur, player, "miss_next"):
+        return [f"{npc.name}{verb}，眼看就要打中，{player.name}头上的盔忽然一暗，整个人从它眼前消失了一瞬：这一下落了空（这一场用过了）"]
+    if npc.template.props.get("ranged") and (ref := _fx(_worn(cur, player), "reflect_ranged", when="hurt")) \
+            and _roll(max(e.get("chance", 0) for e in ref)):
+        back = max(SCALE, npc.template.attack // 2)
+        hurt, _ = _hurt_npc(cur, player, npc, back)
+        return [f"{npc.name}{verb}，打在{player.name}的盾面上折了回去，自己挨了 {back} 点"] + hurt
     # 影步靴这类：几率完全躲开（几件取最高）；拿着盾（props.block）：几率完全挡下。两样一起掷，合计最多 AVOID_CAP。
     # 挡的只是这一击，中毒、流血这些持续伤害挡不住
     dodges = _fire(cur, player, "hurt", "dodge", npc, roll=False)
@@ -2532,10 +2550,19 @@ def _npc_strike(cur: Cursor, player: Player, npc: Npc, verb: str, chance: float 
     if dmg >= player.hp and (mark := _carries(cur, player, "guard_once")) and _once_per_floor(cur, player, "cheat_death"):
         return [f"{npc.name}{verb}，这一下本该要了{player.name}的命",
                 f"{player.name}身上的{mark.name}亮了一下，硬生生挡下了这一击（这一层用过了）"]
-    if dmg >= player.hp and (cd := _fire(cur, player, "hurt", "cheat_death", npc)) and _cheat_death_ready(cur, player):
-        dmg, saved = max(0, player.hp - SCALE), _labels(cd) or [f"{player.name}硬撑着没倒下"]
+    if dmg >= player.hp and (cd := _fire(cur, player, "hurt", "cheat_death", npc)) \
+            and (_once_per_fight(cur, player, "cheat_death") if all(e.get("once") == "per_fight" for e in cd)
+                 else _cheat_death_ready(cur, player)):
+        dmg, saved = max(0, player.hp - SCALE), [x.replace("你", player.name) for x in _labels(cd)] or [f"{player.name}硬撑着没倒下"]
     player.hp = max(0, player.hp - dmg)
     cur.execute("update players set hp = %s, updated_at = now() where id = %s", (player.hp, player.id))
+    if saved and any(e.get("cleanse") for e in cd) and (bad := [e for e in player.effects if e.kind not in ("whet", "cheer", "bless")]):
+        # 黄金天平：免死的同时清掉身上所有减益（腐蚀扣的血量上限还回去）
+        player.effects = [e for e in player.effects if e not in bad]
+        _save_effects(cur, player)
+        cur.execute("update players set max_hp = max_hp + %s, status = null where id = %s", (sum(e.hp for e in bad), player.id))
+        player.max_hp += sum(e.hp for e in bad)
+        saved.append(f"{player.name}身上的{'、'.join(EFFECT_NAMES[e.kind] for e in bad)}一下子都散了")
     hit = (f"{npc.name}{verb}，这一下本该要了{player.name}的命" if saved
            else f"{npc.name}{verb}，对{player.name}造成 {dmg} 点伤害")
     facts = [hit, f"{player.name} HP {player.hp}/{player.max_hp}"] + saved
@@ -2560,6 +2587,22 @@ def _npc_strike(cur: Cursor, player: Player, npc: Npc, verb: str, chance: float 
         hurt, _ = _hurt_npc(cur, player, npc, reflect)
         facts += [f"{npc.name}被扎了一下，受到 {reflect} 点伤害"] + hurt
     return facts + _toughen(cur, player, ENDURE_HIT_CHANCE) + _on_hit(cur, player, npc, dmg)
+
+
+# 送了会讲往事的礼物（props.lore）：谁讲、讲什么
+LORE = {"upon_mountain": ("shopkeeper", "“在其山岳之上者”"), "maggie_past": ("innkeeper", "她自己年轻时")}
+
+
+def _once_per_fight(cur: Cursor, player: Player, key: str) -> bool:
+    """这一场（这个房间里的这一仗）还没用过 key 就记下并返回 True"""
+    f = player.flags.get("_fight") or {}
+    used = f.get("used", []) if f.get("room") == player.room_id else []
+    if key in used:
+        return False
+    f = {"room": player.room_id, "used": used + [key]}
+    player.flags["_fight"] = f
+    cur.execute("update players set flags = flags || jsonb_build_object('_fight', %s::jsonb) where id = %s", (Jsonb(f), player.id))
+    return True
 
 
 def _cheat_death_ready(cur: Cursor, player: Player) -> bool:
@@ -2754,6 +2797,9 @@ def _inflict(cur: Cursor, player: Player, kind: str, label: str, depth: int, sou
         if guard.get("kind") == ("incapacitated" if kind == "stun" else kind) and guard.get("left", 0) > 0:
             return [f"{player.name}刚{'爬起来' if kind == 'prone' else '挣脱出来'}，还提防着，没再{(label if label.startswith('被') else '被' + label) if label else '被控住'}"]
         label = label or {"stun": "被打得晕头转向", "restrained": "被缠住了", "prone": "被撞倒在地"}[kind]
+        if kind == "stun" and _fx(_worn(cur, player), "resist_once", when="hurt", kind="stun") \
+                and _once_per_fight(cur, player, "resist_stun"):
+            return [f"{player.name}眼前一黑又清醒过来，没被{label.removeprefix('被')}（这一场用过了）"]
         st = Status(kind="incapacitated" if kind == "stun" else kind, label=label[:20], escape=escape,
                     since=datetime.now(timezone.utc).isoformat(), wrapped=wrapped)
         _set_status(cur, "players", player.id, st)
@@ -3217,7 +3263,8 @@ def load_players_in(cur: Cursor, room_id: str) -> list[Player]:
 def _glare(cur: Cursor, player: Player, room_id: str) -> list[str]:
     """炫光（水晶洞窟 env.glare）：光亮到 at 以上，每个敌人回合 chance 几率被晃得看不清一回合；闭着眼的不会"""
     g = _room_env(cur, room_id).get("glare")
-    if not g or player.hp <= 0 or player.flags.get(EYES_CLOSED) or _light(cur, room_id) < g.get("at", 70):
+    if not g or player.hp <= 0 or player.flags.get(EYES_CLOSED) or _light(cur, room_id) < g.get("at", 70) \
+            or gear_has(cur, player, "glare_immune"):
         return []
     if not _roll(g.get("chance", 0.25)) or _effect(player, "blind"):
         return []
@@ -3720,6 +3767,9 @@ def _boss_turn(cur: Cursor, npc: Npc, targets: list[Player], dodging: Optional[s
     skills = props.get("skills")
     if not skills or not targets or npc.hp is None:
         return [], False
+    if muted := _tally(cur, npc, "muted"):
+        _tally_merge(cur, npc, {"muted": muted - 1})        # 被禁了声：这一下只能普通地打
+        return [], False
     if props.get("fare"):
         info = props.get("dungeon", {})
         fared, took = _fare(cur, npc, targets, info.get("depth", 1), info.get("theme", ""), dodging or set())
@@ -4169,6 +4219,11 @@ def do_attack(cur: Cursor, player: Player, view: RoomView, a: Attack) -> list[st
         # 棱镜元素：远程的这一下被晶面折了回来，打在自己身上（一半）
         hurt, _ = _hurt_player(cur, player, max(SCALE, dmg // 2), "npc", npc.name)
         return [f"{player.name}{how}{npc.name}，被它身上的晶面折了回来，自己挨了 {max(SCALE, dmg // 2)} 点"] + hurt
+    if (same := [e for e in _fx(_worn(cur, player), "bonus_pct", when="hit") if (e.get("if") or {}).get("same_target")]) \
+            and player.flags.get("_last_target") == str(npc.id):
+        dmg = round(dmg * (1 + max(e.get("value", 0) for e in same)))       # 连着砍同一个：越砍越顺手
+    cur.execute("update players set flags = flags || jsonb_build_object('_last_target', %s::text) where id = %s", (str(npc.id), player.id))
+    player.flags["_last_target"] = str(npc.id)
     facts, dead = _hurt_npc(cur, player, npc, dmg)
     facts[:0] = dmg_note
     if not shooter and not dead and (thorns := npc.template.props.get("thorns"))             and _roll(npc.template.props.get("thorns_chance", 1.0)):
@@ -5029,7 +5084,7 @@ def do_give(cur: Cursor, player: Player, view: RoomView, a: Give) -> list[str]:
     if cur.fetchone():
         return [f"{player.name}把{item.name}递给了{npc.name}"]
     # 送她心爱的礼物（world.yaml props.gift_likes 里的种类）：好感固定 +LIKED_GIFT，东西她收下（从世界里拿走）
-    if (gift := _prop(item, "gift")) and gift in npc.template.props.get("gift_likes", []):
+    if (gift := _prop(item, "gift")) and (gift == "any" or gift in npc.template.props.get("gift_likes", [])):
         # 小礼物（props.gift_value，村里互相卖的怪酒、木炭、游记）：好感加得少，每人每天只收一件，跨得过好感的坎
         if (unlock := _prop(item, "unlock")) and npc.template.props.get("upgrades") and not player.flags.get(unlock):
             _consume(cur, item)
@@ -5054,8 +5109,16 @@ def do_give(cur: Cursor, player: Player, view: RoomView, a: Give) -> list[str]:
                            on conflict (player_id, npc_template) do update
                            set affinity = excluded.affinity, gift_day = excluded.gift_day""",
                         (player.id, npc.template.id, new))
-            return [f"{player.name}把{item.name}送给了{npc.name}，是她喜欢的小东西",
-                    f"{npc.name}对{player.name}的好感上升（当前 {new}，收到小礼物）"]
+            facts = [f"{player.name}把{item.name}送给了{npc.name}，是她喜欢的小东西",
+                     f"{npc.name}对{player.name}的好感上升（当前 {new}，收到小礼物）"]
+            if (lore := LORE.get(_prop(item, "lore"))) and lore[0] == npc.template.id:
+                # 壁画拓片、船牌这类：每送一件，她多讲一段（讲什么由叙事写，按第几段往下接）
+                seen = dict(player.flags.get("_lore") or {})
+                seen[_prop(item, "lore")] = n = int(seen.get(_prop(item, "lore"), 0)) + 1
+                cur.execute("update players set flags = flags || jsonb_build_object('_lore', %s::jsonb) where id = %s",
+                            (Jsonb(seen), player.id))
+                facts.append(f"（{npc.name}看着它出了一会儿神，讲起了{lore[1]}的第 {n} 段往事）")
+            return facts
         back = item.props.get("sold_by") == npc.template.id
         _consume(cur, item)                 # 叠着的古酒只送出一瓶
         new = min(100, _affinity(cur, player, npc) + LIKED_GIFT)
@@ -5539,12 +5602,15 @@ def do_refine(cur: Cursor, player: Player, view: RoomView, a: Refine) -> list[st
         catalyst = min((i for i in view.inventory if i.template.id == gem.template.id and i.id != gem.id),
                        key=lambda i: i.props.get("tier", 1), default=None)      # 垫子先用品质最低的
         if catalyst is None:
-            raise ActionError(f"身上没有另一颗{gem.template.name}能当垫子")
+            catalyst = next((i for i in view.inventory if _prop(i, "refine_catalyst")), None)       # 晶粉：什么宝石都能垫
+        if catalyst is None:
+            raise ActionError(f"身上没有另一颗{gem.template.name}（或者晶粉）能当垫子")
     cost = rules["cost"][tier - 1]
     patron = _pay(cur, player, cost, npc)
     if catalyst:
         _consume(cur, catalyst)
-    new = refine_roll(tier, cap, rules, bool(catalyst))
+    dust = float(_prop(catalyst, "refine_catalyst") or 0) if catalyst else 0
+    new = refine_roll(tier, cap, rules, bool(catalyst) and not dust, dust or 1.0)
     facts = [f"{player.name}付了 {cost} 金币，{npc.name}翻开一本旧书，照着上面的法子对着{gem.name}念念有词"
              + (f"，{catalyst.name}当了垫子，化成一小撮粉末" if catalyst else "")] + patron
     if new == tier:

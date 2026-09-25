@@ -508,11 +508,11 @@ def refine_cap(numeric: bool, deepest: int, refine: dict) -> int:
     return GEM_TOP if deepest >= gate["perfect_numeric" if numeric else "perfect_other"] else 3
 
 
-def refine_roll(tier: int, cap: int, refine: dict, catalyst: bool) -> int:
-    """刷一次：只升不降。先掷跳两档（封顶在 cap），再掷升一档（交了垫子几率翻倍），都没中就不变"""
+def refine_roll(tier: int, cap: int, refine: dict, catalyst: bool, boost: float = 1.0) -> int:
+    """刷一次：只升不降。先掷跳两档（封顶在 cap），再掷升一档（交了同种宝石当垫子几率翻倍，晶粉 ×boost），都没中就不变"""
     if random.random() < refine["double_up_chance"] and tier + 2 <= cap:
         return tier + 2
-    chance = refine["up_chance"][tier - 1] * (refine["catalyst_mult"] if catalyst else 1)
+    chance = refine["up_chance"][tier - 1] * (refine["catalyst_mult"] if catalyst else 1) * boost
     return tier + 1 if tier < cap and random.random() < chance else tier
 
 
