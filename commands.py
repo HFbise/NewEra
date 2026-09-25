@@ -225,6 +225,15 @@ def _parse_one(view: RoomView, t: str) -> dict:
         if m := re.fullmatch(rf"把\s*(.+?)\s*(?:放进|放到|放回|扔进|丢进|塞进|捐到|捐给|留在|留给)\s*(?:{re.escape(box.container)}|桶|新人)(?:里)?", t) \
                 or re.fullmatch(r"(?:捐|捐掉|捐出)\s*(.+)", t):
             return {"action": "donate", "item": _find(view, m[1], "inv"), "target": ref}
+        # 说法五花八门（"伏击者短刀 +1放进去""把短刀放桶里""看武器桶 把皮甲丢进去"）：句子里提到桶、有放进去的动作、
+        # 又说了背包里一件武器护具的名字（去掉 +N 也认），就是捐
+        if (box.container in t or "桶" in t or re.search(r"(?:放|扔|丢|塞)进去", t)) and re.search(r"放|扔|丢|塞|捐|留给", t) and not re.search(r"拿|取|挑", t):
+            said = re.sub(r"\s+", "", t)
+            base = lambda i: re.sub(r"\s*\+\d+$", "", i.name).replace(" ", "")
+            gear = [i for i in view.inventory if i.template.type in box.donate and not i.equipped_slot and base(i) in said]
+            if gear:
+                pick = max(gear, key=lambda i: (i.name.replace(" ", "") in said, len(base(i))))
+                return {"action": "donate", "item": {uid: r for r, uid in view.refs.items()}[pick.id], "target": ref}
         if m := re.fullmatch(rf"(?:从\s*{re.escape(box.container)}\s*(?:里|中)?\s*(?:拿|取|挑|拿走)\s*(?:一件|一把)?\s*(.+)|"
                              rf"(?:拿|取|挑)\s*{re.escape(box.container)}\s*(?:里|中)?的\s*(.+))", t):
             want = (m[1] or m[2]).strip()

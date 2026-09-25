@@ -1250,7 +1250,12 @@ def do_look(cur: Cursor, player: Player, view: RoomView, a: Look) -> list[str]:
 
     uid = _resolve(view, a.target)
     if d := next((d for d in view.dispensers if d.id == uid), None):
-        return [f"{d.container}：{d.description}".rstrip("：")]             + ([f"{d.container}{d.where}有{d.item_name}"] if d.available else [])
+        return [f"{d.container}：{d.description}".rstrip("：")] \
+            + ([f"{d.container}{d.where}有{d.item_name}"] if d.available else []) \
+            + ([f"{d.container}里还有别人留下的：{'、'.join(x['name'] for x in d.donated)}（说「从{d.container}里拿某某」，每人每天一件）"]
+               if d.donated else []) \
+            + ([f"用不上的武器、护具可以放进{d.container}留给新人（说「把某某放进{d.container}」；强化清零，镶的宝石退回自己背包）"]
+               if d.donate else [])
     items = load_items(cur, "i.id = %s and (i.room_id = %s or i.player_id = %s)",
                        (uid, player.room_id, player.id))
     if items:
