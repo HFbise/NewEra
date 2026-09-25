@@ -44,6 +44,9 @@ SURVIVAL_LEVEL = 1                      # 扎营判定用的生存等级
 STASH_CHANCE = 0.5                      # 空房藏着的古币翻得到的几率（调查判定）
 FORAGE_CHANCE = 0.5                     # 空房搜到药草的几率
 ROUND_CAP = 60                          # 一场打这么多轮还没完就算僵住（记下来）
+ORE_PER_FLOOR = 0.5                     # 每层大约能弄到的奥利哈刚（事件房、掉落），回城都砸在武器上
+# 对照用的开关（命令行改）：怪打人的伤害倍数（真人比模拟难约 1.5 倍）、远程武器每级加多少
+VARIANT = {"dmg": 1.0, "ranged_step": 1.0}
 
 
 # ============ 装备：按"走到这一段实际拿得到的"拼，数字是模板的基础值，升级另算 ============
@@ -145,10 +148,21 @@ class Kit:
 
 
 def upgrade_run(gold: int, weapons: list[int], armor: list[int], w_plus: list[int], a_plus: list[int],
-                discount: float, oil: int) -> tuple[int, int]:
-    """把钱一半花在武器、一半花在防具上升级，按引擎的费用和失败率掷骰（失败退一级、钱照收）。
+                discount: float, oil: int, ore: list[int]) -> tuple[int, int]:
+    """先拿矿石砸主武器（有矿就一直付钱直到成功：失败不掉级、矿石不用掉，成功才用掉一块），
+    剩下的钱一半花在武器、一半花在防具上，按引擎的费用和失败率掷骰（失败退一级、钱照收）。
     每样按"最便宜的一次"先升；失败率超过 60% 的不再碰。返回 (剩下的钱, 花掉的钱)"""
     spent = 0
+    while ore[0] > 0 and w_plus and w_plus[0] < R.UPGRADE_MAX:
+        cost, risk = R.upgrade_cost(w_plus[0] + 1)
+        cost = round(cost * discount)
+        if cost > gold - spent:
+            break
+        spent += cost
+        if random.random() >= risk:
+            w_plus[0] += 1
+            ore[0] -= 1
+    gold, ore_spent, spent = gold - spent, spent, 0
     for pool, base, plus in (("w", weapons, w_plus), ("a", armor, a_plus)):
         budget = gold // 2 if pool == "w" else gold - spent
         while True:
@@ -157,7 +171,7 @@ def upgrade_run(gold: int, weapons: list[int], armor: list[int], w_plus: list[in
                 lvl = plus[k] + 1
                 if lvl > R.UPGRADE_MAX:
                     continue
-                cost, risk = R.upgrade_cost("damage" if pool == "w" else "defense", b + plus[k], lvl)
+                cost, risk = R.upgrade_cost(lvl)
                 if risk > 0.6:
                     continue
                 opts.append((round(cost * discount), risk, k))
@@ -176,7 +190,7 @@ def upgrade_run(gold: int, weapons: list[int], armor: list[int], w_plus: list[in
                 plus[k] = max(0, plus[k] - 1)
             else:
                 plus[k] += 1
-    return gold - spent, spent
+    return gold - spent, spent + ore_spent
 
 
 def economy(quality: str, build: str, trips: int = 4, size: int = 1) -> list[Kit]:
@@ -187,6 +201,8 @@ def economy(quality: str, build: str, trips: int = 4, size: int = 1) -> list[Kit
     oil = 1 if quality == "fav" else 0
     discount = R.UPGRADE_DISCOUNT if quality == "fav" else 1.0
     potion_price = ITEMS[POTION]["props"]["price"]
+    ore = [0]
+    ore_bank = 0.0
     for trip in range(trips):
         want = {"poor": 2, "normal": 4, "fav": 4}[quality]
         potions = min(want, gold // potion_price)
@@ -200,11 +216,17 @@ def economy(quality: str, build: str, trips: int = 4, size: int = 1) -> list[Kit
                 w_plus = [0] * len(weapons)
             armor = [d for _, d in ARMOR[quality][trip]] + ([SHIELD[trip][1]] if build == "sword_shield" else [])
             a_plus = (a_plus + [0] * len(armor))[:len(armor)]
-            gold, spent = upgrade_run(gold, weapons, armor, w_plus, a_plus, discount, oil)
+            before = gold
+            gold, spent = upgrade_run(gold, weapons, armor, w_plus, a_plus, discount, oil, ore)
+            spent = before - gold
             oil = 0
         kits.append(Kit(list(w_plus), list(a_plus), potions, gold, spent))
         for depth in range(trip * TRIP + 1, trip * TRIP + TRIP + 1):
             gold += floor_income(depth, size, build == "sword_torch")
+            ore_bank += ORE_PER_FLOOR
+            while ore_bank >= 1:
+                ore_bank -= 1
+                ore[0] += random.random() < 1.0
     return kits
 
 
@@ -247,6 +269,7 @@ class Mon:
     rank: str
     attacks: int = 1
     status: Optional[dict] = None       # {"escape": n, "attempts": n}
+    held: int = 0                       # 这一场被控过几次（头目只吃一次）
     backs: int = 0
     heals: int = 0
 
@@ -256,7 +279,7 @@ class Hero:
     max_hp: int
     hp: int
     atk: int
-    defense: int
+    defense: float
     melee: list[tuple[str, int]]        # (名字, 伤害)，已含升级
     ranged: Optional[Weapon]
     guard_ranged: int = 0               # 塔盾：远程伤害 −2
@@ -339,6 +362,9 @@ class Fight:
 
     # ---- 玩家 ----
     def hurt_hero(self, h: Hero, dmg: int) -> None:
+        if VARIANT["dmg"] != 1.0:
+            x = dmg * VARIANT["dmg"]
+            dmg = int(x) + (random.random() < x - int(x))
         if dmg >= h.hp and "bookmark" in h.perks and "bookmark" not in h.floor_used:
             h.floor_used.add("bookmark")        # 守护书签：每层挡一次致命
             return
@@ -422,15 +448,18 @@ class Fight:
                 continue
             live = self.alive()
             # 回礼：诺艾尔的书（每层一次，全场定住）、一口倒（每趟一次，放倒一只）
-            if "tome" in h.perks and "tome" not in h.floor_used and (len(live) >= 2 or live[0].rank == "boss"):
+            ok = [m for m in live if m.rank != "boss" or not m.held]
+            if "tome" in h.perks and "tome" not in h.floor_used and ok and (len(ok) >= 2 or ok[0].rank == "boss"):
                 h.floor_used.add("tome")
-                for m in live:
+                for m in ok:
                     m.status = {"escape": 3, "attempts": 0}
+                    m.held += 1
                 continue
             if "drug" in h.perks and "drug" not in h.trip_used and live[0].rank in ("boss", "elite") \
-                    and (big := max(live, key=lambda m: m.max_hp)).status is None:
+                    and (big := max(live, key=lambda m: m.max_hp)).status is None and not (big.rank == "boss" and big.held):
                 h.trip_used.add("drug")
                 big.status = {"escape": 2, "attempts": 0}
+                big.held += 1
                 continue
             m = self.target(h)
             key = (id(h), id(m))
@@ -584,7 +613,7 @@ def make_heroes(build: str, quality: str, trip: int, kit: Kit, size: int, depth:
         r = ranged_weapon(build, trip)
         wp = kit.weapon_plus
         if build in ("bow", "xbow"):
-            r.damage += wp[0] if wp else 0
+            r.damage += round((wp[0] if wp else 0) * VARIANT["ranged_step"])
         else:
             ws = [(n, d + (wp[k] if k < len(wp) else 0)) for k, (n, d) in enumerate(ws)]
         armor = [d for _, d in ARMOR[quality][trip]]
@@ -592,7 +621,8 @@ def make_heroes(build: str, quality: str, trip: int, kit: Kit, size: int, depth:
         if build == "sword_shield":
             armor.append(SHIELD[trip][1])
             guard = SHIELD[trip][2]
-        defense = sum(d + (kit.armor_plus[k] if k < len(kit.armor_plus) else 0) for k, d in enumerate(armor))
+        defense = sum(d + (kit.armor_plus[k] if k < len(kit.armor_plus) else 0) * R.UPGRADE_STEP["defense"]
+                      for k, d in enumerate(armor))
         hp = endurance_hp(depth)
         perks = {"bookmark", "tome", "flask", "drug"} if quality == "fav" else set()
         heroes.append(Hero(hp, hp, 2, defense, ws, r, guard_ranged=guard,
@@ -654,7 +684,7 @@ def run_trip(build: str, quality: str, trip: int, kit: Kit, size: int, stats: di
                 mons += spawn(depth, monster, rank, theme_key, size, len(groups), kind == "stairs")
             light = room_light(THEMES[theme_key])
             fight = Fight([h for h in heroes if not h.down], mons, light, cover, depth)
-            hp_before = {id(h): h.hp for h in fight.heroes}
+            hp_before = {id(h): h.taken for h in fight.heroes}
             result = fight.run()
             st.fights += 1
             st.rounds += fight.rounds
@@ -662,7 +692,7 @@ def run_trip(build: str, quality: str, trip: int, kit: Kit, size: int, stats: di
             if room_log is not None:
                 key = "boss" if groups[0][1] == "boss" else "ranged" if any(MONSTERS.get(g, {}).get("ranged") for g, _ in groups) \
                     else "healer" if any(MONSTERS.get(g, {}).get("healer") for g, _ in groups) else "melee"
-                lost = sum(hp_before[id(h)] - h.hp for h in fight.heroes) / sum(h.max_hp for h in fight.heroes)
+                lost = sum(h.taken - hp_before[id(h)] for h in fight.heroes) / sum(h.max_hp for h in fight.heroes)
                 room_log.setdefault((depth, key), []).append((lost, result == "wipe"))
             # 打完：倒下的队友急救（医药 0 级对难度 1），醒过来 1 点血
             standing = [h for h in fight.heroes if not h.down]
@@ -713,9 +743,9 @@ def fight_test(build: str, quality: str, trip: int, depth: int, groups: list[tup
         for monster, rank in groups:
             mons += spawn(depth, monster, rank, theme, size, len(groups), boss)
         f = Fight(heroes, mons, room_light(THEMES[theme]) if light is None else light, False, depth)
-        before = sum(h.hp for h in heroes)
+        before = sum(h.taken for h in heroes)
         r = f.run()
-        lost += (before - sum(h.hp for h in heroes)) / sum(h.max_hp for h in heroes)
+        lost += (sum(h.taken for h in heroes) - before) / sum(h.max_hp for h in heroes)     # 挨的伤害合计（中途喝药、私酿回的不抵）
         wiped += r == "wipe"
         rounds += f.rounds
     return lost / n, wiped / n, rounds / n
@@ -726,13 +756,17 @@ def main() -> None:
     ap.add_argument("--trips", type=int, default=300, help="每种组合每一趟跑几次")
     ap.add_argument("--seed", type=int, default=1)
     ap.add_argument("--out", default="balance/result.md")
+    ap.add_argument("--dmg", type=float, default=1.0, help="怪打人的伤害倍数（对照版用 1.5）")
+    ap.add_argument("--ranged-step", type=float, default=1.0, help="远程武器每级加多少伤害")
     args = ap.parse_args()
-    out = []
+    VARIANT.update(dmg=args.dmg, ranged_step=args.ranged_step)
+    out = [f"# 模拟结果（怪伤害 ×{args.dmg:g}，远程每级 +{args.ranged_step:g}，每种组合每趟 {args.trips} 次，种子 {args.seed}）\n"]
 
     # ---- 经济 ----
     random.seed(args.seed)
     incomes = {d: sum(floor_income(d, 1, False) for _ in range(300)) / 300 for d in range(1, 21)}
-    out.append("## 1. 经济（剑盾，单人，假设一路活着；一半钱升武器、一半升防具，失败率超过 60% 就不升了）\n")
+    out.append("## 1. 经济（剑盾，单人，假设一路活着；先拿矿石砸武器（每层约 0.5 块），剩下的钱一半升武器、一半升防具，"
+               "没矿石时失败率超过 60% 就不升了）\n")
     out.append("每层收入（金币）：" + "、".join(f"{d} 层 {incomes[d]:.0f}" for d in range(1, 21)) + "\n")
     out.append("| 出发时 | 攒下的钱 | 带血药 | 花在升级 | 武器 | 防具（每件） |")
     out.append("|---|---|---|---|---|---|")
@@ -796,7 +830,7 @@ def main() -> None:
     per_floor("## 5. 每层用掉几瓶血药", lambda s: f"{s.potions / s.people:.1f}")
     per_floor("## 6. 每场平均几轮", lambda s: f"{s.rounds / max(1, s.fights):.1f}")
 
-    out.append("## 7. 各种房间（正常装备、剑盾、单人，跟着一趟走下来的真实状态进场）：一场掉的血 / 团灭率\n")
+    out.append("## 7. 各种房间（正常装备、剑盾、单人，跟着一趟走下来的真实状态进场）：一场挨的伤害合计 / 团灭率\n")
     out.append("| 层 | 普通近战 | 有远程 | 有治疗 | 头目 |")
     out.append("|---|---|---|---|---|")
     for d in range(1, 21):
@@ -809,7 +843,7 @@ def main() -> None:
 
     # ---- 担心会冒尖的几处：满血单独打一场，不喝药 ----
     random.seed(args.seed)
-    out.append("## 8. 担心冒尖的几处（满血单独打一场、不喝药）：掉血 / 团灭率 / 轮数\n")
+    out.append("## 8. 担心冒尖的几处（满血单独打一场、不喝血药；掉血按这一场挨的伤害合计，私酿回的不抵）：掉血 / 团灭率 / 轮数\n")
     out.append("| 场面 | 层 | 正常装备 | 好感全满 |")
     out.append("|---|---|---|---|")
     for depth, theme in ((5, "mine"), (10, "castle"), (15, "graveyard")):

@@ -183,8 +183,13 @@ def clamp_price(stats: dict, price: int, markup: float = 1.0) -> int:
 
 
 # ============ 升级 ============
-# 铁匠升级：每级 +1（武器伤害、防具防御），升到第 N 级有 N × UPGRADE_BREAK_STEP 的几率失败（最多 UPGRADE_BREAK_MAX），
-# 失败退一级，钱照收。用奥利哈刚：失败不掉级、矿石不用掉，成功那次才用掉。淬火油必成、不收钱
+# 铁匠升级：武器每级伤害 +1，防具每级防御 +0.5（防具件数多，按件叠上去太快：以前第 11 层全身 32 防，怪只打得动 1 点）。
+# 升到第 N 级有 N × UPGRADE_BREAK_STEP 的几率失败（最多 UPGRADE_BREAK_MAX），失败退一级，钱照收。
+# 费用只看升到第几级，武器防具同一条曲线（以前看这件现在的数值：基础伤害高的弓、弩升一级比短剑贵 5 到 10 倍，
+# 防具又便宜得离谱）；稀有的东西可以在物品 props.upgrade_mult 里给个倍数。
+# 用奥利哈刚：失败不掉级、矿石不用掉，成功那次才用掉。淬火油必成、不收钱
+UPGRADE_STEP = {"damage": 1, "defense": 0.5}
+UPGRADE_COST = (12.5, 1.6)              # 升到第 N 级：12.5 × 1.6^N，+1 要 20、+3 要 51、+5 要 131、+8 要 537、+10 要 1374
 UPGRADE_BREAK_STEP = 0.10
 UPGRADE_BREAK_MAX = 0.90
 UPGRADE_MIN_COST = 5
@@ -192,11 +197,15 @@ UPGRADE_MAX = 10
 UPGRADE_DISCOUNT = 0.9                  # 莉娜的回礼（好感 20）：熟客价九折
 
 
-def upgrade_cost(stat: str, now: int, level: int) -> tuple[int, float]:
-    """升到第 level 级的 (费用, 失败的几率)。now 是现在的伤害或防御。武器的费用是伤害 +1 前后建议价的差；
-    防具的数值小，套武器的曲线差价几乎是 0，改按护甲定价 8×防 + 防² 的差（9 + 2×当前防御：1→2 要 11，3→4 要 15）"""
-    diff = (9 + 2 * now) if stat == "defense" else base_price({stat: now + 1}) - base_price({stat: now})
-    return max(UPGRADE_MIN_COST, diff), min(UPGRADE_BREAK_MAX, UPGRADE_BREAK_STEP * level)
+def upgrade_cost(level: int, mult: float = 1.0) -> tuple[int, float]:
+    """升到第 level 级的 (费用, 失败的几率)；mult 是这件东西的稀有度倍数"""
+    cost = UPGRADE_COST[0] * UPGRADE_COST[1] ** level * mult
+    return max(UPGRADE_MIN_COST, round(cost)), min(UPGRADE_BREAK_MAX, UPGRADE_BREAK_STEP * level)
+
+
+def stat_text(v: float) -> str:
+    """数值显示：整数不带小数点（防具升级有 0.5）"""
+    return str(int(v)) if float(v).is_integer() else f"{v:g}"
 
 
 # ============ 地牢里的怪 ============

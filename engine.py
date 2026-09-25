@@ -1395,6 +1395,8 @@ def _drug(cur: Cursor, player: Player, view: RoomView, item: ItemInstance, targe
         raise ActionError("这里没有敌人" if not foes else f"要泼向谁？（{'、'.join(n.name for n in foes)}）")
     if not npc.template.hostile:
         raise ActionError(f"不能拿{item.name}对付{npc.name}")
+    if _boss_resists(cur, npc):
+        raise ActionError(f"{npc.name}这一仗已经被放倒过一回，有了防备，{item.name}泼过去也不管用（留着吧）")
     label = str(_prop(item, "drug"))[:20]
     _set_status(cur, "npcs", npc.id, Status(kind="incapacitated", label=label, escape=2,
                                             since=datetime.now(timezone.utc).isoformat()))
@@ -1490,16 +1492,34 @@ def _holy(cur: Cursor, player: Player, view: RoomView, item: ItemInstance, targe
     return facts + [f"圣水在{npc.name}身上嘶嘶地冒起白烟，受到 {dmg} 点伤害"] + hurt
 
 
+def _boss_resists(cur: Cursor, npc: Npc, mark: bool = True) -> bool:
+    """头目同一场只吃一次控制（定身、迷倒、捆住、绊倒，本来就最多困一轮）：第一次记下来，第二次起不管用。
+    好感回礼的古书、迷药在普通战斗里照样好用，只是头目战不能靠它们一轮轮地平推"""
+    if npc.template.props.get("dungeon", {}).get("rank") != "boss":
+        return False
+    if _tally(cur, npc, "held") >= 1:
+        return True
+    if mark:
+        _count(cur, npc, "held")
+    return False
+
+
 def _stun(cur: Cursor, player: Player, view: RoomView, item: ItemInstance, target: Optional[str]) -> list[str]:
     """念能定身的东西（古书残卷：props.stun 是状态说明）：不用判定，房间里所有敌人一起失去战斗能力，东西用掉"""
     foes = _enemies(cur, player.room_id)
     if not foes:
         raise ActionError(f"这里没有敌人，{item.name}念了也没用")
+    # 这一仗已经被控过的头目不吃这一套；房间里只剩它的话书先不念（不白白用掉这一层的次数）
+    immune = [n for n in foes if _boss_resists(cur, n, mark=False)]
+    if immune and len(immune) == len(foes):
+        raise ActionError(f"{'、'.join(n.name for n in immune)}这一仗已经被困住过一回，有了防备，念了也定不住")
+    foes = [n for n in foes if n not in immune]
     if _prop(item, "per_floor"):
         if not _once_per_floor(cur, player, "tome"):
             raise ActionError(f"{item.name}这一层已经念过了，书页上的字暗着，要到下一层才会再亮起来")
         label = str(_prop(item, "stun"))[:20]
         for npc in foes:
+            _boss_resists(cur, npc)
             _set_status(cur, "npcs", npc.id, Status(kind="incapacitated", label=label, escape=STUN_ESCAPE,
                                                     since=datetime.now(timezone.utc).isoformat()))
         return [f"{player.name}翻开{item.name}，念出上面的古老文字，书页上的字一行行亮起来又暗下去（这一层用过了）",
@@ -1507,6 +1527,7 @@ def _stun(cur: Cursor, player: Player, view: RoomView, item: ItemInstance, targe
     _use_up(cur, item)
     label = str(_prop(item, "stun"))[:20]
     for npc in foes:
+        _boss_resists(cur, npc)
         _set_status(cur, "npcs", npc.id, Status(kind="incapacitated", label=label, escape=STUN_ESCAPE,
                                                 since=datetime.now(timezone.utc).isoformat()))
     names = "、".join(n.name for n in foes)
@@ -3151,7 +3172,10 @@ def do_stunt(cur: Cursor, player: Player, view: RoomView, a: Stunt) -> list[str]
         else:
             hurt, down = _hurt_player(cur, target, dmg, *(("poison", poison.name) if poison else ("player", player.name)))
         facts += [f"{target.name}受到 {dmg} 点伤害"] + hurt + ([] if is_npc else _duel_over(cur, down))
-    if poison and poison.knockout and not down:
+    resisted = is_npc and ((poison and poison.knockout) or a.status) and not down and _boss_resists(cur, target)
+    if resisted:
+        facts.append(f"{target.name}这一仗已经被困住过一回，有了防备，没被放倒")
+    elif poison and poison.knockout and not down:
         _knock_out(cur, "npcs" if is_npc else "players", target.id, poison.knockout)
         facts.append(f"{target.name}{poison.knockout}，失去战斗能力")
         stunned = True
@@ -3510,12 +3534,9 @@ def upgradable(items: list[ItemInstance]) -> list[ItemInstance]:
 
 
 def upgrade_terms(item: ItemInstance) -> tuple[int, int, float]:
-    """(升到几级, 费用, 失败的几率)。武器的费用是伤害 +1 前后建议价的差；防具的数值小，套武器的曲线差价几乎是 0，
-    改按护甲定价 8×防 + 防² 的差（9 + 2×当前防御：1→2 要 11，3→4 要 15），比例减伤下每点防御都很值钱"""
-    stat = upgrade_stat(item)
-    now = getattr(item, stat)
+    """(升到几级, 费用, 失败的几率)：费用只看升到第几级（rules.upgrade_cost），稀有的东西乘 props.upgrade_mult"""
     level = item.props.get("plus", 0) + 1
-    return (level,) + upgrade_cost(stat, now, level)
+    return (level,) + upgrade_cost(level, float(_prop(item, "upgrade_mult") or 1))
 
 
 def _upgrade_text(item: ItemInstance, price: Optional[int] = None) -> str:
@@ -3523,7 +3544,7 @@ def _upgrade_text(item: ItemInstance, price: Optional[int] = None) -> str:
     cost = price if price is not None else cost
     stat = upgrade_stat(item)
     now = getattr(item, stat)
-    return (f"升到 +{level}（{STAT_WORDS[stat]} {now} → {now + 1}）要 {cost} 金币，有 {round(risk * 100)}% 的可能失败"
+    return (f"升到 +{level}（{STAT_WORDS[stat]} {stat_text(now)} → {stat_text(now + UPGRADE_STEP[stat])}）要 {cost} 金币，有 {round(risk * 100)}% 的可能失败"
             + ("，失败会退一级" if level > 1 else "，失败了钱白花"))
 
 
@@ -3578,9 +3599,9 @@ def do_upgrade(cur: Cursor, player: Player, view: RoomView, a: Upgrade) -> list[
         _consume(cur, oil)
         name = re.sub(r" \+\d+$", "", item.name) + f" +{level}"
         cur.execute("update item_instances set props = props || %s where id = %s",
-                    (Jsonb({"plus": level, stat: now + 1, "name": name}), item.id))
+                    (Jsonb({"plus": level, stat: now + UPGRADE_STEP[stat], "name": name}), item.id))
         return [f"{player.name}递上莉娜的淬火油，{npc.name}把{item.name}烧红了往油里一浸，滋的一声冒起白烟",
-                f"升级成功：{item.name}变成了{name}，{STAT_WORDS[stat]} {now + 1}（淬火油用掉了，没收钱）"]
+                f"升级成功：{item.name}变成了{name}，{STAT_WORDS[stat]} {stat_text(now + UPGRADE_STEP[stat])}（淬火油用掉了，没收钱）"]
     if cost > player.gold:
         raise ActionError(f"{npc.name}看了看{player.name}的{item.name}：{terms}。{player.name}身上只有 {player.gold} 金币，不够")
     if a.ore is None and ore is not None and level > 1 and key not in offers:
@@ -3607,12 +3628,12 @@ def do_upgrade(cur: Cursor, player: Player, view: RoomView, a: Upgrade) -> list[
             return facts + [f"淬火的时候火候没掌握好，{item.name}没升上去，好在也没伤着"]
         name = base + (f" +{down}" if down else "")
         cur.execute("update item_instances set props = props || %s where id = %s",
-                    (Jsonb({"plus": down, stat: now - 1, "name": name}), item.id))
-        return facts + [f"淬火的时候崩了一块，{item.name}退回了{name}，{STAT_WORDS[stat]} {now - 1}"]
+                    (Jsonb({"plus": down, stat: now - UPGRADE_STEP[stat], "name": name}), item.id))
+        return facts + [f"淬火的时候崩了一块，{item.name}退回了{name}，{STAT_WORDS[stat]} {stat_text(now - UPGRADE_STEP[stat])}"]
     name = base + f" +{level}"
     cur.execute("update item_instances set props = props || %s where id = %s",
-                (Jsonb({"plus": level, stat: now + 1, "name": name}), item.id))
-    return facts + [f"升级成功：{item.name}变成了{name}，{STAT_WORDS[stat]} {now + 1}"]
+                (Jsonb({"plus": level, stat: now + UPGRADE_STEP[stat], "name": name}), item.id))
+    return facts + [f"升级成功：{item.name}变成了{name}，{STAT_WORDS[stat]} {stat_text(now + UPGRADE_STEP[stat])}"]
 
 
 # ============ 莉娜的回礼：传承锻造、刷新词条、专属武器 ============
@@ -3659,18 +3680,18 @@ def do_transfer(cur: Cursor, player: Player, view: RoomView, a: Transfer) -> lis
     price, probe = 0, dst.model_copy(deep=True)
     for lv in range(now + 1, have + 1):            # 按接过去那件一级一级升上去的费用算
         price += upgrade_terms(probe)[1]
-        probe.props = {**probe.props, "plus": lv, stat: getattr(probe, stat) + 1}
+        probe.props = {**probe.props, "plus": lv, stat: getattr(probe, stat) + UPGRADE_STEP[stat]}
     price = max(UPGRADE_MIN_COST, round(price * TRANSFER_SHARE))
     patron = _pay(cur, player, price, npc)
     gain = have - now
     base_src, base_dst = re.sub(r" \+\d+$", "", src.name), re.sub(r" \+\d+$", "", dst.name)
     cur.execute("update item_instances set props = props || %s where id = %s",
-                (Jsonb({"plus": 0, stat: getattr(src, stat) - have, "name": base_src}), src.id))
+                (Jsonb({"plus": 0, stat: getattr(src, stat) - have * UPGRADE_STEP[stat], "name": base_src}), src.id))
     cur.execute("update item_instances set props = props || %s where id = %s",
-                (Jsonb({"plus": have, stat: getattr(dst, stat) + gain, "name": f"{base_dst} +{have}"}), dst.id))
+                (Jsonb({"plus": have, stat: getattr(dst, stat) + gain * UPGRADE_STEP[stat], "name": f"{base_dst} +{have}"}), dst.id))
     return [f"{player.name}付了 {price} 金币，{npc.name}把{src.name}和{dst.name}一起放进炉火，锤了一整个下午",
             f"{src.name}上的锻纹褪了下去，变回了{base_src}；{base_dst}接过了这份锻打，变成了{base_dst} +{have}，"
-            f"{STAT_WORDS[stat]} {getattr(dst, stat) + gain}"] + patron
+            f"{STAT_WORDS[stat]} {stat_text(getattr(dst, stat) + gain * UPGRADE_STEP[stat])}"] + patron
 
 
 def do_reroll(cur: Cursor, player: Player, view: RoomView, a: Reroll) -> list[str]:
@@ -4474,7 +4495,7 @@ def item_detail(item: ItemInstance, curse_sense: bool = False) -> str:
     if item.damage:
         stats.append(f"伤害 {item.damage}")
     if item.defense:
-        stats.append(f"防御 {item.defense}")
+        stats.append(f"防御 {stat_text(item.defense)}")
     if item.heal:
         stats.append(f"回血 {item.heal * (HEAL_PCT_ALCOHOL if _is_alcohol(item) else HEAL_PCT)}%（按血量上限）")
     if item.harm:

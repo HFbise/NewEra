@@ -17,7 +17,7 @@ import yaml
 from psycopg import Cursor
 from psycopg.types.json import Jsonb
 
-from rules import (BOSS_EVERY, BOSS_PARTY_HP, ROOM_CAP, TREASURE_GUARD, elite_chance, max_groups,  # noqa: F401
+from rules import (BOSS_EVERY, BOSS_PARTY_HP, ROOM_CAP, TREASURE_GUARD, UPGRADE_STEP, elite_chance, max_groups,  # noqa: F401
                    monster_gold, monster_stats, party_copies, stash_gold, treasure_gold)
 
 GATE = "dungeon_gate"                   # 地窖的入口、楼梯间往下都连到这个占位房间，引擎走到这里改由 through_gate 决定去哪
@@ -109,7 +109,7 @@ def _put_item(cur: Cursor, template: str, depth: int, *, room: Optional[str] = N
         if t["type"] == "weapon":
             props = {"plus": plus, "damage": t["damage"] + plus, "name": f"{t['name']} +{plus}"}
         elif t["type"] == "armor" and t["defense"]:
-            props = {"plus": plus, "defense": t["defense"] + plus, "name": f"{t['name']} +{plus}"}
+            props = {"plus": plus, "defense": t["defense"] + plus * UPGRADE_STEP["defense"], "name": f"{t['name']} +{plus}"}
     cur.execute("insert into item_instances (template_id, room_id, npc_id, props) values (%s, %s, %s, %s)",
                 (template, room, npc, Jsonb(props)))
 
