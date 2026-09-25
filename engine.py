@@ -1001,6 +1001,10 @@ ROAD_TRAP, ROAD_COINS, ROAD_CHEST = 0.45, 0.65, 0.8
 ROAD_CHEST_ITEMS = ["herb", "bread", "torch", "rope"]     # 路边小木匣里的东西：普通补给，不给好东西
 
 
+TRAP_EASE = "_trap_ease"                 # players.flags：这一层踩中过几次陷阱 {"floor": "run:层", "n": 次数}
+TRAP_LEARN = 0.25                       # 踩中陷阱涨察觉熟练的几率
+
+
 def _road_event(cur: Cursor, player: Player, view: RoomView, to: str) -> list[str]:
     """地牢里走路时碰上的事。陷阱：察觉发现就绕过去，没发现挨一下（活下来耐性一定涨）。
     怪声：在房间上记一笔，有人循声去找（搜索）就引出一只游荡的怪"""
@@ -1009,14 +1013,26 @@ def _road_event(cur: Cursor, player: Player, view: RoomView, to: str) -> list[st
     if r < ROAD_TRAP:
         trap = random.choice(dungeon.data()["traps"])
         sense = _carries(cur, player, "trap_sense")          # 麦琪的陷阱图：难度降几级
-        ok, rolled = _check(cur, player, view, "perception", max(1, 2 + depth // 3 - (_prop(sense, "trap_sense") if sense else 0)))
+        here = ":".join(map(str, dungeon.parse_room(to)))
+        ease = player.flags.get(TRAP_EASE, {})
+        ease = ease.get("n", 0) if ease.get("floor") == here else 0
+        diff = 2 + round(steps(depth, 6)) - (_prop(sense, "trap_sense") if sense else 0) - ease
+        ok, rolled = _check(cur, player, view, "perception", max(1, diff))
+        # 同一层每踩中一次，下一个陷阱难度 -1（吃过亏就留神了），躲开一次就恢复
+        cur.execute("update players set flags = flags || jsonb_build_object(%s::text, %s::jsonb) where id = %s",
+                    (TRAP_EASE, Jsonb({"floor": here, "n": 0 if ok else ease + 1}), player.id))
         if ok:
             return [f"路上{trap}"] + rolled + [f"{player.name}{'想起陷阱图上画过这种地方，' if sense else ''}及时察觉，躲了过去"]
         dmg = round((2 + steps(depth, 3)) * SCALE)
         hurt, down = _hurt_player(cur, player, dmg, "other", "陷阱")
-        return [f"路上{trap}"] + rolled + [f"{player.name}没能躲开，受到 {dmg} 点伤害"] + hurt             + ([] if down else _toughen(cur, player))
+        # 踩中了也长记性：几率涨一点察觉熟练（不然察觉 0 级的人永远判不成，永远练不上去）
+        learn = _gain_skill(cur, player, "perception") if not down and "perception" not in view.trained and _roll(TRAP_LEARN) else []
+        if learn:
+            view.trained.append("perception")
+        return [f"路上{trap}"] + rolled + [f"{player.name}没能躲开，受到 {dmg} 点伤害"] + hurt \
+            + ([] if down else _toughen(cur, player)) + learn
     if r < ROAD_COINS:
-        coins = max(1, round(random.randint(1, 3) * 1.2 ** depth))
+        coins = max(1, round(random.randint(1, 3) * gold_scale(depth)))
         cur.execute("update players set gold = gold + %s where id = %s", (coins, player.id))
         return [f"{player.name}在路边的碎石里踢到了 {coins} 枚古币，顺手捡了起来"]
     if r < ROAD_CHEST:
@@ -2522,6 +2538,18 @@ def _dodge_bonus(player: Player) -> float:
     return DODGE_BONUS + DODGE_PER_LEVEL * skill_level(player.skills.get("perception", 0))
 
 
+PERCEPTION_DETECT = {-1: 0.5, 0: 1.0, 1: 1.5}     # 怪的察觉（迟钝 / 普通 / 敏锐）：被发现的几率乘多少
+
+
+def _perception(npc: Npc) -> int:
+    return max(-1, min(1, int(npc.template.props.get("perception", 0))))
+
+
+def _sharpness(enemies: list[Npc]) -> float:
+    """这群怪里最敏锐的那只决定被发现的几率倍数"""
+    return PERCEPTION_DETECT[max([_perception(n) for n in enemies] or [0])]
+
+
 HIDE_SEEN, HIDE_CLOSE = 3, 4              # 战斗中躲藏的难度下限：已被发现 / 有怪贴身
 HIDDEN_HIT = 0.5                        # 躲起来那一轮，贴身又早发现了他的怪摸黑乱挥，命中减半
 
@@ -2534,7 +2562,8 @@ def do_hide(cur: Cursor, player: Player, view: RoomView, a: Hide) -> list[str]:
         raise ActionError(f"鼻子灵的{keen.name}一直盯着{player.name}，藏不住")
     env = _room_env(cur, player.room_id)
     easier = bool(env.get("cover")) + (_light(cur, player.room_id, env) < LIGHT_DARK)
-    diff = a.difficulty + st.detected - easier
+    # 最敏锐的那只怪说了算（迟钝 -1、敏锐 +1）；手里拿着点着的火把 +1
+    diff = a.difficulty + st.detected - easier + max([_perception(n) for n in foes] or [0]) + _holds_fire(cur, player)
     # 战斗中躲藏的下限：已经被发现至少 HIDE_SEEN，有怪贴身至少 HIDE_CLOSE（以前 AI 给 1–3，隐匿 4 级 95% 必成）
     if st.detected:
         diff = max(diff, HIDE_SEEN)
@@ -2648,7 +2677,7 @@ def enemy_turn(conn: Connection, player_id: UUID, actions: list[PlayerAction],
         facts = []
         if not st.detected:
             keen = any(n.template.props.get("keen") for n in enemies)     # 狼、恶犬、石像鬼、头目：藏不住
-            if keen or _roll(st.chance):
+            if keen or _roll(min(1.0, st.chance * _sharpness(enemies))):
                 st.detected, st.hidden = True, False
                 facts.append(f"{'、'.join(n.name for n in enemies)}发现了{player.name}")
             elif not st.hidden:
@@ -2864,7 +2893,7 @@ def round_enemies(conn: Connection, room_id: str, done: dict[UUID, list[tuple[Pl
                     dodge = True
             if enemies and not hid and not st.detected:
                 keen = any(n.template.props.get("keen") for n in enemies)
-                if keen or _roll(st.chance):
+                if keen or _roll(min(1.0, st.chance * _sharpness(enemies))):
                     st.detected, st.hidden = True, False
                     facts.append(f"{'、'.join(n.name for n in enemies)}发现了{p.name}")
                 elif not st.hidden:

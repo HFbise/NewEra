@@ -146,7 +146,7 @@ def floor_income(depth: int, size: int, torch: bool) -> int:
         lo, hi = R.monster_gold(depth, rank)
         return random.randint(lo, hi) * (1 + 0.5 * R.dark_factor(light()))
     for _ in range(4):                                  # 四个战斗房
-        count = random.randint(1, R.max_groups(depth))
+        count = R.roll_groups(depth)
         for i in range(count):
             gold += group_gold("elite" if i == 0 and random.random() < R.elite_chance(depth) else "normal")
     gold += group_gold("boss" if depth % R.BOSS_EVERY == 0 else "elite")        # 楼梯间
@@ -895,7 +895,7 @@ def floor_rooms(depth: int, theme_key: str) -> list[tuple[str, list[tuple[str, s
     kinds = dungeon._kinds(theme, depth)
     rooms = []
     for _ in range(4):
-        count = random.randint(1, R.max_groups(depth))
+        count = R.roll_groups(depth)
         groups = [(random.choice(kinds), "elite" if i == 0 and random.random() < R.elite_chance(depth) else "normal")
                   for i in range(count)]
         rooms.append(("combat", groups, bool(random.choice(theme["rooms"]).get("cover"))))

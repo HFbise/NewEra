@@ -18,7 +18,7 @@ from psycopg import Cursor
 from psycopg.types.json import Jsonb
 
 from rules import (BOSS_EVERY, BOSS_PARTY_HP, ELITE_AFFIXES, GEM_TIER_PREFIX, ROOM_CAP, SCALE, SUMMON_DMG, SUMMON_HP,  # noqa: F401
-                   THEME_PLAGUE, TREASURE_GUARD, UPGRADE_STEP, elite_chance, gem_category, gem_tier, max_groups,
+                   THEME_PLAGUE, TREASURE_GUARD, UPGRADE_STEP, elite_chance, gem_category, gem_tier, max_groups, roll_groups, gold_scale,
                    roll_sockets, unlocked_skills,
                    monster_gold, monster_stats, party_copies, stash_gold, treasure_gold)
 
@@ -254,7 +254,7 @@ def _prison_cell(cur: Cursor, run: UUID, depth: int, theme: dict, cells: list, s
     cur.execute("insert into room_exits (room_id, direction, to_room) values (%s, %s, %s)",
                 (rid, OPPOSITE[d], _room_id(run, depth, parent)))
     dark = (50 - light) / 50
-    coins = round(random.randint(8, 15) * 1.2 ** depth * (1 + 0.5 * dark)) * size * 2
+    coins = round(random.randint(8, 15) * gold_scale(depth) * (1 + 0.5 * dark)) * size * 2
     cur.execute("insert into item_instances (template_id, room_id, props) values ('gold_pouch', %s, %s)", (rid, Jsonb({"gold": coins})))
     for item in (_pick(loot_data()["pool"], depth), _pick(loot_data()["treasure"].get("castle"), depth)):
         if item:
@@ -376,6 +376,8 @@ def _template(cur: Cursor, depth: int, kind: str, rank: str, theme: str, share: 
     for flag in ("animal", "light_averse", "undead", "keen", "ranged"):
         if m.get(flag):
             props[flag] = True
+    if m.get("perception"):
+        props["perception"] = m["perception"]   # 察觉：迟钝 -1 / 敏锐 +1（进门被发现的几率、躲藏难度）
     for key in ("healer", "verb", "guard_allies"):   # 治疗的比例、出手的说法（"甩出一颗石子"）、盾卫护同伴的几率
         if m.get(key):
             props[key] = m[key]
@@ -574,7 +576,7 @@ def _make_floor(cur: Cursor, run: UUID, depth: int, above: Optional[str], size: 
                                  to_jsonb(least(100, (props->'env'->>'light')::int + %s)))
                                where id = %s""", (Jsonb(lamps), LAMP_LIGHT * len(lamps), rid))
         if kind == "combat":
-            count = random.randint(1, max_groups(depth))
+            count = roll_groups(depth)
             ranks = ["elite" if i == 0 and random.random() < elite_chance(depth) else "normal" for i in range(count)]
             for rank in ranks:
                 _spawn_group(cur, rid, depth, random.choice(_kinds(theme, depth)), rank, theme_key, size, len(ranks))

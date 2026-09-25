@@ -672,6 +672,7 @@ monsters:
     verb: 扣下扳机，一支粗短的弩箭呼啸而来
   goblin_hunter:
     name: 哥布林猎手
+    perception: 1               # 察觉：敏锐（进门被发现的几率、躲藏难度）
     description: 一个脸上涂着绿泥的哥布林，背着一张短弓，箭头上抹着发黑的膏子。
     persona: 狡猾，喜欢躲在树后面放冷箭，箭上有毒。
     hp: 0.7
@@ -708,11 +709,13 @@ monsters:
     animal: true
   kobold:
     name: 狗头人矿工
+    perception: 1               # 察觉：敏锐（进门被发现的几率、躲藏难度）
     description: 矮小的蜥蜴脸小人，戴着一顶破矿工帽，手里攥着一把短镐。
     persona: 胆小但记仇，会大声尖叫招呼同伴。
     hp: 1.0
   rock_beetle:
     name: 岩甲虫
+    perception: -1               # 察觉：迟钝（进门被发现的几率、躲藏难度）
     description: 背壳像一块磨圆的石头，六条腿又粗又短，口器咔嚓作响。
     persona: 迟钝但硬，被打了也不慌，一直往前顶。
     on_hit: {kind: prone, chance: 0.25, label: 被硬壳撞翻在地}
@@ -721,6 +724,7 @@ monsters:
     animal: true
   skeleton:
     undead: true
+    perception: -1               # 察觉：迟钝（进门被发现的几率、躲藏难度）
     name: 骷髅兵
     description: 一具套着锈甲片的骸骨，眼眶里燃着两点幽蓝的火，手里握着一把缺口的长剑。
     persona: 没有意识，只会重复生前站岗的动作，看见活人就挥剑。
@@ -750,6 +754,7 @@ monsters:
     hp: 1.0
   armored_guard:
     name: 锈甲守卫
+    perception: -1               # 察觉：迟钝（进门被发现的几率、躲藏难度）
     description: 一副空荡荡的全身铁甲，关节处吱嘎作响，却自己走着路。
     persona: 一板一眼地执行最后一道命令：谁也不许过去。
     hp: 0.7
@@ -782,6 +787,7 @@ monsters:
     def: 10
   forest_goblin:
     name: 林地哥布林
+    perception: 1               # 察觉：敏锐（进门被发现的几率、躲藏难度）
     description: 一只脸上涂着绿泥的哥布林，身上披着树叶，手里拿着一把骨头削成的短矛。
     persona: 鬼鬼祟祟，喜欢躲在树后面偷袭，打不过就吹骨哨叫同伴。
     hp: 0.9
@@ -794,6 +800,7 @@ monsters:
     animal: true
   myconid:
     name: 蘑菇人
+    perception: -1               # 察觉：迟钝（进门被发现的几率、躲藏难度）
     description: 一个矮胖的蘑菇形人影，伞盖下是一张没有五官的脸，走路时会洒下一片孢子。
     persona: 慢吞吞地围上来，用孢子熏人，怕光，在亮处会缩起伞盖。
     on_hit: {kind: poison, chance: 0.35, label: 吸进了毒孢子}
@@ -817,6 +824,7 @@ monsters:
     light_averse: true
   ink_shade:
     name: 墨影
+    perception: 1               # 察觉：敏锐（进门被发现的几率、躲藏难度）
     description: 一团人形的黑色墨迹，在地面和墙上流动，所过之处留下湿漉漉的痕迹。
     persona: 贴着墙和地板无声地滑过来，怕光，在烛光下会变淡。
     on_hit: {kind: blind, chance: 0.35, label: 被泼了一脸墨}

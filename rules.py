@@ -88,7 +88,8 @@ OFFHAND_SHARE = 0.5                     # 双持时副手（左手）武器只�
 # 玩家身上的：中毒每回合掉血、命中和判定 -POISON_HIT；流血每个动作掉血、打出的伤害 ×BLEED_DAMAGE；
 # 看不清命中 ×BLIND_HIT；腐蚀防御 -value、血量上限临时扣 CORRODE_HP
 EFFECT_TURNS = {"poison": 3, "bleed": 4, "blind": 1, "corrode": 3}
-POISON_HIT, BLEED_DAMAGE, CORRODE_HP = 0.15, 0.75, 0.15
+POISON_HIT, BLEED_DAMAGE, CORRODE_HP = 0.15, 0.85, 0.15
+BLEED_VALUE = 0.5                       # 流血按动作跳（一个敌人回合跳两次），每跳只有中毒的一半，算下来跟中毒持平
 # 怪身上的（玩家装备打上去的）
 NPC_EFFECT_TURNS = {"poison": 3, "bleed": 3, "blind": 2, "corrode": 3}
 NPC_BLIND_HIT, NPC_CORRODE_DEF = 0.25, 2 * SCALE
@@ -102,7 +103,8 @@ def steps(depth: int, n: int) -> float:
 
 def effect_value(kind: str, depth: int) -> int:
     """怪打上来的效果有多重：中毒、流血每次掉的血，腐蚀扣的防御，跟着层数涨"""
-    return round((1 + steps(depth, 6) if kind == "corrode" else 1 + steps(depth, 5)) * SCALE)
+    base = (1 + steps(depth, 6) if kind == "corrode" else 1 + steps(depth, 5)) * SCALE
+    return round(base * (BLEED_VALUE if kind == "bleed" else 1))
 
 
 # ============ 回血、扎营、酒劲 ============
@@ -255,7 +257,7 @@ def monster_stats(depth: int, mods: dict, rank: str = "normal") -> tuple[int, in
 
 def monster_gold(depth: int, rank: str) -> list[int]:
     """掉的金币范围跟着层数涨（约 1.2^层数），精英 ×2，头目 ×5"""
-    scale = 1.2 ** depth * {"normal": 1, "elite": 2, "boss": 5}[rank]
+    scale = gold_scale(depth) * {"normal": 1, "elite": 2, "boss": 5}[rank]
     return [max(1, round(2 * scale)), max(2, round(5 * scale))]
 
 
@@ -265,8 +267,26 @@ def elite_chance(depth: int) -> float:
 
 
 def max_groups(depth: int) -> int:
-    """战斗房最多几群怪：1 到 7 层一群，8 层起最多两群，16 层起最多三群（每群随机 1 到这个数）"""
+    """战斗房最多几群怪（小地图、说明用）：1 到 7 层一群，8 层起可能两群，16 层起可能三群"""
     return min(3, 1 + depth // 8)
+
+
+def group_chances(depth: int) -> tuple[float, float]:
+    """第二群、第三群出现的几率：第二群从第 8 层 10% 起每层 +10%，第 17 层起必出；第三群从第 16 层 10% 起，第 25 层起必出
+    （以前到第 8、16 层一下跳一档，第 16 层是断崖）"""
+    return max(0.0, min(1.0, (depth - 7) * 0.1)), max(0.0, min(1.0, (depth - 15) * 0.1))
+
+
+def roll_groups(depth: int) -> int:
+    """这个战斗房刷几群怪"""
+    second, third = group_chances(depth)
+    n = 1 + (random.random() < second)
+    return n + (n == 2 and random.random() < third)
+
+
+def gold_scale(depth: int) -> float:
+    """金币随层数涨的倍数：15 层以前每层 ×1.2，之后每层只 ×1.08（不然第 30 层一层上万金）"""
+    return 1.2 ** min(depth, 15) * 1.08 ** max(0, depth - 15)
 
 
 def party_copies(size: int, groups: int) -> int:
@@ -276,12 +296,12 @@ def party_copies(size: int, groups: int) -> int:
 
 def treasure_gold(depth: int, dark: float, size: int) -> int:
     """宝箱房的钱袋：越深越多，越暗越多（按房间本来的光亮），组队按人数"""
-    return round(random.randint(8, 15) * 1.2 ** depth * (1 + 0.5 * dark)) * size
+    return round(random.randint(8, 15) * gold_scale(depth) * (1 + 0.5 * dark)) * size
 
 
 def stash_gold(depth: int, size: int) -> int:
     """空房里藏着的古币（调查判定，难度 2 + 层数/3）"""
-    return max(2, round(random.randint(4, 8) * 1.2 ** depth)) * size
+    return max(2, round(random.randint(4, 8) * gold_scale(depth))) * size
 
 
 # ============ 精英词缀 ============
