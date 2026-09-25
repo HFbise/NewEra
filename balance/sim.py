@@ -46,7 +46,12 @@ FORAGE_CHANCE = 0.5                     # 空房搜到药草的几率
 ROUND_CAP = 60                          # 一场打这么多轮还没完就算僵住（记下来）
 ORE_PER_FLOOR = 0.5                     # 每层大约能弄到的奥利哈刚（事件房、掉落），回城都砸在武器上
 # 对照用的开关（命令行改）：怪打人的伤害倍数（真人比模拟难约 1.5 倍）、远程武器每级加多少
-VARIANT = {"dmg": 1.0, "ranged_step": R.RANGED_UPGRADE_STEP, "reload_back": 1, "reload_melee_only": False}
+VARIANT = {"dmg": 1.0, "ranged_step": R.RANGED_UPGRADE_STEP, "reload_back": 1, "reload_melee_only": False,
+           "gems": False, "focus_boss": False}
+GEMS = dungeon.loot_data()["gems"]
+# 带孔的装备只有地牢掉的：每一段"实际拿得到"的那几件按来源定稀有度（商店货、开局装备没有孔）
+SOCKET_SOURCE = {"精钢短剑": "uncommon", "锁子甲": "common", "头目胸甲": "rare", "头盔": "rare", "塔盾": "uncommon",
+                 "猎弓": "uncommon", "绞盘重弩": "uncommon"}
 PREP_BELOW = 0.7                        # 进头目（楼梯间）之前血量低于这个比例：先扎营（这层还没扎过），再喝药
 # 远程打法从拿得到那把弓的那一段开始算：猎弓地牢第 4 层起才可能掉（不常见），算第 2 趟（6 层）起；
 # 绞盘重弩第 7–9 层起才掉，算第 3 趟（11 层）起。手弩莉娜店里就有，第 1 层起
@@ -149,12 +154,65 @@ def floor_income(depth: int, size: int, torch: bool) -> int:
 
 @dataclass
 class Kit:
-    """回城时的状态：升级到几级、带几瓶药"""
+    """回城时的状态：升级到几级、带几瓶药、镶的宝石加多少"""
     weapon_plus: list[int]
     armor_plus: list[int]
     potions: int
     gold_left: int
     spent_upgrade: int
+    gem_bonus: float = 0.0              # 武器上宝石加的伤害（小数按几率进位）
+    gem_def: float = 0.0                # 护具上宝石加的防御（全身封顶）
+    spent_refine: int = 0
+
+
+def floor_gems(depth: int) -> list[tuple[str, int]]:
+    """这一层捡到的宝石（按掉率估：普通怪大约 5 只、精英大约 1.3 只、头目、宝箱房）"""
+    theme = random.choice(list(THEMES))
+    pools, drops = GEMS["pools"], GEMS["drops"]
+    got = []
+    rolls = [(drops["normal"], theme)] * 5 + [(drops["elite"], theme)] * 1 + [(drops["elite"] * 0.3, theme)] \
+        + [(drops["treasure"], theme if random.random() < 0.5 else "common")]
+    if depth % R.BOSS_EVERY == 0:
+        rolls.append((drops["boss"], theme))
+    for chance, pool in rolls:
+        if random.random() < chance:
+            gem = random.choice(pools[pool])
+            got.append((gem, R.gem_tier(depth, GEMS, bool(ITEMS[gem]["props"].get("numeric")))))
+    return got
+
+
+def gem_value(gem: str, tier: int, cat: str, do: str) -> float:
+    fx = R.gem_effects(ITEMS[gem]["props"], tier, cat) if R.gem_fits(ITEMS[gem]["props"]["gem_slot"], cat) else []
+    return sum(e.get("value", 0) for e in fx if e.get("do") == do and not e.get("vs"))
+
+
+def fit_gems(bag: list[list], w_sockets: int, a_sockets: int) -> tuple[float, float]:
+    """最简单的镶法：武器孔镶加伤害最多的，护具孔镶加防御最多的（全身封顶），功能型的不算"""
+    wv = sorted((gem_value(g, t, "weapon", "bonus") for g, t in bag), reverse=True)[:w_sockets]
+    av = sorted((gem_value(g, t, "armor", "defense") for g, t in bag), reverse=True)[:a_sockets]
+    return sum(v for v in wv if v > 0), min(GEMS["body_caps"]["defense"], sum(v for v in av if v > 0))
+
+
+def refine_run(gold: int, bag: list[list], deepest: int) -> int:
+    """回村把钱的一半拿去诺艾尔那里刷宝石：先刷用得上的数值宝石里品质最低的，有同种的就当垫子。返回花掉的钱"""
+    budget, spent = gold // 2, 0
+    rf = GEMS["refine"]
+    while True:
+        useful = [g for g in bag if ITEMS[g[0]]["props"].get("numeric")
+                  and g[1] < R.refine_cap(True, deepest, rf)]
+        if not useful:
+            break
+        g = min(useful, key=lambda x: x[1])
+        cost = rf["cost"][g[1] - 1]
+        if cost > budget - spent:
+            break
+        spent += cost
+        pads = [x for x in bag if x is not g and x[0] == g[0]]
+        pad = min(pads, key=lambda x: x[1]) if pads else None
+        if pad:
+            bag.remove(pad)
+        g[1] = R.refine_roll(g[1], R.refine_cap(True, deepest, rf), rf, pad is not None)
+    return spent
 
 
 def upgrade_run(gold: int, weapons: list[int], armor: list[int], w_plus: list[int], a_plus: list[int],
@@ -213,6 +271,8 @@ def economy(quality: str, build: str, trips: int = 4, size: int = 1) -> list[Kit
     potion_price = ITEMS[POTION]["props"]["price"]
     ore = [0]
     ore_bank = 0.0
+    bag: list[list] = []                # 捡到的宝石 [id, 品质]
+    sockets: dict[str, int] = {}        # 每件带孔装备的孔数（拿到时掷一次）
     for trip in range(trips):
         want = {"poor": 2, "normal": 4, "fav": 4}[quality]
         potions = min(want, gold // potion_price)
@@ -230,9 +290,24 @@ def economy(quality: str, build: str, trips: int = 4, size: int = 1) -> list[Kit
             gold, spent = upgrade_run(gold, weapons, armor, w_plus, a_plus, discount, oil, ore)
             spent = before - gold
             oil = 0
-        kits.append(Kit(list(w_plus), list(a_plus), potions, gold, spent))
+        gem_bonus = gem_def = 0.0
+        refine_spent = 0
+        if VARIANT["gems"] and quality != "poor":
+            pieces = [n for n, _ in (melee_weapons(build, trip)[:1] if build not in ("bow", "xbow") else [])] \
+                + ([ranged_weapon(build, trip).name] if build in ("bow", "xbow") else []) \
+                + [n for n, _ in ARMOR[quality][trip]] + ([SHIELD[trip][0]] if build == "sword_shield" else [])
+            for n in pieces:
+                if n in SOCKET_SOURCE and n not in sockets:
+                    sockets[n] = R.roll_sockets(SOCKET_SOURCE[n], GEMS)
+            refine_spent = refine_run(gold, bag, trip * TRIP)
+            gold -= refine_spent
+            weapon = pieces[0] if pieces else ""
+            gem_bonus, gem_def = fit_gems(bag, sockets.get(weapon, 0), sum(sockets.get(n, 0) for n in pieces[1:]))
+        kits.append(Kit(list(w_plus), list(a_plus), potions, gold, spent, gem_bonus, gem_def, refine_spent))
         for depth in range(trip * TRIP + 1, trip * TRIP + TRIP + 1):
             gold += floor_income(depth, size, build == "sword_torch")
+            if VARIANT["gems"]:
+                bag += [list(g) for g in floor_gems(depth)]
             ore_bank += ORE_PER_FLOOR
             while ore_bank >= 1:
                 ore_bank -= 1
@@ -306,6 +381,7 @@ class Hero:
     melee: list[tuple[str, int]]        # (名字, 伤害)，已含升级
     ranged: Optional[Weapon]
     guard_ranged: int = 0               # 塔盾：远程伤害 −2
+    gem_bonus: float = 0.0              # 武器宝石加的伤害
     block: float = 0.0                  # 盾的格挡几率（跟闪避合计最多 AVOID_CAP）
     torch_light: int = 0               # 手上点着的火把给的光（点燃 35、弱光 20）
     potions: int = 0
@@ -353,7 +429,7 @@ def spawn(depth: int, kind: str, rank: str, theme_key: str, size: int, groups: i
     fx = R.ELITE_AFFIXES.get(affix, {})
     hp *= fx.get("hp_mult", 1) * (R.SUMMON_HP if minion else 1)
     df += fx.get("def", 0)
-    for key in ("dmg_mult", "frenzy", "lifesteal", "thorns"):
+    for key in ("dmg_mult", "frenzy", "lifesteal", "thorns", "thorns_chance"):
         if fx.get(key):
             props[key] = fx[key]
     if plague := fx.get("plague"):
@@ -467,6 +543,8 @@ class Fight:
     def target(self, h: Hero) -> Mon:
         """先打治疗的，再打远程的，再打血少的"""
         live = self.alive()
+        if VARIANT["focus_boss"] and any(m.minion for m in live) and (lead := [m for m in live if m.rank in ("boss", "elite")]):
+            return min(lead, key=lambda m: m.hp)     # 知道"主子一死帮手就跑"的人：先打头目
         return min(live, key=lambda m: (not m.props.get("healer"), not m.props.get("ranged"), m.hp))
 
     def hero_turn(self, h: Hero) -> None:
@@ -558,7 +636,7 @@ class Fight:
             return
         bonus = shooter.first_bonus if shooter and first else 0
         pierce = shooter.pierce if shooter else 0
-        dmg = R.hurt_npc_by(power(h, shooter) + bonus, m.df - pierce)
+        dmg = R.hurt_npc_by(power(h, shooter) + bonus + R.whole(h.gem_bonus), m.df - pierce)
         if "bleed" in h.effects:
             dmg = max(1, math.floor(dmg * R.BLEED_DAMAGE))
         weak = m.props.get("weak")
@@ -569,7 +647,7 @@ class Fight:
             for x in self.alive():
                 if x.minion:
                     x.hp = 0                     # 主子倒了，帮手四散逃走
-        if not shooter and m.hp > 0 and (thorns := m.props.get("thorns")):
+        if not shooter and m.hp > 0 and (thorns := m.props.get("thorns")) and random.random() < m.props.get("thorns_chance", 1.0):
             self.hurt_hero(h, thorns)
         self.hits[id(m)] = h
         # 被定住、迷倒的挨打时掷一次挣脱（engine._npc_counter）
@@ -689,7 +767,7 @@ class Fight:
         if marked:
             m.mark = None
         if (steal := m.props.get("lifesteal")):
-            m.hp = min(m.max_hp, m.hp + steal)
+            m.hp = min(m.max_hp, m.hp + R.whole(dmg * steal))
         if h.down or not (hit := m.props.get("on_hit")) or random.random() >= hit.get("chance", 0.25):
             return
         self.afflict(h, hit["kind"], m.depth, hit)
@@ -764,10 +842,10 @@ def make_heroes(build: str, quality: str, trip: int, kit, size: int, depth: int)
             armor.append(SHIELD[trip][1])
             guard, block = SHIELD[trip][2], SHIELD[trip][3]
         defense = sum(d + (kit.armor_plus[k] if k < len(kit.armor_plus) else 0) * R.UPGRADE_STEP["defense"]
-                      for k, d in enumerate(armor))
+                      for k, d in enumerate(armor)) + kit.gem_def
         hp = endurance_hp(depth)
         perks = {"bookmark", "tome", "flask", "drug"} if quality == "fav" else set()
-        heroes.append(Hero(hp, hp, 2, defense, ws, r, guard_ranged=guard, block=block,
+        heroes.append(Hero(hp, hp, 2, defense, ws, r, guard_ranged=guard, block=block, gem_bonus=kit.gem_bonus,
                            potions=kit.potions, perks=perks))
     return heroes
 
@@ -919,10 +997,13 @@ def main() -> None:
     ap.add_argument("--ranged-step", type=float, default=R.RANGED_UPGRADE_STEP, help="远程武器每级加多少伤害")
     ap.add_argument("--reload-back", type=int, default=1, help="装填时被贴身往后退几步")
     ap.add_argument("--reload-melee-only", action="store_true", help="只从近战怪身边退开（远程怪隔一格反而更准）")
+    ap.add_argument("--gems", action="store_true", help="正常装备、好感全满按层数期望镶上宝石，回村拿一半余钱刷品质")
+    ap.add_argument("--focus-boss", action="store_true", help="召唤战先打头目（知道帮手会跑的玩家）")
     args = ap.parse_args()
     VARIANT.update(dmg=args.dmg, ranged_step=args.ranged_step, reload_back=args.reload_back,
-                   reload_melee_only=args.reload_melee_only)
-    out = [f"# 模拟结果（怪伤害 ×{args.dmg:g}，远程每级 +{args.ranged_step:g}，每种组合每趟 {args.trips} 次，种子 {args.seed}）\n"]
+                   reload_melee_only=args.reload_melee_only, gems=args.gems, focus_boss=args.focus_boss)
+    out = [f"# 模拟结果（怪伤害 ×{args.dmg:g}，远程每级 +{args.ranged_step:g}，{'镶宝石' if args.gems else '不镶宝石'}，"
+           f"{'召唤战先打头目' if args.focus_boss else '先打血少的'}，每种组合每趟 {args.trips} 次，种子 {args.seed}）\n"]
 
     # ---- 经济 ----
     random.seed(args.seed)

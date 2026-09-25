@@ -17,8 +17,9 @@ import yaml
 from psycopg import Cursor
 from psycopg.types.json import Jsonb
 
-from rules import (BOSS_EVERY, BOSS_PARTY_HP, ELITE_AFFIXES, ROOM_CAP, SUMMON_DMG, SUMMON_HP, THEME_PLAGUE, TREASURE_GUARD,  # noqa: F401
-                   UPGRADE_STEP, elite_chance, max_groups, unlocked_skills,
+from rules import (BOSS_EVERY, BOSS_PARTY_HP, ELITE_AFFIXES, GEM_TIER_PREFIX, ROOM_CAP, SUMMON_DMG, SUMMON_HP,  # noqa: F401
+                   THEME_PLAGUE, TREASURE_GUARD, UPGRADE_STEP, elite_chance, gem_category, gem_tier, max_groups,
+                   roll_sockets, unlocked_skills,
                    monster_gold, monster_stats, party_copies, stash_gold, treasure_gold)
 
 GATE = "dungeon_gate"                   # 地窖的入口、楼梯间往下都连到这个占位房间，引擎走到这里改由 through_gate 决定去哪
@@ -99,18 +100,50 @@ def _drops(kind: str, rank: str, theme: str, depth: int, stair: bool = False) ->
     return out
 
 
+def gem_rules() -> dict:
+    return loot_data()["gems"]
+
+
+def gem_props(cur: Cursor, gem: str, tier: int) -> dict:
+    """一颗宝石实例的 props：品质、带前缀的名字（碎裂的、完美的）、按品质的参考价"""
+    cur.execute("select name from item_templates where id = %s", (gem,))
+    name = cur.fetchone()["name"]
+    return {"tier": tier, "name": GEM_TIER_PREFIX[tier] + name, "price": gem_rules()["tier_price"][tier - 1]}
+
+
+def put_gem(cur: Cursor, gem: str, depth: int, *, room: Optional[str] = None, npc: Optional[UUID] = None,
+            player: Optional[UUID] = None) -> str:
+    """掉一颗宝石（品质按层数抽），返回名字"""
+    cur.execute("select props from item_templates where id = %s", (gem,))
+    tier = gem_tier(depth, gem_rules(), bool(cur.fetchone()["props"].get("numeric")))
+    props = gem_props(cur, gem, tier)
+    cur.execute("insert into item_instances (template_id, room_id, npc_id, player_id, props) values (%s, %s, %s, %s, %s)",
+                (gem, room, npc, player, Jsonb(props)))
+    return props["name"]
+
+
+def pick_gem(theme: Optional[str], common_share: float = 0.0) -> str:
+    """从这个主题的宝石池抽一颗（common_share 的几率改从通用池抽）"""
+    pools = gem_rules()["pools"]
+    pool = pools["common"] if not theme or theme not in pools or random.random() < common_share else pools[theme]
+    return random.choice(pool)
+
+
 def _put_item(cur: Cursor, template: str, depth: int, *, room: Optional[str] = None, npc: Optional[UUID] = None,
-              boss: bool = False) -> None:
-    """放一件东西。头目的招牌装备每深 boss_upgrade_every 层自带 +1（10 层 +1，15 层 +2）"""
+              boss: bool = False, rarity: Optional[str] = None) -> None:
+    """放一件东西。头目的招牌装备每深 boss_upgrade_every 层自带 +1（10 层 +1，15 层 +2）；
+    rarity 给了的是地牢掉落：武器、护具、饰品按稀有度随机带孔（common 普通怪 / uncommon 精英宝箱 / rare 头目）"""
     props = {}
     every = loot_data()["rules"].get("boss_upgrade_every", 0)
+    cur.execute("select name, type, slot, damage, defense from item_templates where id = %s", (template,))
+    t = cur.fetchone()
+    if rarity and gem_category(t["type"], t["slot"]) and (n := roll_sockets(rarity, gem_rules())):
+        props["sockets"] = n
     if boss and every and (plus := depth // every - 1) > 0:
-        cur.execute("select name, type, damage, defense from item_templates where id = %s", (template,))
-        t = cur.fetchone()
         if t["type"] == "weapon":
-            props = {"plus": plus, "damage": t["damage"] + plus, "name": f"{t['name']} +{plus}"}
+            props |= {"plus": plus, "damage": t["damage"] + plus, "name": f"{t['name']} +{plus}"}
         elif t["type"] == "armor" and t["defense"]:
-            props = {"plus": plus, "defense": t["defense"] + plus * UPGRADE_STEP["defense"], "name": f"{t['name']} +{plus}"}
+            props |= {"plus": plus, "defense": t["defense"] + plus * UPGRADE_STEP["defense"], "name": f"{t['name']} +{plus}"}
     cur.execute("insert into item_instances (template_id, room_id, npc_id, props) values (%s, %s, %s, %s)",
                 (template, room, npc, Jsonb(props)))
 
@@ -211,7 +244,7 @@ def _prison_cell(cur: Cursor, run: UUID, depth: int, theme: dict, cells: list, s
     cur.execute("insert into item_instances (template_id, room_id, props) values ('gold_pouch', %s, %s)", (rid, Jsonb({"gold": coins})))
     for item in (_pick(loot_data()["pool"], depth), _pick(loot_data()["treasure"].get("castle"), depth)):
         if item:
-            _put_item(cur, item, depth, room=rid)
+            _put_item(cur, item, depth, room=rid, rarity="uncommon")
 
 
 # ============ 小地图 ============
@@ -314,7 +347,7 @@ def _template(cur: Cursor, depth: int, kind: str, rank: str, theme: str, share: 
         props["attacks"] = attacks
     if affix:
         props["affix"] = affix
-        for key in ("dmg_mult", "frenzy", "lifesteal", "thorns"):
+        for key in ("dmg_mult", "frenzy", "lifesteal", "thorns", "thorns_chance"):
             if fx.get(key):
                 props[key] = fx[key]
     if rank == "boss":
@@ -406,7 +439,10 @@ def _spawn(cur: Cursor, room: str, depth: int, kind: str, rank: str, theme: str,
                 " returning id", (room, tid))
     npc_id = cur.fetchone()["id"]
     for item in _drops(kind, rank, theme, depth, stair) if loot else []:     # 身上带的东西，打死了掉在地上
-        _put_item(cur, item, depth, npc=npc_id, boss=rank == "boss")
+        _put_item(cur, item, depth, npc=npc_id, boss=rank == "boss",
+                  rarity={"boss": "rare", "elite": "uncommon"}.get(rank, "common"))
+    if loot and random.random() < gem_rules()["drops"].get(rank, 0):
+        put_gem(cur, pick_gem(theme), depth, npc=npc_id)
     for _ in range(ELITE_AFFIXES.get(affix, {}).get("minions", 0)):
         spawn_minions(cur, room, depth, kind, theme, 1)             # 号令的精英：带着一只同类小怪
 
@@ -544,7 +580,9 @@ def _make_floor(cur: Cursor, run: UUID, depth: int, above: Optional[str], size: 
                 item = (_pick(loot_data()["treasure"].get(theme_key), depth) if themed else None) \
                     or _pick(loot_data()["pool"], depth)
                 if item:
-                    _put_item(cur, item, depth, room=rid)
+                    _put_item(cur, item, depth, room=rid, rarity="uncommon")
+            if random.random() < gem_rules()["drops"]["treasure"]:
+                put_gem(cur, pick_gem(theme_key, 0.5), depth, room=rid)        # 宝箱房额外一颗宝石：一半本主题、一半通用
             if guarded:
                 # 有一半的宝箱房有怪守着（越深越可能是精英）
                 rank = "elite" if random.random() < elite_chance(depth) else "normal"

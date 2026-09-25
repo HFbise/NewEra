@@ -19,7 +19,7 @@ create table item_templates (
   id          text primary key,
   name        text not null,
   description text not null,
-  type        text not null check (type in ('weapon','armor','consumable','key','misc')),
+  type        text not null check (type in ('weapon','armor','consumable','key','misc','gem')),
   takeable    boolean not null default true,
   stackable   boolean not null default false,   -- 面包、药草这类可以叠加
   damage      int not null default 0,

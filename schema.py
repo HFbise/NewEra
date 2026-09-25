@@ -83,6 +83,31 @@ class Rename(BaseModel):
     name: str
 
 
+class Socket(BaseModel):
+    """找铁匠把宝石镶到带孔的装备上（免费；只有地牢里掉的装备带孔）"""
+    action: Literal["socket"]
+    item: str                           # 装备 ref
+    gem: str                            # 背包里宝石的 ref
+    target: str                         # 铁匠 NPC 的 ref
+
+
+class Unsocket(BaseModel):
+    """找铁匠把装备上镶的宝石取出来：宝石保留，按品质收钱（碎 10、普通 30、完美 80）；诅咒装备解咒前取不出来"""
+    action: Literal["unsocket"]
+    item: str                           # 装备 ref
+    gem: Optional[str] = None           # 取哪颗（宝石名字）；只镶了一颗可以不填
+    target: str                         # 铁匠 NPC 的 ref
+
+
+class Refine(BaseModel):
+    """找诺艾尔刷宝石的品质（碎裂 → 普通 → 闪亮 → 完美，只升不降）：宝石得是背包里没镶上去的。
+    catalyst：再交一颗同种宝石当垫子，这次升档几率翻倍，垫子用掉"""
+    action: Literal["refine"]
+    item: str                           # 宝石 ref
+    catalyst: bool = False
+    target: str                         # 诺艾尔的 ref
+
+
 class Write(BaseModel):
     """在能写字的东西（纸条）上写几句话：写进这一张，限 100 字，写过的不能再改"""
     action: Literal["write"]
@@ -330,7 +355,7 @@ class Reject(BaseModel):
 
 PlayerAction = Annotated[
     Union[Move, Look, Take, Drop, Use, Equip, Unequip, Attack, Talk, Give, Sell, Pay, Upgrade, Say, Revive, Respawn, Stand, Rest, Camp, Teleport, LeaveParty, Kick,
-          Follow, Unfollow, Challenge, AcceptDuel, DeclineDuel, Flee, Stunt, Struggle, Maneuver, Dodge, Tame, Uncurse, Reload, Refill, Transfer, Reroll, Rename, Write, Hide, Search,
+          Follow, Unfollow, Challenge, AcceptDuel, DeclineDuel, Flee, Stunt, Struggle, Maneuver, Dodge, Tame, Uncurse, Reload, Refill, Transfer, Reroll, Rename, Write, Socket, Unsocket, Refine, Hide, Search,
           Freeform, Reject],
     Field(discriminator="action"),
 ]
@@ -342,7 +367,7 @@ class ParsedInput(BaseModel):
 
 # ============ 世界数据（对应数据库表） ============
 
-ItemType = Literal["weapon", "armor", "consumable", "key", "misc"]
+ItemType = Literal["weapon", "armor", "consumable", "key", "misc", "gem"]
 # 装备栏：每格一件。物品模板的 slot 是它能放的位置：hand（左右手都行，武器、以后的盾）、ring（两个戒指位都行），
 # 其余就是格子本身
 Slot = Literal["head", "chest", "belt", "legs", "feet", "neck", "ring1", "ring2", "left_hand", "right_hand"]

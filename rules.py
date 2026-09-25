@@ -277,14 +277,14 @@ def stash_gold(depth: int, size: int) -> int:
 # ============ 精英词缀 ============
 # 每只精英从这里随机抽一个，名字前缀跟着变。同一只狗头人矿工，这次是迅捷的，下次是坚甲的，打法就不一样
 ELITE_AFFIXES = {
-    "swift": {"name": "迅捷的", "attacks": 2, "dmg_mult": 0.55, "note": "一轮出手两次，每下轻一些"},
-    "armored": {"name": "坚甲的", "def": 2, "hp_mult": 0.8, "note": "防御高、血少一点"},
-    "frenzied": {"name": "狂暴的", "frenzy": 2, "note": "血量低于一半时攻击 +2"},
-    "bloodthirsty": {"name": "嗜血的", "lifesteal": 1, "note": "打中人就回 1 点血"},
-    "commanding": {"name": "号令的", "minions": 1, "note": "带着一只同类小怪（小怪不掉东西）"},
-    "thorny": {"name": "荆棘的", "thorns": 1, "note": "近战砍它会被扎回 1 点"},
+    "swift": {"name": "迅捷的", "attacks": 2, "dmg_mult": 0.7, "hp_mult": 0.85, "note": "一轮出手两次，每下轻一点，身子也脆一点"},
+    "armored": {"name": "坚甲的", "def": 3, "hp_mult": 0.75, "note": "防御高、血少一些"},
+    "frenzied": {"name": "狂暴的", "frenzy": 3, "note": "血量低于一半时攻击 +3"},
+    "bloodthirsty": {"name": "嗜血的", "lifesteal": 0.5, "note": "打中人就回造成伤害的一半"},
+    "commanding": {"name": "号令的", "minions": 1, "note": "带着一只同类小怪（小怪下手减半、不掉东西，主子一死就跑）"},
+    "thorny": {"name": "荆棘的", "thorns": 1, "thorns_chance": 0.5, "note": "近战砍它一半几率被扎回 1 点"},
     "keen": {"name": "警觉的", "keen": True, "note": "一进门就发现人，偷袭不了"},
-    "plagued": {"name": "瘟疫的", "plague": 0.2, "note": "打中人 20% 附带这一带的毒害"},
+    "plagued": {"name": "瘟疫的", "plague": 0.3, "note": "打中人 30% 附带这一带的毒害"},
 }
 # 瘟疫的精英附带什么：跟着主题走（主题头目那一手）
 THEME_PLAGUE = {"mine": "prone", "graveyard": "corrode", "castle": "restrained", "forest": "prone",
@@ -340,3 +340,74 @@ def due_skill(skills: list[dict], hp_ratio: float, acts: int, used: set) -> Opti
 
 def enraged(depth: int, hp_ratio: float) -> bool:
     return depth >= ENRAGE_FROM and hp_ratio < ENRAGE_BELOW
+
+
+# ============ 宝石 ============
+# 规则数字在 loot.yaml 的 gems（孔位、品质权重、取出费用、全身上限），宝石本身在 items_dungeon.yaml（type: gem）
+GEM_TIER_PREFIX = {1: "碎裂的", 2: "", 3: "闪亮的", 4: "完美的"}
+GEM_TIER_WORDS = {1: "碎裂", 2: "普通", 3: "闪亮", 4: "完美"}
+GEM_TOP = 4
+GEM_SLOT_WORDS = {"weapon": "武器", "armor": "护具", "trinket": "饰品", "any": "什么都能镶"}
+
+
+def gem_category(item_type: str, slot: Optional[str]) -> Optional[str]:
+    """装备镶宝石时算哪一类：武器 / 护具（头、胸、腿、脚、盾）/ 饰品（戒指、项链、腰带）；别的镶不了"""
+    if item_type == "weapon":
+        return "weapon"
+    if item_type == "armor":
+        return "trinket" if slot in ("ring", "neck", "belt") else "armor"
+    return None
+
+
+def gem_fits(gem_slot: str, category: Optional[str]) -> bool:
+    return category is not None and gem_slot in ("any", category)
+
+
+def gem_effects(gem_props: dict, tier: int, category: str) -> list[dict]:
+    """这颗宝石按品质、镶在哪一类装备上，落成跟装备一样的 effects（values / chances 取这一档的值）"""
+    specs = [gem_props["adapts"][category]] if gem_props.get("adapts") else gem_props.get("effects") or []
+    out = []
+    for s in specs:
+        e = {k: v for k, v in s.items() if k not in ("values", "chances")}
+        if "values" in s:
+            e["value"] = s["values"][tier - 1]
+        if "chances" in s:
+            e["chance"] = s["chances"][tier - 1]
+        e["gem"] = True
+        out.append(e)
+    return out
+
+
+def gem_tier(depth: int, gem_rules: dict, numeric: bool) -> int:
+    """掉落时的品质：按这一层的权重抽；数值宝石没到第 numeric_perfect_min_floor 层，完美降成闪亮"""
+    table = gem_rules["tier_by_floor"]
+    key = max([int(k) for k in table if int(k) <= depth] or [min(int(k) for k in table)])
+    tier = random.choices([1, 2, 3, 4], table[key] if key in table else table[str(key)])[0]
+    if numeric and tier == GEM_TOP and depth < gem_rules.get("numeric_perfect_min_floor", 15):
+        tier = GEM_TOP - 1
+    return tier
+
+
+def refine_cap(numeric: bool, deepest: int, refine: dict) -> int:
+    """诺艾尔最多能把这颗刷到第几档：闪亮要最深到过第 10 层，完美要第 10 层（数值宝石第 15 层）"""
+    gate = refine["min_deepest_floor"]
+    if deepest < gate["shiny"]:
+        return 2
+    return GEM_TOP if deepest >= gate["perfect_numeric" if numeric else "perfect_other"] else 3
+
+
+def refine_roll(tier: int, cap: int, refine: dict, catalyst: bool) -> int:
+    """刷一次：只升不降。先掷跳两档（封顶在 cap），再掷升一档（交了垫子几率翻倍），都没中就不变"""
+    if random.random() < refine["double_up_chance"] and tier + 2 <= cap:
+        return tier + 2
+    chance = refine["up_chance"][tier - 1] * (refine["catalyst_mult"] if catalyst else 1)
+    return tier + 1 if tier < cap and random.random() < chance else tier
+
+
+def roll_sockets(rarity: str, gem_rules: dict) -> int:
+    return random.choices([0, 1, 2, 3], gem_rules["sockets"][rarity])[0]
+
+
+def whole(v: float) -> int:
+    """小数的加成按几率进位（+0.5 就是一半几率多 1 点）"""
+    return int(v) + (random.random() < v - int(v))

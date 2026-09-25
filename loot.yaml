@@ -175,3 +175,39 @@ forage:
   swamp:
     - {item: antidote_moss, chance: 0.3}
     - {item: marsh_mushroom, chance: 0.5}
+
+# ============ 宝石（第一期）============
+gems:
+  sockets:                     # 掉落时按稀有度随机孔数，权重依次对应 0/1/2/3 个孔（只有武器、护具、饰品带孔）
+    common:   [70, 30, 0, 0]   # 普通怪身上的
+    uncommon: [30, 50, 20, 0]  # 精英身上的、宝箱房的、楼梯间守卫保底的
+    rare:     [0, 40, 40, 20]  # 头目掉的
+  tier_by_floor:               # 掉落时的品质权重：碎裂 / 普通 / 闪亮 / 完美（取不超过这一层的最大那一档）
+    1:  [90, 10, 0, 0]
+    5:  [60, 35, 5, 0]
+    10: [30, 50, 17, 3]
+    15: [10, 45, 30, 15]
+  numeric_perfect_min_floor: 15   # numeric 的宝石低于这层时，完美降成闪亮
+  unsocket_fee: [10, 30, 60, 120] # 取出费用：碎裂 / 普通 / 闪亮 / 完美
+  tier_price: [15, 40, 80, 200]   # 参考价
+  body_caps: {defense: 2, max_hp: 6}
+  refine:                      # 诺艾尔刷品质（宝石得是没镶在装备上的）：只升不降
+    up_chance: [0.5, 0.25, 0.10]  # 从碎裂、普通、闪亮各升一档的几率
+    double_up_chance: 0.05        # 每次另有这么多几率直接跳两档（封顶完美）
+    cost: [20, 60, 150]
+    catalyst_mult: 2              # 交一颗同种宝石当垫子，这次升档几率翻倍，垫子用掉
+    min_deepest_floor: {shiny: 10, perfect_numeric: 15, perfect_other: 10}   # 最深到过第几层才刷得出这一档
+  drops:
+    normal: 0.015              # 普通怪，从本主题的宝石里抽
+    elite: 0.08
+    boss: 1.0                  # 头目必掉一颗，本主题池
+    treasure: 0.2              # 宝箱房额外 20% 出一颗，一半本主题、一半通用
+    mining: 0.3                # 挖矿成功额外 30% 出一颗，从矿坑池或通用池抽
+  pools:
+    mine: [bloodstone, rockvein_stone]
+    graveyard: [silver_vein, frost_jade, cats_eye]
+    castle: [ironheart_stone, staunch_stone]
+    forest: [ember_stone, rootbind_stone]
+    swamp: [venom_crystal, mossvein_stone]
+    library: [inkward_opal, glowstone]
+    common: [prism_shard, vigor_garnet]

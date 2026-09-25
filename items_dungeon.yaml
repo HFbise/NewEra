@@ -785,3 +785,134 @@ items:
       price: 45
       effects:
         - {when: passive, do: aura, kind: defense, value: 1}
+
+  # ============ 宝石（第一期）============
+  # 镶在带孔的装备上（只有地牢掉落的装备带孔，找莉娜镶，免费；取出要按品质收钱，宝石保留）。
+  # gem_slot：weapon 武器 / armor 护具（头、胸、腿、脚、盾）/ trinket 饰品（戒指、项链、腰带）/ any 都行。
+  # 品质存在实例的 props.tier（1 碎裂的、2 普通、3 闪亮的、4 完美的），values / chances 按这四档取值；诺艾尔能刷品质；numeric 是纯数值宝石
+  # （完美档第 15 层以后才掉，全身合计有上限：防御 +2、血量上限 +6）。规则和掉落见 loot.yaml 的 gems
+  prism_shard:
+    name: 无色棱晶
+    description: 一块透明的棱形水晶，镶在什么上面，就映出什么的颜色。
+    type: gem
+    props:
+      gem_slot: any
+      numeric: true
+      adapts: {weapon: {when: hit, do: bonus, values: [0.5, 0.5, 0.75, 1]},
+               armor: {when: passive, do: defense, values: [0.25, 0.25, 0.4, 0.5]},
+               trinket: {when: passive, do: max_hp, values: [1, 1, 1.5, 2]}}
+  vigor_garnet:
+    name: 活力石榴石
+    description: 一颗深红色的小石头，贴着皮肤戴，能感觉到它跟着心跳一起微微发烫。
+    type: gem
+    props:
+      gem_slot: trinket
+      numeric: true
+      effects:
+        - {when: passive, do: max_hp, values: [1, 2, 2.5, 3]}
+  bloodstone:
+    name: 血石
+    description: 一块暗红色的石头，里面有几缕更深的红丝，握久了掌心会发热。
+    type: gem
+    props:
+      gem_slot: weapon
+      numeric: true
+      effects:
+        - {when: hit, do: bonus, values: [0.5, 1, 1.25, 1.5]}
+  rockvein_stone:              # 对付工头砸地、岩甲虫
+    name: 岩纹石
+    description: 一块灰褐色的扁石，表面有一圈圈像年轮一样的纹路，放在哪里都稳稳当当。
+    type: gem
+    props:
+      gem_slot: armor
+      effects:
+        - {when: passive, do: resist, kind: prone, values: [0.7, 0.5, 0.4, 0.3]}
+  silver_vein:                 # 打亡灵，守陵人的弱点之外多一条路
+    name: 银脉石
+    description: 一块黑石头里嵌着一道亮晶晶的银脉，靠近骸骨时银脉会微微发烫。
+    type: gem
+    props:
+      gem_slot: weapon
+      effects:
+        - {when: hit, do: bonus, values: [1, 1.5, 1.75, 2], vs: [undead]}
+  frost_jade:                  # 对付守陵人的寒气、食尸鬼
+    name: 寒玉
+    description: 一块青白色的玉石，摸上去冰得扎手，却从来不会结霜。
+    type: gem
+    props:
+      gem_slot: armor
+      effects:
+        - {when: passive, do: resist, kind: corrode, values: [0.7, 0.5, 0.4, 0.3]}
+  cats_eye:
+    name: 猫眼石
+    description: 一颗蜜黄色的圆石，中间有一道细细的亮线，转动时像猫的瞳孔在收缩。
+    type: gem
+    props:
+      gem_slot: trinket
+      effects:
+        - {when: hurt, do: dodge, chances: [0.04, 0.06, 0.07, 0.08]}
+  ironheart_stone:
+    name: 铁心石
+    description: 一块灰黑色的圆石，沉得不像它的个头，敲上去像敲一块铁砧。
+    type: gem
+    props:
+      gem_slot: armor
+      numeric: true
+      effects:
+        - {when: passive, do: defense, values: [0.25, 0.5, 0.6, 0.75]}
+  staunch_stone:               # 对付恶犬、典狱长那一带的流血
+    name: 止血石
+    description: 一块暗红带黑斑的石头，据说古时候的军医会把它按在伤口上。
+    type: gem
+    props:
+      gem_slot: armor
+      effects:
+        - {when: passive, do: resist, kind: bleed, values: [0.7, 0.5, 0.4, 0.3]}
+  ember_stone:                 # 让这一击算作火，吃古树和女巫的弱点
+    name: 余烬石
+    description: 一块像烧透的炭一样的石头，裂缝里透出暗红的光，放在手心暖烘烘的。
+    type: gem
+    props:
+      gem_slot: weapon
+      effects:
+        - {when: hit, do: element, kind: fire, chances: [0.4, 0.7, 0.85, 1.0]}
+  rootbind_stone:              # 对付藤蔓、铁链、巨蟾的缠住
+    name: 缚根石
+    description: 一块缠满细根的石头，根须早就枯了，却怎么也扯不下来。
+    type: gem
+    props:
+      gem_slot: armor
+      effects:
+        - {when: passive, do: resist, kind: restrained, values: [0.7, 0.5, 0.4, 0.3]}
+  venom_crystal:
+    name: 毒晶
+    description: 一颗浑浊的绿色晶体，对着光看，里面像有东西在缓缓游动。
+    type: gem
+    props:
+      gem_slot: weapon
+      effects:
+        - {when: hit, do: status, kind: poison, chances: [0.08, 0.12, 0.14, 0.16]}
+  mossvein_stone:
+    name: 苔纹石
+    description: 一块布满青绿色纹路的石头，纹路摸上去微微发潮，像长着一层活的苔藓。
+    type: gem
+    props:
+      gem_slot: armor
+      effects:
+        - {when: passive, do: resist, kind: poison, values: [0.7, 0.5, 0.4, 0.3]}
+  inkward_opal:
+    name: 墨蛋白石
+    description: 一块乳白色的石头，表面浮着几块会慢慢游走的黑斑，像滴进水里的墨。
+    type: gem
+    props:
+      gem_slot: armor
+      effects:
+        - {when: passive, do: resist, kind: blind, values: [0.7, 0.5, 0.4, 0.3]}
+  glowstone:                   # 光亮：跟别的随身光源一起只取最亮的
+    name: 萤石
+    description: 一块淡黄色的石头，在黑暗里会自己发出萤火虫一样的微光。
+    type: gem
+    props:
+      gem_slot: trinket
+      effects:
+        - {when: passive, do: light, values: [5, 8, 9, 10]}

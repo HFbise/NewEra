@@ -242,6 +242,27 @@ def _parse_one(view: RoomView, t: str) -> dict:
         blank = next((i for i in view.inventory if i.template.props.get("writable") and not i.props.get("note")), None)
         return {"action": "write", "item": {uid: ref for ref, uid in view.refs.items()}[blank.id] if blank else _find(view, "纸条", "inv"),
                 "message": m[1] or m[2]}
+    # 刷宝石品质（找诺艾尔）："刷一下血石""帮我唤醒血石""刷血石，拿另一颗当垫子""用两颗血石刷"
+    if sage := next((n for n in view.npcs if n.template.props.get("refine")), None):
+        u = re.sub(rf"^(?:对|跟|找|向)\s*{re.escape(sage.name)}\s*(?:说|讲)?[:：]?\s*(?:帮我|请|我要|我想)?\s*", "", t)
+        pad = bool(re.search(r"垫|两颗|另一颗", u))
+        u2 = re.sub(r"[，,]?\s*(?:拿|用|加)?\s*(?:另一颗|两颗)?\s*(?:\S{0,6})?(?:当|做)?垫子", "", u).strip()
+        if m := re.fullmatch(r"(?:用两颗)?\s*(?:刷|重刷|唤醒|提升|刷一下|唤醒一下)\s*(?:一下)?\s*(.+?)\s*(?:的品质|品质)?", u2):
+            return {"action": "refine", "item": _find(view, m[1], "inv"), "catalyst": pad,
+                    "target": {uid: r for r, uid in view.refs.items()}[sage.id]}
+    # 宝石（找莉娜）："把血石镶到短剑上""给短剑镶上血石"；"把短剑上的血石取下来""取下短剑上的宝石"
+    if smith := next((n for n in view.npcs if n.template.props.get("upgrades")), None):
+        ref = {uid: r for r, uid in view.refs.items()}[smith.id]
+        u = re.sub(rf"^(?:对|跟|找|向)\s*{re.escape(smith.name)}\s*(?:说|讲)?[:：]?\s*(?:帮我|请|我要|我想)?\s*", "", t)
+        if m := (re.fullmatch(r"(?:把)?\s*(.+?)\s*(?:镶到|镶在|镶进|嵌到|嵌在|嵌进)\s*(.+?)\s*(?:上|上面|里)?", u)):
+            return {"action": "socket", "gem": _find(view, m[1], "inv"), "item": _find(view, m[2], "inv"), "target": ref}
+        if m := re.fullmatch(r"(?:给|在)\s*(.+?)\s*(?:上)?\s*(?:镶上|镶|嵌上|嵌)\s*(.+)", u):
+            return {"action": "socket", "item": _find(view, m[1], "inv"), "gem": _find(view, m[2], "inv"), "target": ref}
+        if m := (re.fullmatch(r"(?:把)?\s*(.+?)\s*上的\s*(.+?)\s*(?:取下来|取出来|取下|取出|拆下来|拆下|抠下来|撬下来)", u)
+                 or re.fullmatch(r"(?:取下|取出|拆下|抠下|撬下)\s*(.+?)\s*上的\s*(.+)", u)):
+            gem = m[2].strip()
+            return {"action": "unsocket", "item": _find(view, m[1], "inv"), "target": ref} \
+                | ({"gem": gem} if gem not in ("宝石", "石头") else {})
     # 专属武器起名："给莉娜打的剑起名叫破晓""把它改名为破晓"
     if m := re.fullmatch(r"(?:给|把)\s*(.+?)\s*(?:起名|取名|改名|命名)\s*(?:叫|为|成|作)?\s*(.+)", t):
         return {"action": "rename", "item": _find(view, m[1], "inv"), "name": m[2]}

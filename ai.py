@@ -228,7 +228,7 @@ class AIAction(BaseModel):
     action: Literal["move", "look", "take", "drop", "use", "equip", "unequip", "attack", "talk", "give", "sell", "pay", "say",
                     "upgrade", "respawn", "stand", "rest", "camp", "teleport", "revive", "uncurse", "leave_party", "kick", "follow", "unfollow", "challenge", "accept_duel",
                     "decline_duel", "flee", "stunt", "struggle",
-                    "maneuver", "dodge", "tame", "reload", "refill", "transfer", "reroll", "rename", "write", "hide", "search", "freeform", "reject"]
+                    "maneuver", "dodge", "tame", "reload", "refill", "transfer", "reroll", "rename", "write", "socket", "unsocket", "refine", "hide", "search", "freeform", "reject"]
     direction: Optional[str] = None
     item: Optional[str] = None
     target: Optional[str] = None
@@ -256,6 +256,8 @@ class AIAction(BaseModel):
     ore: Optional[bool] = None           # upgrade：用不用奥利哈刚
     oil: Optional[bool] = None           # upgrade：用莉娜的淬火油
     quote: Optional[bool] = None         # upgrade：只问价
+    gem: Optional[str] = None            # socket：宝石 ref；unsocket：宝石名字
+    catalyst: Optional[bool] = None      # refine：交一颗同种宝石当垫子
 
 
 class AIParsed(BaseModel):
@@ -319,6 +321,9 @@ INTENT_SYSTEM = """你是文字 MUD 游戏的指令解析器。读玩家的输�
 - reroll: item（装备 ref），target（铁匠的 ref）。找铁匠刷新、重铸装备的词条（特效）
 - rename: item（装备 ref），name（新名字）。给自己的专属武器起名
 - write: item（纸条 ref），message（要写的字，照玩家原话）。在纸条上写字、留言
+- socket: item（装备 ref），gem（背包里宝石的 ref），target（铁匠的 ref）。找铁匠把宝石镶到装备上
+- unsocket: item（装备 ref），gem（要取的宝石名字，只有一颗可不填），target（铁匠的 ref）。找铁匠把装备上的宝石取下来
+- refine: item（背包里宝石的 ref），catalyst（说了拿同种宝石当垫子就填 true），target（诺艾尔的 ref）。找诺艾尔刷宝石的品质
 - tame: target（野兽的 ref），description（怎么安抚的）。安抚、驯服、哄走野兽，让它不打了自己走开（只对野兽有用，引擎判驯兽）；
   扔骨头给野兽、拿肉骨头引开它也是 tame（身上的肉骨头引擎会先扔一根）
 - dodge: description。闪避、闪躲、侧身躲开、护住要害准备挨打：这一下敌人更难打中
@@ -739,11 +744,16 @@ def npc_services(npc: Npc, sells: Optional[list[dict]] = None) -> list[str]:
         out.append(f"住店，一晚 {inn.get('price', 0)} 金币，价钱固定不讲价，睡一觉回满体力、醒酒（他说一句“住店”就能住）")
     if p.get("lore"):
         out.append("讲地牢里怪物的习性和打法（客人问起怪物怎么打，就按你知道的讲）：" + engine.MONSTER_LORE)
+    if p.get("refine"):
+        out.append("照古书上的法子重新唤醒宝石、刷品质（碎裂、普通、闪亮、完美，只升不降；每次 20 / 60 / 150 金币；"
+                   "宝石得先找莉娜从装备上取下来；再带一颗同样的宝石当垫子，这次更容易成；闪亮、完美要客人在地牢里走得够深才唤得醒）")
     if p.get("uncurse"):
         out.append("解除装备上的诅咒（戴上就卸不下来的那种，按那件东西的参考价收钱）")
     if p.get("upgrades"):
         out.append("帮人升级武器和防具（武器更锋利、防具更结实），最多 +10，级数越高越容易失败，失败会退一级（不会碎）；"
                    "带奥利哈刚矿石来锻进去，失败了也不掉级，矿石成功了才用掉")
+        out.append("把宝石镶到带孔的装备上（只有地牢里掉的装备才带孔，镶不收钱）；把镶上去的宝石取下来（宝石还给客人，"
+                   "按品质收钱：碎的 10、普通 30、完美 80 金币；被诅咒的装备得先解咒）")
     return out
 
 

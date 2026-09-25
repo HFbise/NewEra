@@ -17,8 +17,10 @@ def main() -> None:
     ap.add_argument("--n", type=int, default=600)
     ap.add_argument("--dmg", type=float, default=1.5)
     ap.add_argument("--build", default="sword_shield")
+    ap.add_argument("--focus-boss", action="store_true", help="召唤战先打头目")
     args = ap.parse_args()
     sim.VARIANT["dmg"] = args.dmg
+    sim.VARIANT["focus_boss"] = args.focus_boss
     print(f"| 头目 | 第 5 层 | 第 10 层 | 第 15 层 |（{sim.BUILDS[args.build]}，伤害 ×{args.dmg:g}，挨的伤害 / 团灭率）")
     print("|---|---|---|---|")
     for key, th in sim.THEMES.items():

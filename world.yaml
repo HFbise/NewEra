@@ -595,6 +595,7 @@ npcs:
       rare_sells: {items: [ore, ancient_wine, old_tome], chance: 0.15, markup: 2, reluctant: [old_tome]}
       # 会解咒：地牢里的诅咒装备（props.cursed）戴上就卸不下来，找她按那件东西的参考价付钱解开（engine.do_uncurse）
       uncurse: true
+      refine: true                  # 照古书上的法子刷宝石品质（engine.do_refine，规则在 loot.yaml gems.refine）
       buys: {likes: [misc, book]}
       gift_likes: [book]
       lore: true                            # 平时就能口头讲地牢怪物的打法（engine.MONSTER_LORE）

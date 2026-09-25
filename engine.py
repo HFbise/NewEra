@@ -28,7 +28,7 @@ from schema import (
     ActionResult, Attack, Drop, Equip, Feature, Follow, Freeform, Give, ItemInstance, LeaveParty, Kick, Look,
     Move, Npc, OtherPlayer, Player, PlayerAction, Reject, Revive, Room, RoomExit, RoomView, Say, Status, Struggle,
     Stunt, Take, Talk, Unfollow, Unequip, Use, dir_name, Dispenser, SLOT_CHOICES, SLOT_NAMES, Dodge, Hide, Maneuver, Search, Stealth, Tame,
-    Uncurse, Reload, Refill, Transfer, Reroll, Rename, Write,
+    Uncurse, Reload, Refill, Transfer, Reroll, Rename, Write, Socket, Unsocket, Refine,
     AcceptDuel, Challenge, DeclineDuel, Duel, Flee, SKILL_NAMES, Upgrade, Respawn, Stand, Rest, Pay, Camp, Teleport, Sell,
     Effect,
 )
@@ -606,8 +606,20 @@ def _weapons(cur: Cursor, player: Player) -> list[ItemInstance]:
 # ============ 装备的特殊效果（物品 props.effects，写法见 items_dungeon.yaml 开头）============
 # 叠加规则：固定数值加起来（血量上限、技能、逃跑难度、伤害加成、减伤、破甲）；
 # 百分比和几率只取最好的一件（金币加成、闪避、吸血、抗性、光亮）
+def _effects(item: ItemInstance) -> list[dict]:
+    """这件装备的效果：自己的，加上镶在上面的宝石的（props.gem_fx）"""
+    return (_prop(item, "effects") or []) + (item.props.get("gem_fx") or [])
+
+
+def _gem_total(items: list[ItemInstance], do: str) -> float:
+    """宝石加的数值合计（防御、血量上限），全身有上限（loot.yaml gems.body_caps），免得件件都镶又叠爆"""
+    total = sum(e.get("value", 0) for i in items for e in i.props.get("gem_fx") or []
+                if e.get("when") == "passive" and e.get("do") == do)
+    return min(total, dungeon.gem_rules()["body_caps"].get(do, total))
+
+
 def _fx(items: list[ItemInstance], do: str, when: str = "passive", kind: Optional[str] = None) -> list[dict]:
-    return [e for i in items for e in (_prop(i, "effects") or [])
+    return [e for i in items for e in _effects(i)
             if e.get("when") == when and e.get("do") == do and (kind is None or e.get("kind") == kind)]
 
 
@@ -640,7 +652,7 @@ def _fire(cur: Cursor, player: Player, when: str, do: Optional[str] = None, npc:
           roll: bool = True) -> list[dict]:
     """这一刻（when）身上装备触发了哪些效果：对得上 vs 标签、满足 if 条件、掷中 chance 的（roll=False 不掷，只看条件）"""
     out = []
-    for e in (e for i in _worn(cur, player) for e in (_prop(i, "effects") or [])
+    for e in (e for i in _worn(cur, player) for e in _effects(i)
               if e.get("when") == when and (do is None or e.get("do") == do)):
         if (vs := e.get("vs")) and not (npc and any(npc.template.props.get(t) for t in vs)):
             continue
@@ -821,7 +833,8 @@ def _heal_player(cur: Cursor, player: Player, amount: int) -> list[str]:
 def _sync_gear_hp(cur: Cursor, player_id: UUID) -> list[str]:
     """装备带的血量上限（活力之戒 +3、贪婪之戒 -3）：跟 players.gear_hp 比，差多少就改多少，当前血量不超过上限"""
     player = load_player(cur, player_id, lock=True)
-    bonus = round(gear_add(cur, player, "max_hp"))
+    worn = _worn(cur, player)
+    bonus = round(sum(e.get("value", 0) for e in _fx(worn, "max_hp") if not e.get("gem")) + _gem_total(worn, "max_hp"))
     cur.execute("select gear_hp from players where id = %s", (player_id,))
     had = cur.fetchone()["gear_hp"]
     if bonus == had:
@@ -837,7 +850,8 @@ def _sync_gear_hp(cur: Cursor, player_id: UUID) -> list[str]:
 def _defense(cur: Cursor, player: Player) -> int:
     """基础防御加上所有装备的防御（护甲、护符、以后的盾）"""
     corrode = _effect(player, "corrode")
-    return max(0, player.defense + sum(i.defense for i in _worn(cur, player)) + _aura(cur, player, "defense")
+    worn = _worn(cur, player)
+    return max(0, player.defense + sum(i.defense for i in worn) + _gem_total(worn, "defense") + _aura(cur, player, "defense")
                - (corrode.value if corrode else 0))
 
 
@@ -847,7 +861,8 @@ def gear_totals(attack: int, defense: int, equipped: list[ItemInstance]) -> tupl
     """算上装备的攻、防（侧栏、后台看的）：双持时副手武器按 OFFHAND_SHARE，所有装备的防御相加"""
     weapons = [i for i in equipped if i.equipped_slot in ("left_hand", "right_hand") and i.template.type == "weapon"
                and not _prop(i, "ranged") and not _prop(i, "loads")]            # 远程武器射的时候单算
-    return attack + weapon_damage(weapons), defense + sum(i.defense for i in equipped if i.equipped_slot)
+    worn = [i for i in equipped if i.equipped_slot]
+    return attack + weapon_damage(weapons), defense + sum(i.defense for i in worn) + _gem_total(worn, "defense")
 
 
 def weapon_damage(weapons: list[ItemInstance]) -> int:
@@ -1280,7 +1295,12 @@ def _take_from(cur: Cursor, player: Player, view: RoomView, d: Dispenser) -> lis
         if not cur.fetchone():
             raise ActionError(f"{d.container}{d.where}已经没有{player.name}能拿的东西了")
     _give_player_new(cur, player, d.item)
-    return facts + [f"{player.name}从{d.container}{d.where}拿了一件{d.item_name}"]
+    facts = facts + [f"{player.name}从{d.container}{d.where}拿了一件{d.item_name}"]
+    if d.item == UPGRADE_ORE and dungeon.is_dungeon(player.room_id) and _roll(dungeon.gem_rules()["drops"]["mining"]):
+        depth = dungeon.parse_room(player.room_id)[1]
+        gem = dungeon.put_gem(cur, dungeon.pick_gem("mine", 0.5), depth, player=player.id)
+        facts.append(f"敲下来的碎石里还滚出一颗{gem}")
+    return facts
 
 
 def do_take(cur: Cursor, player: Player, view: RoomView, a: Take) -> list[str]:
@@ -2104,10 +2124,10 @@ def _npc_strike(cur: Cursor, player: Player, npc: Npc, verb: str, chance: float 
     if marked:
         _tally_merge(cur, npc, {"mark": None})
         facts.append(f"{npc.name}这一下落在了被判罪的人身上，判罪了结")
-    if (steal := props.get("lifesteal")) and npc.hp and npc.hp < npc.template.max_hp:
-        npc.hp = min(npc.template.max_hp, npc.hp + steal)       # 嗜血的精英：打中回血
+    if (steal := props.get("lifesteal")) and npc.hp and npc.hp < npc.template.max_hp and (gain := whole(dmg * steal)):
+        npc.hp = min(npc.template.max_hp, npc.hp + gain)        # 嗜血的精英：打中回造成伤害的一半
         cur.execute("update npcs set hp = %s where id = %s", (npc.hp, npc.id))
-        facts.append(f"{npc.name}舔了舔沾血的爪子，回了 {steal} 点血（HP {npc.hp}/{npc.template.max_hp}）")
+        facts.append(f"{npc.name}舔了舔沾血的爪子，回了 {gain} 点血（HP {npc.hp}/{npc.template.max_hp}）")
     if player.hp == 0:
         facts.append(f"{player.name}倒下了")
         _downed_by(cur, player, "npc", npc.name)
@@ -2291,10 +2311,12 @@ def _light(cur: Cursor, room_id: str, env: Optional[dict] = None, player: Option
     if env and level < 100:
         # 点着的火把（props.burning）取最亮的一支，永久光源（矿工灯、提灯）也只取最亮的一件，两样叠加
         cur.execute("""select max((t.props->>'light')::int) filter (where t.props ? 'burning') as torch,
-                              max((t.props->>'light')::int) filter (where not t.props ? 'burning') as lamp
+                              greatest(max((t.props->>'light')::int) filter (where not t.props ? 'burning'),
+                                       max((i.props->>'gem_light')::int)) as lamp
                        from item_instances i join item_templates t on t.id = i.template_id
                        join players p on p.id = i.player_id
-                       where p.room_id = %s and t.props ? 'light' and i.equipped_slot is not null""", (room_id,))
+                       where p.room_id = %s and (t.props ? 'light' or i.props ? 'gem_light') and i.equipped_slot is not null""",
+                    (room_id,))
         row = cur.fetchone()
         level += (row["torch"] or 0) + (row["lamp"] or 0)
     if env and (scroll := env.get("scroll")):
@@ -2327,9 +2349,11 @@ def light_info(cur: Cursor, player: Player, room: Room) -> Optional[dict]:
     lines.append(f"打怪掉的钱 ×{1 + 0.5 * dark_factor(light):.2f}（越暗越多）")
     parts = [f"房间 {base}"]
     cur.execute("""select max((t.props->>'light')::int) filter (where t.props ? 'burning') as torch,
-                          max((t.props->>'light')::int) filter (where not t.props ? 'burning') as lamp
+                          greatest(max((t.props->>'light')::int) filter (where not t.props ? 'burning'),
+                                   max((i.props->>'gem_light')::int)) as lamp
                    from item_instances i join item_templates t on t.id = i.template_id join players p on p.id = i.player_id
-                   where p.room_id = %s and t.props ? 'light' and i.equipped_slot is not null""", (room.id,))
+                   where p.room_id = %s and (t.props ? 'light' or i.props ? 'gem_light') and i.equipped_slot is not null""",
+                (room.id,))
     row = cur.fetchone()
     if row["torch"]:
         parts.append(f"火把 +{row['torch']}")
@@ -2870,7 +2894,7 @@ def _skill_effect(cur: Cursor, npc: Npc, s: dict, targets: list[Player], depth: 
         if room <= 0:
             return facts + ["可是这一回没人应声（场上的帮手已经够多了）"]
         names = dungeon.spawn_minions(cur, npc.room_id, depth, s["kind"], theme, min(summon_count(s, depth), room))
-        return facts + [f"{'、'.join(names)}加入了战斗"]
+        return facts + [f"{'、'.join(names)}加入了战斗（这些是跟着{npc.name}来的，它一倒下就会跑）"]
     if do in ("status_all", "effect_all"):
         for p in targets:
             if p.hp <= 0:
@@ -2989,8 +3013,8 @@ def do_attack(cur: Cursor, player: Player, view: RoomView, a: Attack) -> list[st
                                                             else f"隔着 {distance_word(d)}，没打中")] \
                 + _pvp_self_damage(cur, player, swung) + spent
         fired = _weapon_fit(_fire(cur, player, "hit"), shooter) + ammo
-        bonus = sum(int(e.get("value", 0)) for e in swung + fired if e["do"] == "bonus")
-        pierce = sum(int(e.get("value", 0)) for e in fired if e["do"] == "pierce")
+        bonus = whole(sum(e.get("value", 0) for e in swung + fired if e["do"] == "bonus"))
+        pierce = whole(sum(e.get("value", 0) for e in fired if e["do"] == "pierce"))
         whet = _effect(player, "whet")
         power = power + (whet.value if whet else 0) + bonus + _aura(cur, player, "attack")
         dmg = hurt_player_by(_bled(player, power), max(0, _defense(cur, target) - pierce))
@@ -3035,8 +3059,8 @@ def do_attack(cur: Cursor, player: Player, view: RoomView, a: Attack) -> list[st
         _save_stealth(cur, player, st)
     swung = _fire(cur, player, "attack", npc=npc)
     fired = _weapon_fit(_fire(cur, player, "hit", npc=npc) + (_fire(cur, player, "fight", npc=npc) if first else []), shooter) + ammo
-    bonus = sum(int(e.get("value", 0)) for e in swung + fired if e["do"] == "bonus")
-    pierce = sum(int(e.get("value", 0)) for e in fired if e["do"] == "pierce")
+    bonus = whole(sum(e.get("value", 0) for e in swung + fired if e["do"] == "bonus"))
+    pierce = whole(sum(e.get("value", 0) for e in fired if e["do"] == "pierce"))
     corrode = _npc_effect(npc, "corrode")
     armor = max(0, npc.template.defense - pierce - (corrode.value if corrode else 0))
     whet = _effect(player, "whet")
@@ -3045,7 +3069,7 @@ def do_attack(cur: Cursor, player: Player, view: RoomView, a: Attack) -> list[st
     if weak:
         dmg = math.ceil(dmg * WEAK_MULT)
     facts, dead = _hurt_npc(cur, player, npc, dmg)
-    if not shooter and not dead and (thorns := npc.template.props.get("thorns")):
+    if not shooter and not dead and (thorns := npc.template.props.get("thorns"))             and _roll(npc.template.props.get("thorns_chance", 1.0)):
         hurt, _ = _hurt_player(cur, player, thorns, "npc", npc.name)          # 荆棘的精英：近战砍它被扎回来
         facts += [f"{npc.name}身上的硬刺扎了回来，{player.name}受到 {thorns} 点伤害"] + hurt
     if weak:
@@ -3075,6 +3099,8 @@ def _weak_spot(cur: Cursor, player: Player, npc: Npc, melee: list[ItemInstance],
     if not weak:
         return None
     hit = False
+    if any(e.get("do") == "element" and e.get("kind") == weak for e in fired):
+        return WEAK_WORDS.get(weak, weak)       # 余烬石：这一击算作火
     if weak == "fire":
         ammo_fire = False
         if loaded:
@@ -4001,6 +4027,114 @@ def do_rename(cur: Cursor, player: Player, view: RoomView, a: Rename) -> list[st
     return [f"{player.name}给{item.name}起了名字：{full}"]
 
 
+# ============ 宝石：找莉娜镶、取（第一期没有打孔、合成）============
+
+def _regem(cur: Cursor, item: ItemInstance, gems: list[dict]) -> None:
+    """重算装备上宝石的效果（按品质、装备类型落成 effects 存 props.gem_fx，萤石的光存 props.gem_light）"""
+    cat = gem_category(item.template.type, item.template.slot)
+    cur.execute("select id, props from item_templates where id = any(%s)", ([g["id"] for g in gems],))
+    tpl = {r["id"]: r["props"] for r in cur.fetchall()}
+    fx = [e for g in gems for e in gem_effects(tpl[g["id"]], g["tier"], cat)]
+    light = max([int(e["value"]) for e in fx if e.get("do") == "light"] or [0])
+    cur.execute("update item_instances set props = (props - 'gem_light') || %s where id = %s",
+                (Jsonb({"gems": gems, "gem_fx": fx} | ({"gem_light": light} if light else {})), item.id))
+
+
+def _smith(cur: Cursor, view: RoomView, player: Player, ref: str, what: str) -> Npc:
+    npc = _room_npc(cur, view, player, ref)
+    if not npc.template.props.get("upgrades"):
+        raise ActionError(f"{npc.name}不会{what}，找铁匠莉娜")
+    return npc
+
+
+def do_socket(cur: Cursor, player: Player, view: RoomView, a: Socket) -> list[str]:
+    """镶宝石：装备上有空孔、宝石对得上这类装备（武器、护具、饰品），免费"""
+    npc = _smith(cur, view, player, a.target, "镶宝石")
+    item, gem = _inv_item(cur, view, player, a.item), _inv_item(cur, view, player, a.gem)
+    if gem.template.type != "gem":
+        raise ActionError(f"{gem.name}不是宝石")
+    cat = gem_category(item.template.type, item.template.slot)
+    holes, gems = item.props.get("sockets", 0), list(item.props.get("gems") or [])
+    if not holes:
+        raise ActionError(f"{item.name}上没有孔，镶不了（只有地牢里掉的装备才带孔）")
+    if len(gems) >= holes:
+        raise ActionError(f"{item.name}的 {holes} 个孔都镶满了，先取下来一颗（说「把{item.name}上的{gems[0]['name']}取下来」）")
+    if not gem_fits(gem.template.props.get("gem_slot", "any"), cat):
+        raise ActionError(f"{gem.name}只能镶在{GEM_SLOT_WORDS.get(gem.template.props.get('gem_slot'), '')}上，{item.name}镶不了")
+    gems.append({"id": gem.template.id, "tier": gem.props.get("tier", 1), "name": gem.name})
+    _consume(cur, gem)
+    _regem(cur, item, gems)
+    facts = [f"{npc.name}把{gem.name}按进{item.name}的孔里，用小锤敲了几下固定好（镶宝石不收钱）",
+             f"{item.name}：宝石孔 {len(gems)}/{holes}"] + [_effect_line(e) for e in gem_effects(
+                 gem.template.props, gem.props.get("tier", 1), cat)]
+    return facts + (_sync_gear_hp(cur, player.id) if item.equipped_slot else [])
+
+
+def do_unsocket(cur: Cursor, player: Player, view: RoomView, a: Unsocket) -> list[str]:
+    """取宝石：宝石还给玩家，按品质收钱；诅咒装备解咒前取不出来"""
+    npc = _smith(cur, view, player, a.target, "取宝石")
+    item = _inv_item(cur, view, player, a.item)
+    gems = list(item.props.get("gems") or [])
+    if not gems:
+        raise ActionError(f"{item.name}上没有镶宝石")
+    if _cursed(item):
+        raise ActionError(f"{item.name}被诅咒了，宝石跟它长在了一起，得先找诺艾尔解咒才取得下来")
+    want = (a.gem or "").strip()
+    pick = next((g for g in gems if want and (want == g["name"] or want in g["name"])), None) \
+        or (gems[0] if not want or len(gems) == 1 else None)
+    if pick is None:
+        raise ActionError(f"{item.name}上镶的是{'、'.join(g['name'] for g in gems)}，要取哪一颗？")
+    fee = dungeon.gem_rules()["unsocket_fee"][pick["tier"] - 1]
+    patron = _pay(cur, player, fee, npc)
+    gems.remove(pick)
+    _regem(cur, item, gems)
+    cur.execute("insert into item_instances (template_id, player_id, props) values (%s, %s, %s)",
+                (pick["id"], player.id, Jsonb(dungeon.gem_props(cur, pick["id"], pick["tier"]))))
+    facts = [f"{player.name}付了 {fee} 金币，{npc.name}用细錾子把{pick['name']}从{item.name}上撬了下来，完好无损"] + patron
+    return facts + (_sync_gear_hp(cur, player.id) if item.equipped_slot else [])
+
+
+def do_refine(cur: Cursor, player: Player, view: RoomView, a: Refine) -> list[str]:
+    """诺艾尔刷宝石品质：只升不降（loot.yaml gems.refine），宝石得在背包里、没镶上去；最深层数不够时封顶，封顶了不收钱"""
+    npc = _room_npc(cur, view, player, a.target)
+    if not npc.template.props.get("refine"):
+        raise ActionError(f"{npc.name}不懂宝石，找杂货铺的诺艾尔")
+    gem = _inv_item(cur, view, player, a.item)
+    if gem.template.type != "gem":
+        if gem.props.get("gems"):
+            raise ActionError(f"宝石镶在{gem.name}上刷不了，先找莉娜取下来（说「把{gem.name}上的{gem.props['gems'][0]['name']}取下来」）")
+        raise ActionError(f"{gem.name}不是宝石")
+    rules = dungeon.gem_rules()["refine"]
+    tier = gem.props.get("tier", 1)
+    if tier >= GEM_TOP:
+        raise ActionError(f"{gem.name}已经是完美的了，再唤醒也不会更好")
+    cur.execute("select deepest_floor from players where id = %s", (player.id,))
+    deepest = cur.fetchone()["deepest_floor"]
+    cap = refine_cap(bool(gem.template.props.get("numeric")), deepest, rules)
+    if tier >= cap:
+        need = rules["min_deepest_floor"]["shiny"] if cap < 3 else rules["min_deepest_floor"]["perfect_numeric"]
+        raise ActionError(f"{npc.name}翻了半天书，小声说书上写着……还差一点什么（最深走到第 {need} 层以后，才唤得醒更好的{GEM_TIER_WORDS[tier + 1]}品质）")
+    catalyst = None
+    if a.catalyst:
+        catalyst = min((i for i in view.inventory if i.template.id == gem.template.id and i.id != gem.id),
+                       key=lambda i: i.props.get("tier", 1), default=None)      # 垫子先用品质最低的
+        if catalyst is None:
+            raise ActionError(f"身上没有另一颗{gem.template.name}能当垫子")
+    cost = rules["cost"][tier - 1]
+    patron = _pay(cur, player, cost, npc)
+    if catalyst:
+        _consume(cur, catalyst)
+    new = refine_roll(tier, cap, rules, bool(catalyst))
+    facts = [f"{player.name}付了 {cost} 金币，{npc.name}翻开一本旧书，照着上面的法子对着{gem.name}念念有词"
+             + (f"，{catalyst.name}当了垫子，化成一小撮粉末" if catalyst else "")] + patron
+    if new == tier:
+        return facts + [f"{gem.name}闪了一下又暗了下去，品质没变（{npc.name}一个劲地小声道歉）"]
+    props = dungeon.gem_props(cur, gem.template.id, new)
+    cur.execute("update item_instances set props = props || %s where id = %s", (Jsonb(props), gem.id))
+    return facts + [f"{gem.name}亮了起来，变成了{props['name']}（{GEM_TIER_WORDS[new]}品质）"
+                    + ("，一下跳了两档！" if new - tier == 2 else "") + f"（{npc.name}忍不住小声欢呼了一下）"]
+
+
 NOTE_MAX = 100
 
 
@@ -4116,7 +4250,7 @@ HANDLERS: dict[str, Callable[..., list[str]]] = {
     "say": do_say, "revive": do_revive, "stunt": do_stunt, "struggle": do_struggle,
     "follow": do_follow, "unfollow": do_unfollow, "leave_party": do_leave_party, "kick": do_kick,
     "maneuver": do_maneuver, "dodge": do_dodge, "tame": do_tame, "uncurse": do_uncurse, "reload": do_reload, "refill": do_refill,
-    "transfer": do_transfer, "reroll": do_reroll, "rename": do_rename, "write": do_write, "hide": do_hide, "search": do_search, "reject": do_reject,
+    "transfer": do_transfer, "reroll": do_reroll, "rename": do_rename, "write": do_write, "socket": do_socket, "unsocket": do_unsocket, "refine": do_refine, "hide": do_hide, "search": do_search, "reject": do_reject,
     "upgrade": do_upgrade, "pay": do_pay, "sell": do_sell, "respawn": do_respawn, "stand": do_stand, "rest": do_rest, "camp": do_camp, "teleport": do_teleport, "challenge": do_challenge, "accept_duel": do_accept_duel, "decline_duel": do_decline_duel, "flee": do_flee,
 }
 
@@ -4671,7 +4805,7 @@ def can_gift(affinity: int) -> bool:
 
 
 # ============ 物品详情（界面上悬停显示）============
-TYPE_NAMES = {"weapon": "武器", "armor": "防具", "consumable": "吃喝", "key": "钥匙", "misc": "杂物"}
+TYPE_NAMES = {"weapon": "武器", "armor": "防具", "consumable": "吃喝", "key": "钥匙", "misc": "杂物", "gem": "宝石"}
 PART_NAMES = {"hand": "手", "head": "头", "chest": "胸", "neck": "项链", "feet": "脚", "ring": "戒指", "legs": "腿",
               "belt": "腰"}
 STATE_NAMES = {"poison": "中毒", "bleed": "流血", "blind": "看不清", "corrode": "腐蚀", "restrained": "被缠住",
@@ -4694,7 +4828,11 @@ def _effect_line(e: dict) -> str:
         "flee": "逃跑更容易" if v < 0 else "逃跑更难", "wade": "积水里行动不受影响", "darkvision": "暗处攻击不打折",
         "self_damage": f"自己掉 {v} 点血", "cheat_death": "本该倒下时留 1 点血",
         "aura": f"同房间的队友和自己{'攻击' if k == 'attack' else '防御'} +{v}",
+        "defense": f"防御 +{stat_text(v)}", "light": f"光亮 +{v}（跟别的随身光源只取最亮的）",
+        "element": f"这一下算作{ {'fire': '火'}.get(k, k) }（打在怕{ {'fire': '火'}.get(k, k) }的弱点上伤害 ×{WEAK_MULT:g}）",
     }.get(e.get("do"), e.get("do", ""))
+    if e.get("do") == "bonus" and not float(v).is_integer():
+        what += f"（小数部分按几率多打 1 点）"
     cond = e.get("if") or {}
     pre = [WHEN_NAMES.get(e.get("when"), "")]
     if vs := e.get("vs"):
@@ -4769,6 +4907,20 @@ def _skill_note(s: dict) -> str:
     return f"招数：{when}{what}"
 
 
+def _gem_lines(item: ItemInstance) -> list[str]:
+    """宝石的详情：能镶在哪、这个品质镶上去是什么效果"""
+    p, tier = item.template.props, item.props.get("tier", 1)
+    out = [f"{GEM_TIER_WORDS[tier]}品质，能镶在{GEM_SLOT_WORDS.get(p.get('gem_slot'), '')}上（找莉娜，免费；取出要收钱）"
+           + ("；没镶上去的可以找诺艾尔刷品质" if tier < GEM_TOP else "")]
+    cats = ["weapon", "armor", "trinket"] if p.get("gem_slot") == "any" else [p.get("gem_slot")]
+    for c in cats:
+        out += [(f"镶在{GEM_SLOT_WORDS[c]}上：" if p.get("adapts") else "") + _effect_line(e) for e in gem_effects(p, tier, c)]
+    if p.get("numeric"):
+        caps = dungeon.gem_rules()["body_caps"]
+        out.append(f"纯数值的宝石：全身合计最多防御 +{caps['defense']}、血量上限 +{caps['max_hp']}")
+    return out
+
+
 def item_detail(item: ItemInstance, curse_sense: bool = False) -> str:
     """给人看的物品详情：类型、数值、特殊效果、参考价、描述。诅咒平时看不出来，
     有诺艾尔的诅咒辨识笔记（回礼 curse_sense）才看得出；戴上了的自己知道"""
@@ -4821,7 +4973,14 @@ def item_detail(item: ItemInstance, curse_sense: bool = False) -> str:
     if gift := _prop(item, "gift"):
         lines.append(f"{GIFT_FOR.get(gift, '')}喜欢的小礼物（每天收一件）" if _prop(item, "gift_value")
                      else f"{GIFT_FOR.get(gift, '')}最想要的礼物")
-    lines += [_effect_line(e) for e in _prop(item, "effects") or []]
+    if t.type != "gem":                     # 宝石的 effects 是按品质的数组，下面按这颗的品质单独列
+        lines += [_effect_line(e) for e in _prop(item, "effects") or []]
+    if t.type == "gem":
+        lines += _gem_lines(item)
+    if (n := item.props.get("sockets")):
+        gems = item.props.get("gems") or []
+        lines.append(f"宝石孔 {len(gems)}/{n}" + ("：" + "、".join(g["name"] for g in gems) if gems else "（找莉娜镶宝石）"))
+        lines += ["  " + _effect_line(e) for e in item.props.get("gem_fx") or []]
     if price := base_price(item_stats(item)):
         lines.append(f"参考价 {price} 金币")
     lines.append(item.description)
