@@ -228,7 +228,7 @@ class AIAction(BaseModel):
     action: Literal["move", "look", "take", "drop", "use", "equip", "unequip", "attack", "talk", "give", "sell", "pay", "say",
                     "upgrade", "respawn", "stand", "rest", "camp", "teleport", "revive", "uncurse", "leave_party", "kick", "follow", "unfollow", "challenge", "accept_duel",
                     "decline_duel", "flee", "stunt", "struggle",
-                    "maneuver", "dodge", "tame", "reload", "refill", "transfer", "reroll", "rename", "write", "socket", "unsocket", "refine", "donate", "take_donated", "dismantle", "close_eyes", "hide", "search", "freeform", "reject"]
+                    "maneuver", "dodge", "tame", "reload", "refill", "transfer", "reroll", "rename", "write", "socket", "unsocket", "refine", "donate", "take_donated", "dismantle", "close_eyes", "pinch", "hide", "search", "freeform", "reject"]
     direction: Optional[str] = None
     item: Optional[str] = None
     target: Optional[str] = None
@@ -326,6 +326,7 @@ INTENT_SYSTEM = """你是文字 MUD 游戏的指令解析器。读玩家的输�
 - unsocket: item（装备 ref），gem（要取的宝石名字，只有一颗可不填），target（铁匠的 ref）。找铁匠把装备上的宝石取下来
 - dismantle: item（背包里装备的 ref），target（铁匠的 ref）。找铁匠把用不上的地牢装备拆成碎铁
 - close_eyes: 不填别的。闭上眼睛、背过身去：这一轮不怕晃眼的光和大招，自己也看不清
+- pinch: 不填别的。掐自己、咬舌头保持清醒：这一轮不会被催眠睡过去
 - donate: item（背包里武器或护具的 ref），target（武器桶的 ref）。把用不上的装备放进武器桶留给新人（强化清零，宝石退回）。
   "放进武器桶""塞进桶里""X 放进去"（在有武器桶的地方）都是 donate，不是 drop（drop 是扔在地上）
 - take_donated: name（桶里那件东西的名字），target（武器桶的 ref）。从武器桶里拿别人放的装备（不是桶本来就有的锈剑，那个用 take）

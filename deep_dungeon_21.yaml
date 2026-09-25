@@ -201,7 +201,7 @@ themes:
         - {when: every, value: 4, do: telegraph, label: 他轻轻叹了一口气，四周的一切开始变得模糊（下一次出手，所有还睁着眼的人都会跟着睡过去一回合；掐自己一下能保持清醒）,
            then: {do: combo, target: all, effects: [{kind: stun}], unless: pinch}}
         - {when: every, value: 3, do: combo, target: highest_threat, label: 一块记忆碎片飞过来扎进你的额头，你忽然想不起自己是谁,
-           effects: [{kind: blind}, {kind: silence}]}
+           effects: [{kind: blind}, {kind: silence, personal: true}]}
         - {when: every, value: 5, do: telegraph, label: 他缓缓睁开了一只眼睛（下一次出手，他会把打他最狠的人扔进一场噩梦）,
            then: {do: strike, mult: 2.5, target: highest_threat}}
 

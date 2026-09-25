@@ -29,7 +29,7 @@ from schema import (
     ActionResult, Attack, Drop, Equip, Feature, Follow, Freeform, Give, ItemInstance, LeaveParty, Kick, Look,
     Move, Npc, OtherPlayer, Player, PlayerAction, Reject, Revive, Room, RoomExit, RoomView, Say, Status, Struggle,
     Stunt, Take, Talk, Unfollow, Unequip, Use, dir_name, Dispenser, SLOT_CHOICES, SLOT_NAMES, Dodge, Hide, Maneuver, Search, Stealth, Tame,
-    Uncurse, Reload, Refill, Transfer, Reroll, Rename, Write, Socket, Unsocket, Refine, Donate, TakeDonated, Dismantle, CloseEyes,
+    Uncurse, Reload, Refill, Transfer, Reroll, Rename, Write, Socket, Unsocket, Refine, Donate, TakeDonated, Dismantle, CloseEyes, Pinch,
     AcceptDuel, Challenge, DeclineDuel, Duel, Flee, SKILL_NAMES, Upgrade, Respawn, Stand, Rest, Pay, Camp, Teleport, Sell,
     Effect,
 )
@@ -175,7 +175,8 @@ def forage_labels(cur: Cursor, room: Room) -> list[str]:
 SERVICE_NAMES = {"free_upgrade": "锻造纹（照着敲，能把手上的兵器再打磨一番）", "mirror_duel": "自己的倒影",
                  "treasure_pool": "一件宝物", "timed": "一袋古币（沙子流完之前拿了走人）",
                  "gem": "一颗宝石", "wish": "一个愿望（投钱许愿，要安静）", "cleanse": "忏悔（清掉身上的晦气）",
-                 "reveal_next_floor": "碑文（下一层的路）"}
+                 "reveal_next_floor": "碑文（下一层的路）", "buff": "一个祝福", "shortcut": "出去的路",
+                 "memory": "一段往事"}
 
 
 def load_dispensers(cur: Cursor, room: Room, player_id: UUID) -> list[Dispenser]:
@@ -1336,6 +1337,35 @@ WISHES = [("atk_pct", 15, "许愿池的祝福（攻击 +15%）"), ("dodge", 10, 
           ("regen", 3, "许愿池的祝福（每回合回 3% 血）")]
 
 
+# 回忆之门里看到的往事（草稿，按 NPC 设定还会再改）
+MEMORY_FRAGMENTS = {
+    "innkeeper": ("挂着锡杯的门", "很多年前的野猪酒馆，一个扎着小辫的女孩垫着木箱才够得着酒桶。一个满脸伤疤的老冒险者把空锡杯推到她面前，"
+                  "说以后这杯归她倒。女孩踮着脚倒满，洒了一半，老头哈哈大笑，一口喝干。那只锡杯后来一直挂在吧台后面"),
+    "smith": ("挂着锻锤的门", "一间炉火很旺的铁匠铺，一个小女孩蹲在炉边，用捡来的碎铁敲出一把歪歪扭扭的小刀。一双大手把刀拿过去看了很久，"
+              "没说话，第二天她的小板凳旁边多了一把刚好趁手的小锤"),
+    "shopkeeper": ("挂着旧书的门", "一个下雨的傍晚，一个瘦小的女孩缩在旧书店最里面的书架之间，读到天都黑了也没发觉。店主没有赶她走，"
+                   "只是悄悄在她身边放了一盏灯，又把门上的牌子翻成了“打烊”"),
+}
+
+
+def _memory_door(cur: Cursor, player: Player, d: Dispenser) -> list[str]:
+    """回忆之门：推开一扇门，看见那个人很久以前的一段往事；第一次看到某个人的，好感 +3"""
+    seen = set(player.flags.get("_memories") or [])
+    keys = [k for k in d.extra.get("npcs", list(MEMORY_FRAGMENTS)) if k in MEMORY_FRAGMENTS]
+    key = random.choice([k for k in keys if k not in seen] or keys)
+    door, text = MEMORY_FRAGMENTS[key]
+    cur.execute("select id, name from npc_templates where id = %s", (key,))
+    t = cur.fetchone()
+    facts = [f"{player.name}推开了{door}", text]
+    if key not in seen and t:
+        cur.execute("""insert into player_npc_relations (player_id, npc_template, affinity) values (%s, %s, %s)
+                       on conflict (player_id, npc_template) do update set affinity = least(100, player_npc_relations.affinity + %s)""",
+                    (player.id, key, 3, 3))
+        cur.execute("update players set flags = jsonb_set(flags, '{_memories}', %s) where id = %s", (Jsonb(sorted(seen | {key})), player.id))
+        facts.append(f"（{player.name}好像更懂{t['name']}了一点：好感 +3）")
+    return facts
+
+
 def _wish(cur: Cursor, player: Player, d: Dispenser) -> list[str]:
     """许愿池：付 cost_gold × 层数的钱，这一层随机一个小祝福；整层声响已经到 fail_if_noise_at_least 就不灵（钱照付）"""
     depth = dungeon.parse_room(player.room_id)[1]
@@ -1449,6 +1479,25 @@ def _take_from(cur: Cursor, player: Player, view: RoomView, d: Dispenser) -> lis
         return facts + _mirror_duel(cur, player, d)
     if d.service == "wish":
         return facts + _wish(cur, player, d)
+    if d.service == "buff":
+        b = d.extra.get("buff") or {}
+        for stat in ("atk_pct", "hit_pct", "dodge"):
+            if b.get(stat):
+                pct = round(b[stat] * 100)
+                _give_bless(cur, player, stat, pct, {"atk_pct": f"清醒梦（攻击 +{pct}%）", "hit_pct": f"读懂的星图（命中 +{pct}%）",
+                                                      "dodge": f"祝福（对方命中 -{pct}%）"}[stat])
+        if b.get("reveal") == "star_cycle":
+            cur.execute("update players set flags = flags || '{\"_star_chart\": true}' where id = %s", (player.id,))
+        return facts + [f"{player.name}{d.extra.get('done') or '心里一下子亮堂了'}：{'、'.join(e.label for e in player.effects if e.kind == 'bless')}，出了这一层就散"]
+    if d.service == "shortcut":
+        f = dungeon.floor_info(cur, player.room_id)
+        cur.execute("select stairs_room from dungeon_floors where run_id = %s and depth = %s", dungeon.parse_room(player.room_id))
+        stairs = cur.fetchone()["stairs_room"]
+        cur.execute("update players set room_id = %s, stealth = null where id = %s", (stairs, player.id))
+        dungeon.mark_seen(cur, stairs)
+        return facts + [f"{player.name}找出了楼梯的规律，最后一遍走到底，推开门就到了第 {f['depth']} 层的楼梯间"]
+    if d.service == "memory":
+        return facts + _memory_door(cur, player, d)
     if d.service == "cleanse":
         return facts + _cleanse(cur, player)
     if d.service == "reveal_next_floor":
@@ -2435,6 +2484,9 @@ def _npc_strike(cur: Cursor, player: Player, npc: Npc, verb: str, chance: float 
         atk += int(_tallies(cur, npc).get("phase_atk", 0))     # 转阶段加的攻击
     atk += int(_stance(cur, npc)[1].get("atk", 0))             # 矮人王的铸像：冷却时手软、熔化时手重
     atk += int(_tallies(cur, npc).get("rung", 0))               # 敲钟人摇过铃
+    if mirror := props.get("mirror_attack"):
+        mine, _ = gear_totals(player.attack, player.defense, _worn(cur, player))
+        atk = round(mine * mirror)                                  # 镜中人：学着你的样子打回来
     marked = props.get("skills") and _tallies(cur, npc).get("mark") == str(player.id)
     if marked:
         atk += int(_tallies(cur, npc).get("mark_bonus", 2))     # 典狱长判了罪的人
@@ -2574,6 +2626,13 @@ def _inflict(cur: Cursor, player: Player, kind: str, label: str, depth: int, sou
              heal_mult: Optional[float] = None) -> list[str]:
     """给玩家上一个效果：怪打中时附带的（_on_hit），决斗里对手装备触发的（_pvp_hit_extras）。
     base：挂上它的那一下打出的伤害（中毒、流血按它的比例跳，rules.dot_value）"""
+    if kind == "dispel":
+        good = [e for e in player.effects if e.kind in ("whet", "cheer", "bless")]
+        if not good:
+            return []
+        player.effects = [e for e in player.effects if e not in good]
+        _save_effects(cur, player)
+        return [f"{_on_you(player.name, label or '身上的好兆头被吸走了')}（{'、'.join(e.label or EFFECT_NAMES[e.kind] for e in good)}没了）"]
     wrapped = kind == "wrapped"
     if wrapped:
         kind, label = "restrained", label or "被裹尸布缠住了，东西都拿不起来"
@@ -2697,7 +2756,8 @@ def _room_env(cur: Cursor, room_id: str) -> dict:
 
 def _base_light(env: dict) -> int:
     level = env.get("light", 100) if env else 100
-    return LIGHT_OLD.get(level, 40) if isinstance(level, str) else int(level)
+    level = LIGHT_OLD.get(level, 40) if isinstance(level, str) else int(level)
+    return max(0, min(100, level + int(env.get("shift", 0)))) if env else level       # 梦境的浮动、星光的明暗
 
 
 def _light(cur: Cursor, room_id: str, env: Optional[dict] = None, player: Optional[Player] = None) -> int:
@@ -2965,6 +3025,58 @@ def do_close_eyes(cur: Cursor, player: Player, view: RoomView, a: CloseEyes) -> 
     return [f"{player.name}闭上眼睛背过身去：这一轮不怕晃眼的光，可自己也什么都看不见"]
 
 
+PINCHED = "_pinched"                    # players.flags：这一轮掐了自己（敌人回合结束清掉）
+UNLESS_FLAGS = {"eyes_closed": EYES_CLOSED, "pinch": PINCHED}     # 招式的 unless：做了这个动作的人躲得过
+UNLESS_WORDS = {"eyes_closed": "闭着眼，没被晃到", "pinch": "掐着自己保持清醒，没睡过去"}
+
+
+def do_pinch(cur: Cursor, player: Player, view: RoomView, a: Pinch) -> list[str]:
+    cur.execute("update players set flags = flags || jsonb_build_object(%s::text, true) where id = %s", (PINCHED, player.id))
+    player.flags[PINCHED] = True
+    return [f"{player.name}狠狠掐了自己一把，疼得一激灵，这一轮怎么也睡不过去"]
+
+
+def _turn_over(cur: Cursor, player_id: UUID, room_id: str) -> list[str]:
+    """一个敌人回合结束：闭眼、掐自己的清掉；梦境回廊的光亮浮动、距离打乱"""
+    cur.execute("update players set flags = flags - %s - %s where id = %s", (EYES_CLOSED, PINCHED, player_id))
+    return []
+
+
+def _room_turn(cur: Cursor, room_id: str) -> list[str]:
+    """这个房间的敌人回合过了一轮：光亮浮动（light_jitter）、距离打乱（dislocate）"""
+    if not dungeon.is_dungeon(room_id):
+        return []
+    theme = dungeon.data()["themes"][dungeon.floor_info(cur, room_id)["theme"]]
+    env = _room_env(cur, room_id)
+    facts, upd = [], {}
+    if j := theme.get("light_jitter"):
+        upd["shift"] = random.randint(-j, j)
+    if dis := theme.get("dislocate"):
+        n = int(env.get("turns", 0)) + 1
+        upd["turns"] = n
+        if n % dis.get("every", 3) == 0 and _enemies(cur, room_id):
+            moved = []
+            for p in load_players_in(cur, room_id):
+                if gear_has(cur, p, "dislocate_immune"):
+                    continue
+                st = _stealth(p)
+                for npc in _enemies(cur, room_id):
+                    _set_distance(st, npc, random.randint(0, 2))
+                _save_stealth(cur, p, st)
+                moved.append(p.name)
+            if moved:
+                facts.append("四周像梦一样晃了一下，再睁眼时每个人和怪的位置都变了（距离全乱了）")
+    if upd:
+        cur.execute("update rooms set props = jsonb_set(props, '{env}', coalesce(props->'env', '{}'::jsonb) || %s) where id = %s",
+                    (Jsonb(upd), room_id))
+    return facts
+
+
+def load_players_in(cur: Cursor, room_id: str) -> list[Player]:
+    cur.execute("select id from players where room_id = %s and hp > 0", (room_id,))
+    return [load_player(cur, r["id"]) for r in cur.fetchall()]
+
+
 def _glare(cur: Cursor, player: Player, room_id: str) -> list[str]:
     """炫光（水晶洞窟 env.glare）：光亮到 at 以上，每个敌人回合 chance 几率被晃得看不清一回合；闭着眼的不会"""
     g = _room_env(cur, room_id).get("glare")
@@ -3123,7 +3235,7 @@ def enemy_turn(conn: Connection, player_id: UUID, actions: list[PlayerAction],
                 if any(f.startswith(f"{npc.name}摆脱了") for r in results for f in r.facts):
                     continue
                 skill, acted = _boss_turn(cur, npc, [player], {player.id} if dodge else set())
-                facts += skill
+                facts += _memory(cur, npc) + skill
                 if acted == "skip":
                     continue
                 props = npc.template.props
@@ -3140,7 +3252,7 @@ def enemy_turn(conn: Connection, player_id: UUID, actions: list[PlayerAction],
         _save_stealth(cur, player, st)
         _guard_tick(cur, player.id)
         facts += _glare(cur, player, player.room_id) + _sand_sink(cur, player, done)
-        cur.execute("update players set flags = flags - %s where id = %s", (EYES_CLOSED, player.id))
+        facts += _turn_over(cur, player.id, player.room_id) + _room_turn(cur, player.room_id)
         return stood + facts + _smoke_fades(cur, player.room_id), bool(facts)
 
 
@@ -3377,7 +3489,7 @@ def round_enemies(conn: Connection, room_id: str, done: dict[UUID, list[tuple[Pl
             # 头目：该放技能就放（放技能就是这一次出手；判罪标完照样打）
             skill, acted = _boss_turn(cur, npc, [c["p"] for c in cands if c["p"].hp > 0 and "close" not in c],
                                       {c["p"].id for c in cands if c["dodge"] > 0})
-            facts += skill
+            facts += _memory(cur, npc) + skill
             if acted == "skip":
                 continue
             # 一轮出手几次：一般一次；组队时房间怪满了、折成血的那些多打几次（dungeon._spawn_group）；
@@ -3400,8 +3512,8 @@ def round_enemies(conn: Connection, room_id: str, done: dict[UUID, list[tuple[Pl
         for p in players:
             _guard_tick(cur, p.id)
             facts += _glare(cur, p, room_id) + _sand_sink(cur, load_player(cur, p.id), done.get(p.id, []))
-            cur.execute("update players set flags = flags - %s where id = %s", (EYES_CLOSED, p.id))
-        return facts + _smoke_fades(cur, room_id)
+            facts += _turn_over(cur, p.id, room_id)
+        return facts + _room_turn(cur, room_id) + _smoke_fades(cur, room_id)
 
 
 # 敌人出一次手（enemy_turn、round_enemies 共用）：
@@ -3421,6 +3533,29 @@ def _tallies(cur: Cursor, npc: Npc) -> dict:
 
 def _tally_merge(cur: Cursor, npc: Npc, values: dict) -> None:
     cur.execute("update npcs set tally = tally || %s where id = %s", (Jsonb(values), npc.id))
+
+
+def _memory(cur: Cursor, npc: Npc) -> list[str]:
+    """永不醒来的人（props.memories）：血掉到 at 以下，房间整个换成另一段记忆（名字、光亮、掩体、环境物件、灼热）"""
+    mems = npc.template.props.get("memories") or []
+    done = int(_tally(cur, npc, "memory"))
+    ratio = npc.hp / npc.template.max_hp if npc.template.max_hp else 1
+    if done >= len(mems) or ratio >= mems[done]["at"]:
+        return []
+    m = mems[done]
+    r = m.get("room") or {}
+    _tally_merge(cur, npc, {"memory": done + 1})
+    env = {"light": 40 + dungeon.LIGHT_OFFSET.get(r.get("light", "dim"), 0), "cover": bool(r.get("cover")), "shift": 0,
+           **({"heat": r["heat"]} if r.get("heat") else {})}
+    cur.execute("""update rooms set name = %s, props = jsonb_set(props, '{env}', coalesce(props->'env', '{}'::jsonb) || %s)
+                   where id = %s""", (f"第 {dungeon.parse_room(npc.room_id)[1]} 层·{r.get('name', '一段记忆')}", Jsonb(env), npc.room_id))
+    cur.execute("delete from room_features where room_id = %s", (npc.room_id,))
+    for i, ft in enumerate(r.get("features") or []):
+        cur.execute("""insert into room_features (room_id, key, name, max_tier, max_uses, uses_left, respawn_seconds)
+                       values (%s, %s, %s, %s, 1, 1, %s)""", (npc.room_id, f"m{done}{i}", ft["name"], ft["max_tier"], dungeon.FEATURE_RESPAWN))
+    return [_by(npc, m.get("label", "四周的一切都变了")),
+            f"（这里变成了{r.get('name', '另一段记忆')}：光亮 {env['light']}" + ("，有掩体" if env["cover"] else "")
+            + ("，炉火烫人（每个动作掉血）" if r.get("heat") else "") + "）"]
 
 
 def _boss_turn(cur: Cursor, npc: Npc, targets: list[Player], dodging: Optional[set] = None) -> tuple[list[str], bool]:
@@ -3539,8 +3674,8 @@ def _skill_effect(cur: Cursor, npc: Npc, s: dict, targets: list[Player], depth: 
     if do == "combo":
         # 组合技：一招同时挂几个效果，一次最多一个硬控（硬控照样受"挣脱后免疫一轮"保护，持续伤害按比例）
         for p in _boss_targets(cur, npc, s.get("target", "all"), targets):
-            if s.get("unless") == "eyes_closed" and load_player(cur, p.id).flags.get(EYES_CLOSED):
-                facts.append(f"{p.name}闭着眼，没被晃到")
+            if (flag := UNLESS_FLAGS.get(s.get("unless"))) and load_player(cur, p.id).flags.get(flag):
+                facts.append(f"{p.name}{UNLESS_WORDS[s['unless']]}")
                 continue
             hard = False
             for e in s.get("effects", []):
@@ -3549,7 +3684,7 @@ def _skill_effect(cur: Cursor, npc: Npc, s: dict, targets: list[Player], depth: 
                     if hard:
                         continue
                     hard = True
-                if k == "silence" and npc.template.props.get("silence_field"):
+                if k == "silence" and (npc.template.props.get("silence_field") or e.get("personal")):
                     # 无舌的大祭司：禁声打在人身上（说不了话、念不了书卷）
                     facts += _inflict(cur, p, "silence",
                                       e.get("label", "喉咙一紧，发不出声音"), depth, npc.name, turns=e.get("turns"))
@@ -3662,6 +3797,15 @@ def _enemy_act(cur: Cursor, player: Player, st: Stealth, npc: Npc, dodge: float,
                hit: float = 1.0, dmg: float = 1.0) -> list[str]:
     """hit：命中倍数（躲起来那一轮贴身的怪摸黑乱挥是 HIDDEN_HIT）；dmg：伤害倍数（深层头目第二下）"""
     props = npc.template.props
+    if (share := props.get("revive_once")) and not _tally(cur, npc, "revived"):
+        cur.execute("""select n.id, t.name, t.max_hp from npcs n join npc_templates t on t.id = n.template_id
+                       where n.room_id = %s and not n.alive and t.hostile and n.died_at > now() - interval '10 minutes'
+                       and not coalesce((t.props->>'minion')::boolean, false) order by n.died_at desc limit 1""", (npc.room_id,))
+        if dead := cur.fetchone():
+            hp = max(1, round(dead["max_hp"] * share))
+            cur.execute("update npcs set alive = true, hp = %s, died_at = null, status = null where id = %s", (hp, dead["id"]))
+            _tally_merge(cur, npc, {"revived": 1})
+            return [f"{npc.name}甩出一根发光的丝线，把倒下的{dead['name']}一针一针缝了起来：它又站了起来（HP {hp}）"]
     if (bell := props.get("bell")) and _count(cur, npc, "bell_acts") % bell.get("every", 3) == 0:
         # 敲钟人：摇一次铃，这一场全场的怪攻击都加一截，声响跟着涨
         for n in _enemies(cur, npc.room_id):
@@ -5317,7 +5461,7 @@ HANDLERS: dict[str, Callable[..., list[str]]] = {
     "say": do_say, "revive": do_revive, "stunt": do_stunt, "struggle": do_struggle,
     "follow": do_follow, "unfollow": do_unfollow, "leave_party": do_leave_party, "kick": do_kick,
     "maneuver": do_maneuver, "dodge": do_dodge, "tame": do_tame, "uncurse": do_uncurse, "reload": do_reload, "refill": do_refill,
-    "transfer": do_transfer, "reroll": do_reroll, "rename": do_rename, "write": do_write, "socket": do_socket, "unsocket": do_unsocket, "refine": do_refine, "donate": do_donate, "take_donated": do_take_donated, "dismantle": do_dismantle, "close_eyes": do_close_eyes, "hide": do_hide, "search": do_search, "reject": do_reject,
+    "transfer": do_transfer, "reroll": do_reroll, "rename": do_rename, "write": do_write, "socket": do_socket, "unsocket": do_unsocket, "refine": do_refine, "donate": do_donate, "take_donated": do_take_donated, "dismantle": do_dismantle, "close_eyes": do_close_eyes, "pinch": do_pinch, "hide": do_hide, "search": do_search, "reject": do_reject,
     "upgrade": do_upgrade, "pay": do_pay, "sell": do_sell, "respawn": do_respawn, "stand": do_stand, "rest": do_rest, "camp": do_camp, "teleport": do_teleport, "challenge": do_challenge, "accept_duel": do_accept_duel, "decline_duel": do_decline_duel, "flee": do_flee,
 }
 

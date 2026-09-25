@@ -340,6 +340,11 @@ class Dodge(BaseModel):
     description: str = ""
 
 
+class Pinch(BaseModel):
+    """掐自己一下保持清醒：这一轮不会被催眠（梦境回廊的头目），代价是这一下什么也没干"""
+    action: Literal["pinch"]
+
+
 class CloseEyes(BaseModel):
     """闭上眼睛、背过身去：这一轮不怕炫光、晃眼的大招（石化这类），代价是这一轮自己也看不清"""
     action: Literal["close_eyes"]
@@ -382,7 +387,7 @@ class Reject(BaseModel):
 
 PlayerAction = Annotated[
     Union[Move, Look, Take, Drop, Use, Equip, Unequip, Attack, Talk, Give, Sell, Pay, Upgrade, Say, Revive, Respawn, Stand, Rest, Camp, Teleport, LeaveParty, Kick,
-          Follow, Unfollow, Challenge, AcceptDuel, DeclineDuel, Flee, Stunt, Struggle, Maneuver, Dodge, Tame, Uncurse, Reload, Refill, Transfer, Reroll, Rename, Write, Socket, Unsocket, Refine, Donate, TakeDonated, Dismantle, CloseEyes, Hide, Search,
+          Follow, Unfollow, Challenge, AcceptDuel, DeclineDuel, Flee, Stunt, Struggle, Maneuver, Dodge, Tame, Uncurse, Reload, Refill, Transfer, Reroll, Rename, Write, Socket, Unsocket, Refine, Donate, TakeDonated, Dismantle, CloseEyes, Pinch, Hide, Search,
           Freeform, Reject],
     Field(discriminator="action"),
 ]

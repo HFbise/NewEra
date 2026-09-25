@@ -421,6 +421,7 @@ class Mon:
     stance: str = ""                    # 冷却 / 熔化（矮人王的铸像）
     stance_at: int = 0
     rung: int = 0                       # 敲钟人摇铃加的攻击
+    memory: int = 0                     # 永不醒来的人换过几段记忆
     bell_acts: int = 0
     shield: int = 0                     # 共鸣者套的光膜：挡下几次
     shield_acts: int = 0
@@ -446,6 +447,7 @@ class Hero:
     guard: Optional[str] = None         # 刚挣脱、爬起来的那种控制：这个敌人回合里不再中
     still: int = 0                      # 流沙里站着没挪几轮了
     stepped: bool = False
+    pinch: bool = False                 # 这一轮掐了自己（永不醒来的人的催眠）
     eyes: bool = False                  # 这一轮闭着眼（晶母的晃眼大招冲着所有睁眼的人）
     dodging: bool = False               # 这一轮闪避了（被蓄力重击盯上时，普通档一半几率会这么做，上限档总会）
     smart: float = 0.5
@@ -505,7 +507,8 @@ def spawn(depth: int, kind: str, rank: str, theme_key: str, size: int, groups: i
     hp, atk, df = R.monster_stats(depth, m, rank)
     props = {k: m[k] for k in ("animal", "light_averse", "undead", "keen", "ranged", "healer", "on_hit", "guard_allies",
                                "immune", "weak", "stances", "resist_element", "reflect_ranged", "shield_allies", "nodes",
-                               "dormant", "bell", "silence_field", "swarm") if m.get(k)}
+                               "dormant", "bell", "silence_field", "swarm", "mirror_attack", "revive_once", "memories")
+             if m.get(k)}
     if m.get("hearing"):
         props["keen"] = True                # 聆听者：偷袭要动身子，它听得见
     if m.get("pack"):
@@ -588,7 +591,7 @@ class Fight:
             h.struck, h.reloaded_free, h.backs = False, False, 0
 
     def light(self) -> int:
-        return min(100, self.base_light + max([h.torch_light for h in self.heroes if not h.down] or [0]))
+        return max(0, min(100, self.base_light + self.shift + max([h.torch_light for h in self.heroes if not h.down] or [0])))
 
     def sneak_open(self) -> None:
         """潜行打法（engine 第一批改完的规则）：房间里没有警觉的怪才能偷袭，每人开场一下（隐匿对暗杀难度）；
@@ -648,6 +651,11 @@ class Fight:
             return True
         return False
 
+    shift: int = 0                      # 梦境的光亮浮动、星光明暗（engine env.shift）
+    jitter: int = 0
+    dislocate: int = 0
+    turns: int = 0
+    revived: bool = False
     sand: Optional[dict] = None         # 流沙（沙漠迷城 ground: sand 的房间、法老转阶段）
     glare: Optional[dict] = None        # 炫光（水晶洞窟）：光亮到 at 以上每个敌人回合 chance 几率看不清
     heat: float = 0.0                   # 灼热（地底熔炉）：每个动作掉血量上限的这个比例
@@ -692,9 +700,9 @@ class Fight:
                     return True
         return False
 
-    def flash_on(self) -> bool:
-        """有头目预告了闭眼能躲的招"""
-        return any(m.pending is not None and (m.skills[m.pending["i"]].get("then") or {}).get("unless") == "eyes_closed"
+    def flash_on(self, unless: str = "eyes_closed") -> bool:
+        """有头目预告了闭眼（掐自己）能躲的招"""
+        return any(m.pending is not None and (m.skills[m.pending["i"]].get("then") or {}).get("unless") == unless
                    for m in self.alive())
 
     def boss_targets(self, m: Mon, mode: str) -> list:
@@ -740,6 +748,9 @@ class Fight:
                     st["attempts"] += 1
                 continue
             if h.hp < h.max_hp * DRINK_BELOW and self.drink(h):
+                continue
+            if not h.pinch and self.flash_on("pinch") and random.random() < h.smart:
+                h.pinch = True                   # 掐自己一把，不睡过去
                 continue
             if not h.eyes and self.flash_on() and random.random() < h.smart:
                 h.eyes = True                    # 看见晶簇一齐亮起：闭眼背过身，这一轮自己也看不清
@@ -863,6 +874,12 @@ class Fight:
             return False
         acts = m.acts
         m.acts += 1
+        mems = m.props.get("memories") or []
+        if m.memory < len(mems) and m.hp / m.max_hp < mems[m.memory]["at"]:
+            r = mems[m.memory].get("room") or {}
+            m.memory += 1
+            self.base_light = 40 + dungeon.LIGHT_OFFSET.get(r.get("light", "dim"), 0)
+            self.cover, self.heat, self.shift, self.jitter = bool(r.get("cover")), r.get("heat", 0), 0, 0
         if m.silence:
             m.silence -= 1
         if m.regen and m.hp < m.max_hp:
@@ -924,7 +941,7 @@ class Fight:
                 m.mark = None
         elif do == "combo":
             for h in self.boss_targets(m, sk.get("target", "all")):
-                if sk.get("unless") == "eyes_closed" and h.eyes:
+                if (sk.get("unless") == "eyes_closed" and h.eyes) or (sk.get("unless") == "pinch" and h.pinch):
                     continue
                 hard = False
                 for e in sk.get("effects", []):
@@ -959,6 +976,14 @@ class Fight:
             if then := sk.get("then"):
                 self.skill_effect(m, then, targets)
 
+    def room_turn(self) -> None:
+        self.turns += 1
+        if self.jitter:
+            self.shift = random.randint(-self.jitter, self.jitter)
+        if self.dislocate and self.turns % self.dislocate == 0:
+            for key in self.dist:
+                self.dist[key] = random.randint(0, 2)
+
     def enemies_turn(self) -> None:
         for m in self.alive():
             if m.props.get("inert"):
@@ -989,10 +1014,17 @@ class Fight:
             if self.glare and not h.down and not h.eyes and self.light() >= self.glare.get("at", 70) \
                     and random.random() < self.glare.get("chance", 0.25) and "blind" not in h.effects:
                 h.effects["blind"] = {"value": 1, "left": 1}       # 晶面反光晃眼（engine._glare）
-            h.eyes = False
+            h.eyes = h.pinch = False
+        self.room_turn()
 
     def enemy_act(self, m: Mon, h: Hero, mult: float = 1.0) -> None:
         props = m.props
+        if (share := props.get("revive_once")) and not self.revived:
+            dead = [x for x in self.mons if x.hp <= 0 and not x.minion and x is not m]
+            if dead:
+                self.revived = True
+                dead[-1].hp = max(1, round(dead[-1].max_hp * share))
+                return
         if bell := props.get("bell"):
             m.bell_acts += 1
             if m.bell_acts % bell.get("every", 3) == 0:
@@ -1044,6 +1076,8 @@ class Fight:
         if m.rank == "boss" and R.enraged(m.depth, ratio):
             atk += R.ENRAGE_ATK
         atk += m.phase_atk + stance_of(m).get("atk", 0) + m.rung
+        if mirror := m.props.get("mirror_attack"):
+            atk = round(power(h, None) * mirror)
         marked = m.mark is h
         if marked:
             atk += m.mark_bonus
@@ -1062,6 +1096,9 @@ class Fight:
         """怪打中附带的、头目全场放的效果（engine._inflict）：中毒流血按那一下的伤害（rules.dot_value），
         重复中招只延长一回合；刚挣脱、爬起来的这个敌人回合不再被同一种控制打中"""
         if h.down:
+            return
+        if kind == "dispel":
+            h.cheer = False                      # 梦食貘把私酿的劲头吸走了
             return
         if kind == "wrapped":
             kind = "restrained"                  # 裹尸布：缠住的一种（药也喝不了，本来缠住就用不了东西）
@@ -1258,6 +1295,8 @@ def run_trip(build: str, quality: str, trip: int, kit: Kit, size: int, stats: di
             fight = Fight([h for h in heroes if not h.down], mons, light, cover, depth)
             fight.heat = THEMES[theme_key].get("heat", {}).get("pct", 0)
             fight.glare = THEMES[theme_key].get("glare")
+            fight.jitter = THEMES[theme_key].get("light_jitter", 0)
+            fight.dislocate = (THEMES[theme_key].get("dislocate") or {}).get("every", 0)
             fight.sand = sand_of(THEMES[theme_key]) if kind != "stairs" else None
             fight.sneak_open()
             hp_before = {id(h): h.taken for h in fight.heroes}
@@ -1322,6 +1361,8 @@ def fight_test(build: str, quality: str, trip: int, depth: int, groups: list[tup
         f = Fight(heroes, mons, room_light(THEMES[theme]) if light is None else light, False, depth)
         f.heat = THEMES[theme].get("heat", {}).get("pct", 0)
         f.glare = THEMES[theme].get("glare")
+        f.jitter = THEMES[theme].get("light_jitter", 0)
+        f.dislocate = (THEMES[theme].get("dislocate") or {}).get("every", 0)
         f.sand = sand_of(THEMES[theme]) if not boss else None
         f.sneak_open()
         before = sum(h.taken for h in heroes)
