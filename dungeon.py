@@ -58,6 +58,7 @@ DEEP_READY = {"forge", "crystal", "silent", "desert", "dream", "fog", "astral"}
 
 
 GATE_EVERY = 25                         # 关卡头目层：第 25、50、75……层（dungeon.yaml gate_bosses）
+GATE_PARTY_HP = 0.8                     # 关卡头目组队：每多一人血 +0.8（跟普通头目一样）、一轮多一动；方案给的 +1.0 加上多一动，两人队团灭 55%，太重
 
 
 def gate_depth(depth: int) -> bool:
@@ -559,8 +560,12 @@ def _spawn_group(cur: Cursor, room: str, depth: int, kind: str, rank: str, theme
 
 def _spawn_boss(cur: Cursor, room: str, depth: int, kind: str, rank: str, theme: str, size: int) -> None:
     """头目、楼梯间守卫：只有一只，组队时多些血、一轮多动几次（不召小怪：组队时场面已经够乱）"""
-    npc_id = _spawn(cur, room, depth, kind, rank, theme, hp_mult=1 + BOSS_PARTY_HP * (size - 1), attacks=size, stair=True,
-                    affix=random.choice(list(ELITE_AFFIXES)) if rank == "elite" else None)
+    gate = rank == "boss" and gate_boss(kind)
+    npc_id = _spawn(cur, room, depth, kind, rank, theme, hp_mult=1 + (GATE_PARTY_HP if gate else BOSS_PARTY_HP) * (size - 1),
+                    attacks=size, stair=True, affix=random.choice(list(ELITE_AFFIXES)) if rank == "elite" else None)
+    if gate and size > 1:
+        # 关卡头目组队：每多一个人再多一动（普通头目只是一人一动）
+        cur.execute("update npcs set tally = tally || jsonb_build_object('extra_acts', %s::int) where id = %s", (size - 1, npc_id))
     if rank == "boss" and data()["themes"][theme]["boss"].get("nodes"):
         spawn_nodes(cur, room, npc_id)
     # 深层头目一轮两动（第二下 ×BOSS_EXTRA_MULT）：组队时本来就一人一动，再各多一下

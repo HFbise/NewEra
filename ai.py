@@ -927,6 +927,34 @@ def summarize_memory(db, player_id: UUID, npc_name: str, player_name: str, old: 
 
 # ============ 看店 NPC 扶起倒下的人时说的话 ============
 
+class Lore(BaseModel):
+    text: str                            # 这一段往事，NPC 讲出来的口吻
+
+
+LORE_HINTS = {
+    "upon_mountain": ("诺艾尔", "“在其山岳之上者”的来历",
+                      "沙漠迷城壁画上画的：胡狼头的神站在山顶上，俯瞰亡者之城，用黄金天平称量死者的心，天平一端是一根羽毛。"
+                      "它的称号是过秤者，守在地牢第 25 层的楼梯口。无面法老为了永生把自己的脸献给了它。诺艾尔是从书里、拓片上拼出这些的。"),
+    "maggie_past": ("麦琪", "她自己年轻时的事",
+                    "麦琪年轻时出过海。迷雾葬海里漂来的刻名字的船牌，她认得那条船。她说话慵懒、爱打比方、边说边喝酒，"
+                    "讲到这些会沉默很久，不会一口气全说完。"),
+}
+
+LORE_SYSTEM = """你在给一个文字 MUD 写世界观里的一小段往事，由一个 NPC 讲出来。
+要求：第 n 段接着前面几段往下讲，不重复、不跟前面矛盾，也不把故事一次讲完，留一点没说的；
+80 到 160 个字，用这个 NPC 的口吻，可以带一两个小动作；只写往事本身，不写玩家的反应，不编新的游戏机制、数值或物品。"""
+
+
+def lore_text(db, player_id: UUID, key: str, n: int, before: list[str]) -> Optional[str]:
+    """第 n 段往事（第一次讲的时候才调）：失败返回 None"""
+    npc, topic, hint = LORE_HINTS.get(key, ("NPC", key, ""))
+    user = (f"<npc>{npc}</npc>\n<topic>{topic}</topic>\n<background>{hint}</background>\n"
+            + "".join(f"<part n=\"{i + 1}\">{t}</part>\n" for i, t in enumerate(before))
+            + f"\n现在写第 {n} 段。")
+    out, _ = _call(db, player_id, "lore", LORE_SYSTEM, user, Lore, 512)
+    return out.text.strip()[:300] if out and out.text.strip() else None
+
+
 class Quip(BaseModel):
     line: str                            # 以 NPC 名字开头的一两句：动作加说的话
 

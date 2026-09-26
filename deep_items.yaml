@@ -111,6 +111,7 @@ items:
     slot: neck
     defense: 20
     props:
+      light: 25
       price: 350
       tier: 1
       effects:
@@ -169,6 +170,7 @@ items:
     slot: neck
     defense: 20
     props:
+      light: 25
       price: 350
       tier: 1
       effects:
@@ -309,6 +311,7 @@ items:
     slot: head
     defense: 45
     props:
+      light: 30
       price: 520
       tier: 2
       effects:
@@ -475,7 +478,7 @@ items:
     props:
       price: 500
       tier: 2
-      light: 20
+      light: 30
       effects:
         - {when: passive, do: fog_immune}                  #不受浓雾影响
 
@@ -485,7 +488,7 @@ items:
     description: 一把用陨铁打成的长剑，剑身里嵌着细小的星点，在暗处会自己发光。
     type: weapon
     damage: 175
-    props: {price: 480, tier: 3, light: 10}
+    props: {price: 480, tier: 3, light: 35}
   astral_lance:
     name: 星辉长枪
     description: 一根由星光凝成的长枪，握在手里没有重量，刺出去却能扎穿石台。
@@ -534,6 +537,7 @@ items:
     slot: neck
     defense: 30
     props:
+      light: 35
       price: 800
       tier: 3
       effects:

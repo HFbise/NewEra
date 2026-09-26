@@ -334,8 +334,8 @@ def max_groups(depth: int) -> int:
 
 def group_chances(depth: int) -> tuple[float, float]:
     """第二群、第三群出现的几率：第二群从第 4 层 10% 起每层 +10%（第 8 层 50%，跟以前一样），第 13 层起必出；
-    第三群从第 16 层 10% 起，第 25 层起必出（以前到第 8、16 层一下跳一档，第 16 层是断崖）"""
-    return max(0.0, min(1.0, (depth - 3) * 0.1)), max(0.0, min(1.0, (depth - 15) * 0.1))
+    第三群从第 16 层 5% 起每层 +5%，第 35 层起必出（原来第 25 层必出，第 21–24 层就有 60–90%，普通房间太难熬）"""
+    return max(0.0, min(1.0, (depth - 3) * 0.1)), max(0.0, min(1.0, (depth - 15) * 0.05))
 
 
 def roll_groups(depth: int) -> int:

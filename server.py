@@ -79,6 +79,24 @@ class CommandReq(BaseModel):
     after: Optional[int] = None         # 前端已经看过的最后一条房间动态 id，不给就不带动态
 
 
+def _fill_lore(conn, player_id: UUID, results: list) -> None:
+    """礼物引出的往事第一次讲：让 AI 写这一段，存进 lore_texts（并发时先存的算），把占位换成正文；写不出来就只留一句讲了一段往事"""
+    for r in results:
+        for i, f in enumerate(r.facts):
+            if not f.startswith(engine.LORE_MARK):
+                continue
+            key, n, npc = f[len(engine.LORE_MARK):].split("::")
+            n = int(n)
+            before = [row[0] for row in conn.execute("select text from lore_texts where key = %s and n < %s order by n",
+                                                     (key, n)).fetchall()]
+            text = ai.lore_text(pool, player_id, key, n, before) if ai.enabled() else None
+            if text:
+                with conn.transaction():
+                    conn.execute("insert into lore_texts (key, n, text) values (%s, %s, %s) on conflict do nothing", (key, n, text))
+                text = conn.execute("select text from lore_texts where key = %s and n = %s", (key, n)).fetchone()[0]
+            r.facts[i] = f"{npc}讲的往事：{text}" if text else f"{npc}低声讲了一段往事"
+
+
 def state(conn, view: RoomView, after: Optional[int] = None) -> dict:
     """给前端侧栏看的当前状态，带上短编号方便对照。
     after 给了就顺便带回这个房间 id 比它大的别人的动态；last_event_id 是前端下次要传的 after"""
@@ -505,6 +523,7 @@ def run_turn(req: CommandReq):
     offers, made_before, bonds = {}, [], []
     with pool.connection() as conn:
         results = engine.execute_all(conn, view, actions)
+        _fill_lore(conn, view.player.id, results)
         # 跟 NPC 说话、把东西交给 NPC、找铁匠升级、住店都算跟他打交道：委托结算、NPC 回应
         talk = next((a for a, r in zip(actions, results) if r.success and (
             a.action in ("talk", "upgrade", "rest") or a.action in ("give", "pay", "sell") and a.target in view.refs)), None)

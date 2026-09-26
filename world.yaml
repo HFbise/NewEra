@@ -292,6 +292,12 @@ items:
     props: {price: 2}
   # 火把三种样子：背包里的火把 → 拿到手上就点着（火把（点燃））→ 带到地牢下一层变成火把（弱光）→ 再下一层烧完。
   # 点着的火把只能拿在手上：收起来、扔掉就熄了、没了（要玩家再说一次确认），不能给人、不能卖（engine 火把部分）
+  waist_lamp:
+    name: 腰挂油灯
+    description: 一盏小小的铁皮油灯，扣在腰带上，灯罩朝前，走到哪照到哪，不占手。诺艾尔说这是她照着书上的图样让人做的，灯油一次能烧很久。
+    type: armor
+    slot: belt
+    props: {price: 40, light: 15}         # 人人买得到的保底光亮：被动光源只取最亮的一件，火把另外叠加
   torch:
     name: 火把
     description: 缠着浸油麻布的木火把，拿到手上就点着（占一只手）。点着以后在地牢里能撑两层：第二层火光变小，到第三层烧完；点着的火把收起来就熄了，没法再点。
@@ -588,7 +594,7 @@ npcs:
     persona: 性格极度内向害羞且胆小怕人，说话声音细小如蚊蝇，面对陌生人时容易紧张到结巴，稍微受到惊吓就会下意识用怀里的书挡住脸或缩进柜台下。极度嗜书如命，把杂货铺当成自己的私人藏书室。虽然生人勿近，但凭借浩瀚的阅读量，对店里各种稀奇古怪的杂货、古董与魔法素材的来历与用途了如指掌。只要客人保持距离、语气温和，或是聊起书里的奇闻异事，她会慢慢放下戒心，小声且条理分明地介绍商品。最讨厌嘈杂粗鲁的举动，对懂得爱惜书籍的人天然有好感。
     props:
       # 货架上的东西，价钱由 AI 按建议价浮动
-      sells: [rope, torch, tent, recall_crystal, blood_potion,
+      sells: [rope, torch, waist_lamp, tent, recall_crystal, blood_potion,
               bandage, lamp_oil, antidote, light_scroll, smoke_bomb, sling, fire_arrow,
               paper_note, southern_wine, hardwood_charcoal]   # 探险杂货、解状态、书上学来的小玩意；怪酒送麦琪、木炭送莉娜
       # 偶尔进的稀罕货（地牢里的礼物道具）：客人问有什么卖的时判一次 chance，中了这一小时里有一件，

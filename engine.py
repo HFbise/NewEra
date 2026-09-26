@@ -2628,6 +2628,7 @@ def _npc_strike(cur: Cursor, player: Player, npc: Npc, verb: str, chance: float 
 
 # 送了会讲往事的礼物（props.lore）：谁讲、讲什么
 LORE = {"upon_mountain": ("shopkeeper", "“在其山岳之上者”"), "maggie_past": ("innkeeper", "她自己年轻时")}
+LORE_MARK = "LORE::"                    # 这一段还没写过：server 生成、存下来再换成正文（server._fill_lore）
 
 
 def _once_per_fight(cur: Cursor, player: Player, key: str) -> bool:
@@ -5319,7 +5320,10 @@ def do_give(cur: Cursor, player: Player, view: RoomView, a: Give) -> list[str]:
                 seen[_prop(item, "lore")] = n = int(seen.get(_prop(item, "lore"), 0)) + 1
                 cur.execute("update players set flags = flags || jsonb_build_object('_lore', %s::jsonb) where id = %s",
                             (Jsonb(seen), player.id))
+                cur.execute("select text from lore_texts where key = %s and n = %s", (_prop(item, "lore"), n))
+                told = cur.fetchone()
                 facts.append(f"（{npc.name}看着它出了一会儿神，讲起了{lore[1]}的第 {n} 段往事）")
+                facts.append(f"{npc.name}讲的往事：{told['text']}" if told else f"{LORE_MARK}{_prop(item, 'lore')}::{n}::{npc.name}")
             return facts
         back = item.props.get("sold_by") == npc.template.id
         _consume(cur, item)                 # 叠着的古酒只送出一瓶

@@ -349,6 +349,16 @@ create table dungeon_runs (
   last_active_at timestamptz not null default now()   -- 没人在里面超过 dungeon.STALE 就整份删掉
 );
 
+-- 礼物引出的往事（壁画拓片讲"在其山岳之上者"、船牌讲麦琪年轻时）：每一段第一次讲时由 AI 写一次存下来，
+-- 之后所有人听到的第 n 段都是这一段；要改直接改这里的文字
+create table lore_texts (
+  key        text not null,
+  n          int not null,
+  text       text not null,
+  created_at timestamptz not null default now(),
+  primary key (key, n)
+);
+
 create table dungeon_floors (
   run_id      uuid not null references dungeon_runs(id) on delete cascade,
   depth       int not null,

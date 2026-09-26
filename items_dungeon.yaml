@@ -117,6 +117,7 @@ items:
     props:
       price: 350
       tier: 1
+      light: 25                         # 炉芯的红光：第一档深层的被动光亮
       effects:
         - {when: passive, do: max_hp, value: 60}
         - {when: passive, do: heat_resist, value: 0}         # 不怕灼热
@@ -1009,4 +1010,4 @@ items:
     props:
       gem_slot: trinket
       effects:
-        - {when: passive, do: light, values: [5, 8, 9, 10]}
+        - {when: passive, do: light, values: [10, 15, 20, 25]}

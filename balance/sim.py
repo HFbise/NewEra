@@ -37,6 +37,9 @@ TRIP = 5                                # 一趟：两块传送石之间（1–5
 TRIPS = 6                               # 一共几趟：走到第 30 层（深层装备、主题还没做，21 层以后先用第 16 层那套装备，只当预警）
 FLOORS = TRIPS * TRIP
 POTION = "blood_potion"                 # 血药
+POTION_SHARE, POTION_MAX = 0.2, 15      # 正常档出发时拿两成的钱买药，最多 15 瓶（深层钱太多，两成能买上百瓶；真人：神风一趟带了 13 瓶）
+# 被动光亮（腰挂油灯、萤石、深层的心、灯、面具……身上只算最亮的一件，火把另外叠加）：按这一趟能拿到的
+PASSIVE_LIGHT = {"poor": [0] * 6, "normal": [0, 15, 15, 15, 25, 30], "cap": [15, 25, 25, 25, 25, 30]}
 HERB_HEAL = ITEMS["herb"]["heal"]
 TORCH_LIT = ITEMS["torch_lit"]["props"]["light"]
 TORCH_DIM = ITEMS["torch_dim"]["props"]["light"]
@@ -313,7 +316,8 @@ def economy(quality: str, build: str, trips: int = TRIPS, size: int = 1) -> list
     bag: list[list] = []                # 捡到的宝石 [id, 品质]
     sockets: dict[str, int] = {}        # 每件带孔装备的孔数（拿到时掷一次）
     for trip in range(trips):
-        want = {"poor": 2, "normal": 4, "fav": 4, "real": 0}[quality]
+        # 血药按钱买：正常档、好感满拿出发时两成左右的钱（第一趟没钱时至少想买 2 瓶），差装备 2 瓶，真人档不买
+        want = {"poor": 2, "real": 0}.get(quality, min(POTION_MAX, max(2, int(gold * POTION_SHARE // potion_price))))
         potions = min(want, gold // potion_price)
         gold -= potions * potion_price
         torches = 3 if build == "sword_torch" else 0
@@ -457,6 +461,7 @@ class Hero:
     gem_crit: float = 0.0
     block: float = 0.0                  # 盾的格挡几率（跟闪避合计最多 AVOID_CAP）
     torch_light: int = 0               # 手上点着的火把给的光（点燃 35、弱光 20）
+    lamp_light: int = 0                # 身上的被动光源（腰挂油灯、萤石、深层装备），只算最亮的一件
     potions: int = 0
     herbs: int = 0
     sneak: bool = False                 # 潜行打法：进门没被警觉的怪盯上就先偷袭一下
@@ -564,13 +569,15 @@ def spawn(depth: int, kind: str, rank: str, theme_key: str, size: int, groups: i
         skills = list(gate["phases"][0]["skills"])
         props |= {k: gate[k] for k in ("phases", "sin", "grounded_weak") if gate.get(k)}
     if boss_room:
-        mult = 1 + R.BOSS_PARTY_HP * (size - 1)
+        mult = 1 + (dungeon.GATE_PARTY_HP if gate else R.BOSS_PARTY_HP) * (size - 1)
         deep = rank == "boss" and depth >= R.BOSS_DEEP_FROM
         if deep:                                # 深层头目一轮两动，第二下 ×BOSS_EXTRA_MULT
             props["extra_chance"], props["extra_mult"] = 1.0, R.BOSS_EXTRA_MULT
         out = [Mon(name, max(2 * R.SCALE, round(hp * mult)), max(2 * R.SCALE, round(hp * mult)), atk, df, depth, props, rank,
                    attacks=size * fx.get("attacks", 1) * (R.boss_actions(depth) if deep else 1), theme=theme_key, skills=skills,
                    base_attacks=size if fx.get("extra_chance") or deep else 99)]
+        if gate and size > 1:
+            out[0].extra_acts = size - 1         # 关卡头目组队：每多一人再多一动
     else:
         copies = 1 if minion else R.party_copies(size, groups)
         mult = size / copies if not minion else 1
@@ -620,9 +627,9 @@ class Fight:
             h.struck, h.reloaded_free, h.backs = False, False, 0
 
     def light(self) -> int:
-        torch = max([h.torch_light for h in self.heroes if not h.down] or [0])
+        torch = max([h.torch_light for h in self.heroes if not h.down] or [0])             + max([h.lamp_light for h in self.heroes if not h.down] or [0])
         if self.fog:
-            torch = round(torch * self.fog.get("torch_mult", 0.5))       # 浓雾里火把只照得见一半
+            torch = round(torch * self.fog.get("torch_mult", 0.5))       # 浓雾里火把、灯都只照得见一半
         return max(0, min(100, self.base_light + self.shift + torch))
 
     def set_fog(self, fog: Optional[dict]) -> None:
@@ -1366,7 +1373,8 @@ def make_heroes(build: str, quality: str, trip: int, kit, size: int, depth: int)
         heroes.append(Hero(hp, hp, 2 * R.SCALE, defense, ws, r, sneak=build == "dual_sneak", stealth=stealth_level(depth),
                            smart=1.0 if quality == "cap" else 0.5,
                            guard_ranged=guard, block=block, gem_bonus=kit.gem_bonus, gem_pierce=kit.gem_pierce, gem_crit=kit.gem_crit,
-                           potions=kit.potions, trip_potions=kit.potions, perks=perks))
+                           potions=kit.potions, trip_potions=kit.potions, perks=perks,
+                           lamp_light=PASSIVE_LIGHT.get(quality, PASSIVE_LIGHT["normal"])[min(trip, 5)]))
     return heroes
 
 
