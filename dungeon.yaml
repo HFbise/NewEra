@@ -1060,7 +1060,7 @@ gate_bosses:
     description: 沙丘最高处站着一个胡狼头的巨人，黑得发亮的身躯上缠着金色的饰带，一手握着冥界的权杖，一手提着一架黄金天平，脚下是那座被沙子吞没的亡者之城。
     persona: 冷静、庄重，像在主持一场审判。它不愤怒，也不追赶，只是一个一个地称量闯入者的心，再决定他们配不配通过。你在这场战斗里越是靠躲、靠喝药逃避，天平上你那一端就越沉。
     keen: true
-    hp: 4.0
+    hp: 1.5                      # 初版4.0；模拟对到第 25 层普通档（带 4 瓶药）团灭 39%、上限档 4%
     atk: 10
     def: 20
     immune: [restrained, prone, wrapped]
@@ -1075,7 +1075,7 @@ gate_bosses:
              then: {do: strike, mult: 2.0, target: highest_threat, per_sin: 0.4, convict: {sin_at_least: 4, effect: {kind: wound, heal_mult: 0, turns: 2}}}}
       - at: 0.7
         label: 身后的石门缓缓打开一道缝，裹着绷带的身影一个接一个走了出来
-        env: {light: -20}
+        env: {light: -10}          # 方案 -20：暗到命中只剩一半，普通档团灭近五成，改轻
         summon: {kind: mummy, count: 2}
         skills:
           - {when: every, value: 4, do: combo, target: highest_threat, label: 一挥权杖，发黄的裹尸布从地下窜出来缠住了你, effects: [{kind: wrapped}, {kind: corrode}]}
@@ -1103,7 +1103,7 @@ gate_bosses:
     keen: true
     hide_fails: true             # 在他面前躲藏必定失败，还会让他下一击 ×1.5
     grounded_weak: 1.5           # 被拽下来的那一轮挨的伤害 ×1.5
-    hp: 3.8
+    hp: 2.3                      # 初版3.8；模拟对到第 25 层普通档团灭 44%、上限档 1%
     atk: 20
     def: 20
     immune: [restrained]

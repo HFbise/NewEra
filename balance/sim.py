@@ -28,6 +28,7 @@ import rules as R  # noqa: E402
 
 MONSTERS = dungeon.data()["monsters"]
 THEMES = dungeon.data()["themes"]
+GATES = dungeon.data().get("gate_bosses", {})
 ITEMS = {}
 for _f in ("world.yaml", "items_dungeon.yaml"):
     ITEMS.update(yaml.safe_load(open(_f, encoding="utf-8"))["items"])
@@ -76,6 +77,10 @@ ARMOR["real"] = ARMOR["normal"]        # 真人档：地牢掉的防具照穿，
 ARMOR["cap"] = ARMOR["normal"]         # 上限档：防具每件 +CAP_ARMOR_PLUS
 # 上限档（照玩家A第 41 层的配置）：头目的鹤嘴锄 +10（破甲 20）、完美血石加伤、防具每件 +6、每趟带 13 瓶血药
 CAP_WEAPON = ("工头的鹤嘴锄", ITEMS["foreman_mattock"]["damage"])
+# 深层装备（deep_items.yaml 的 tier）：正常档比所在的层落后一档（要先从怪、宝箱、头目身上拿到）：
+# 第 21–25 层用第一档（单手 95、胸甲 40、盾 40），第 26–30 层用第二档（单手 130、胸甲 55、头盔 45、靴子 30）；升级等级照旧
+DEEP_GEAR = {4: {"weapon": 95, "armor": [20, 40, 20, 20], "shield": 40},
+             5: {"weapon": 130, "armor": [45, 55, 30, 20], "shield": 40}}
 CAP_WEAPON_PLUS, CAP_ARMOR_PLUS, CAP_POTIONS, CAP_GEM_BONUS, CAP_PIERCE = 10, 6, 13, 35, 20
 # 盾：剑盾打法第 1 趟木盾，之后塔盾（挡远程 2 点）；最后一项是格挡几率（物品表的 props.block）
 _TOWER = ("塔盾", ITEMS["tower_shield"]["defense"],
@@ -420,6 +425,12 @@ class Mon:
     regen: float = 0.0                  # 扎根：每轮回血
     stance: str = ""                    # 冷却 / 熔化（矮人王的铸像）
     stance_at: int = 0
+    gphase: int = 0                     # 关卡头目的阶段
+    rnd: dict = field(default_factory=dict)
+    vanished: bool = False
+    sneak: float = 0.0
+    flying: int = 0
+    grounded: bool = False
     rung: int = 0                       # 敲钟人摇铃加的攻击
     memory: int = 0                     # 永不醒来的人换过几段记忆
     lured: bool = False                 # 雾中渔灯：第一下打在灯上
@@ -451,6 +462,8 @@ class Hero:
     sneak: bool = False                 # 潜行打法：进门没被警觉的怪盯上就先偷袭一下
     guard: Optional[str] = None         # 刚挣脱、爬起来的那种控制：这个敌人回合里不再中
     still: int = 0                      # 流沙里站着没挪几轮了
+    sin: int = 0                        # 罪（在其山岳之上者）
+    trip_potions: int = 0               # 这一趟出发时带的药（关卡层回城补满）
     stepped: bool = False
     pinch: bool = False                 # 这一轮掐了自己（永不醒来的人的催眠）
     eyes: bool = False                  # 这一轮闭着眼（晶母的晃眼大招冲着所有睁眼的人）
@@ -514,7 +527,8 @@ def hero_def(h: Hero) -> int:
 def spawn(depth: int, kind: str, rank: str, theme_key: str, size: int, groups: int, boss_room: bool,
           minion: bool = False, affix: Optional[str] = None) -> list[Mon]:
     """一群怪（dungeon._spawn_group / _spawn_boss / spawn_minions）：精英抽一个词缀，头目带上这一层解锁的招"""
-    m = THEMES[theme_key]["boss"] if rank == "boss" else MONSTERS[kind]
+    gate = GATES.get(kind) if rank == "boss" else None
+    m = gate or (THEMES[theme_key]["boss"] if rank == "boss" else MONSTERS[kind])
     hp, atk, df = R.monster_stats(depth, m, rank)
     props = {k: m[k] for k in ("animal", "light_averse", "undead", "keen", "ranged", "healer", "on_hit", "guard_allies",
                                "immune", "weak", "stances", "resist_element", "reflect_ranged", "shield_allies", "nodes",
@@ -546,6 +560,9 @@ def spawn(depth: int, kind: str, rank: str, theme_key: str, size: int, groups: i
             props["on_hit"] = {**props["on_hit"], "value_mult": props["on_hit"].get("value_mult", 1) * R.SUMMON_DMG}
     name = m["name"] if rank != "elite" else f"{fx.get('name', '凶悍的')}{m['name']}"
     skills = R.unlocked_skills(m.get("skills") or [], depth) if rank == "boss" else []
+    if gate:
+        skills = list(gate["phases"][0]["skills"])
+        props |= {k: gate[k] for k in ("phases", "sin", "grounded_weak") if gate.get(k)}
     if boss_room:
         mult = 1 + R.BOSS_PARTY_HP * (size - 1)
         deep = rank == "boss" and depth >= R.BOSS_DEEP_FROM
@@ -773,7 +790,16 @@ class Fight:
                 else:
                     st["attempts"] += 1
                 continue
+            flyer = next((x for x in self.alive() if x.flying), None)
+            if flyer:
+                # 飞鞋：做什么都被俯冲打断（挨一下 ×0.5）；普通档一半几率想到去抓他的脚踝（运动判定大约五五开）
+                if random.random() < h.smart and random.random() < GROUND_CHANCE:
+                    flyer.flying, flyer.grounded = 0, True
+                else:
+                    self.strike(flyer, h, 1.0, ranged=False, mult=0.5)
+                continue
             if h.hp < h.max_hp * DRINK_BELOW and self.drink(h):
+                h.sin = min(6, h.sin + 1) if any(x.props.get("sin") for x in self.alive()) else h.sin
                 continue
             if not h.pinch and self.flash_on("pinch") and random.random() < h.smart:
                 h.pinch = True                   # 掐自己一把，不睡过去
@@ -784,6 +810,7 @@ class Fight:
                 continue
             if not h.dodging and self.strike_on(h) and random.random() < h.smart:
                 h.dodging = True                 # 看见大招冲着自己来：这一下用来闪避
+                h.sin = min(6, h.sin + 1) if any(x.props.get("sin") for x in self.alive()) else h.sin
                 continue
             live = self.alive()
             # 回礼：诺艾尔的书（每层一次，全场定住）、一口倒（每趟一次，放倒一只）
@@ -855,6 +882,10 @@ class Fight:
         h.struck = True
         if random.random() >= max(0.0, chance):
             return
+        if m.vanished:
+            m.vanished = False
+            if random.random() > HEAR_CHANCE:
+                return                           # 隐身：扑了个空（察觉没过）
         bonus = shooter.first_bonus if shooter and first else 0
         pierce = shooter.pierce if shooter else 0
         guard = (m.props["nodes"].get("while_alive", {}).get("def", 0)
@@ -873,6 +904,8 @@ class Fight:
             dmg = max(R.SCALE, math.floor(dmg * R.BLEED_DAMAGE))
         if m.props.get("swarm"):
             dmg = max(R.SCALE, dmg // 2)         # 虫群：单体只拍死一小片
+        if m.grounded:
+            dmg = round(dmg * m.props.get("grounded_weak", 1.5))
         if m.props.get("lure") and not m.lured:
             m.lured = True
             if random.random() < 0.7:
@@ -908,6 +941,26 @@ class Fight:
             return False
         acts = m.acts
         m.acts += 1
+        if m.flying:
+            m.flying -= 1
+        m.grounded = False
+        phases = m.props.get("phases")
+        if phases and m.gphase + 1 < len(phases) and m.hp / m.max_hp < phases[m.gphase + 1]["at"]:
+            m.gphase += 1
+            ph = phases[m.gphase]
+            m.skills, m.pending, m.used, m.rnd = list(ph["skills"]), None, set(), {}
+            m.extra_acts += ph.get("actions", 0)
+            m.phase_atk += ph.get("atk", 0)
+            if ph.get("on_hit"):
+                m.props = {**m.props, "on_hit": ph["on_hit"]}
+            if "light" in (ph.get("env") or {}):
+                self.base_light = max(0, min(100, self.base_light + ph["env"]["light"]))
+            if sm := ph.get("summon"):
+                for _ in range(sm.get("count", 1)):
+                    for x in spawn(m.depth, sm["kind"], "normal", m.theme, 1, 1, False, minion=True):
+                        self.mons.append(x)
+                        for h in self.heroes:
+                            self.dist[(id(h), id(x))] = 2
         mems = m.props.get("memories") or []
         if m.memory < len(mems) and m.hp / m.max_hp < mems[m.memory]["at"]:
             r = mems[m.memory].get("room") or {}
@@ -936,12 +989,20 @@ class Fight:
             pend, m.pending = m.pending, None
             if pend["hp"] - m.hp >= math.ceil(m.max_hp * R.INTERRUPT_SHARE):
                 return True                     # 被打断了
-            self.skill_effect(m, m.skills[pend["i"]]["then"], targets)
+            self.skill_effect(m, m.skills[pend["i"]]["then"], targets) if pend["i"] < len(m.skills) else None
             return True
-        i = R.due_skill(m.skills, m.hp / m.max_hp, acts, m.used, m.phased, self.dark())
+        skills = []
+        for k, x in enumerate(m.skills):
+            if x.get("when") == "every_random":
+                m.rnd.setdefault(k, acts + random.randint(*x["value"]))
+                x = {**x, "when": "at_act", "value": m.rnd[k]}
+            skills.append(x)
+        i = R.due_skill(skills, m.hp / m.max_hp, acts, m.used, m.phased, self.dark(), self.light())
         if i is None:
             return False
         sk = m.skills[i]
+        if sk.get("when") == "every_random":
+            m.rnd[i] = acts + random.randint(*sk["value"])
         if sk.get("when") in ("hp_below", "fight_start"):
             m.used.add(i)
         if sk["do"] == "telegraph":
@@ -958,6 +1019,17 @@ class Fight:
 
     def skill_effect(self, m: Mon, sk: dict, targets: list) -> None:
         do = sk["do"]
+        if do == "vanish":
+            m.vanished, m.sneak = True, sk.get("sneak_mult", 1.8)
+            return
+        if do == "flight":
+            m.flying = sk.get("rounds", 2) + 1
+            return
+        if do == "petrify":
+            for h in targets:
+                if not h.eyes:
+                    self.afflict(h, "stun", m.depth, {"escape": 1})
+            return
         if do == "summon":
             room = R.SUMMON_MAX - sum(1 for x in self.alive() if x.minion)
             elite = sk.get("elite") or m.depth >= R.ELITE_MINIONS_FROM
@@ -975,7 +1047,14 @@ class Fight:
         elif do == "strike":
             atk = m.atk + m.phase_atk
             for h in self.boss_targets(m, sk.get("target", "highest_threat")):
+                if sk.get("only_below") and h.hp / h.max_hp >= sk["only_below"]:
+                    continue                     # 斩首：没伤得够重就落空
                 dmg = round(R.hurt_player_by(atk, hero_def(h), m.depth) * sk.get("mult", 2.0))
+                if sk.get("per_sin"):
+                    dmg = round(dmg * (1 + sk["per_sin"] * h.sin))
+                    if (cv := sk.get("convict")) and h.sin >= cv.get("sin_at_least", 4):
+                        self.afflict(h, "wound", m.depth, cv["effect"])
+                    h.sin //= 2
                 if h.dodging or (sk.get("cover_halves") and self.cover):
                     dmg //= 2
                 self.hurt_hero(h, max(R.SCALE, dmg))
@@ -1158,6 +1237,9 @@ class Fight:
         if marked:
             atk += m.mark_bonus
         dmg = R.hurt_player_by(atk, hero_def(h), m.depth, guard=h.guard_ranged if ranged else 0)
+        if m.sneak:
+            mult *= m.sneak                      # 隐身以后从看不见的地方出手
+            m.sneak = 0.0
         if m.props.get("ambush") and not m.ambushed:
             m.ambushed = True
             mult *= m.props["ambush"]            # 雾鳗从雾里扑出来的第一口
@@ -1240,6 +1322,8 @@ def stealth_level(depth: int) -> int:
 
 
 DORMANT_SLEEPS = 0.5                    # 静默神殿：一场仗里沉睡的石像一直没被吵醒的几率
+GROUND_CHANCE = 0.55                    # 飞鞋：抓脚踝、甩绳子把他拽下来的运动判定
+HEAR_CHANCE = 0.35                      # 隐身：察觉判定听声辨位的几率（深层角色察觉不高）
 VOID_KEEP = 0.55                        # 虚空边缘被撞倒时稳住的几率（运动对难度 2 + 层数/10，深层角色大约五五开）
 HEAT_WALK, HEAT_QUENCH = 10, 8          # 灼热的一层战斗外大约几个动作、两瓶泉水压住几个
 SNEAK_LETHAL = 0.7                      # 偷袭时 AI 判成致命的比例（其余按重伤）
@@ -1268,8 +1352,12 @@ def make_heroes(build: str, quality: str, trip: int, kit, size: int, depth: int)
             ws = [(n, d + (wp[k] if k < len(wp) else 0) * R.UPGRADE_STEP["damage"]) for k, (n, d) in enumerate(ws)]
         armor = [d for _, d in ARMOR[quality][trip]]
         guard, block = 0, 0.0
+        deep = DEEP_GEAR.get(trip) if quality in ("normal", "fav", "real") else None
+        if deep:
+            ws = [(n, max(d, deep["weapon"] + (d - DMG["steel_shortsword"]))) for n, d in ws]    # 换成深层武器，升级等级带过去
+            armor = [max(a, b) for a, b in zip(armor, deep["armor"])] + armor[len(deep["armor"]):]
         if build == "sword_shield":
-            armor.append(SHIELD[trip][1])
+            armor.append(max(SHIELD[trip][1], deep["shield"]) if deep else SHIELD[trip][1])
             guard, block = SHIELD[trip][2], SHIELD[trip][3]
         defense = sum(d + (kit.armor_plus[k] if k < len(kit.armor_plus) else 0) * R.UPGRADE_STEP["defense"]
                       for k, d in enumerate(armor)) + kit.gem_def
@@ -1278,7 +1366,7 @@ def make_heroes(build: str, quality: str, trip: int, kit, size: int, depth: int)
         heroes.append(Hero(hp, hp, 2 * R.SCALE, defense, ws, r, sneak=build == "dual_sneak", stealth=stealth_level(depth),
                            smart=1.0 if quality == "cap" else 0.5,
                            guard_ranged=guard, block=block, gem_bonus=kit.gem_bonus, gem_pierce=kit.gem_pierce, gem_crit=kit.gem_crit,
-                           potions=kit.potions, perks=perks))
+                           potions=kit.potions, trip_potions=kit.potions, perks=perks))
     return heroes
 
 
@@ -1316,7 +1404,8 @@ def floor_rooms(depth: int, theme_key: str) -> list[tuple[str, list[tuple[str, s
                       False))
     random.shuffle(rooms)
     boss = depth % R.BOSS_EVERY == 0
-    rooms.append(("stairs", [("boss" if boss else pick_kind(kinds), "boss" if boss else "elite")], False))
+    gate = next((k for k, g in GATES.items() if g["theme"] == theme_key), None) if dungeon.gate_depth(depth) else None
+    rooms.append(("stairs", [(gate or ("boss" if boss else pick_kind(kinds)), "boss" if boss else "elite")], False))
     return rooms
 
 
@@ -1330,7 +1419,8 @@ def run_trip(build: str, quality: str, trip: int, kit: Kit, size: int, stats: di
         live = [h for h in heroes if not h.down]
         if not live:
             return
-        theme_key = dungeon._pick_theme(THEMES, depth, set(recent[-dungeon.THEME_GAP:]))      # 熔炉这类深层主题 16 层起才有
+        gate = random.choice(list(GATES)) if dungeon.gate_depth(depth) and GATES else None     # 第 25 层：关卡头目
+        theme_key = GATES[gate]["theme"] if gate else dungeon._pick_theme(THEMES, depth, set(recent[-dungeon.THEME_GAP:]))
         recent.append(theme_key)
         st = stats.setdefault(depth, FloorStat())
         st.reached += 1
@@ -1357,6 +1447,11 @@ def run_trip(build: str, quality: str, trip: int, kit: Kit, size: int, stats: di
                     and not any(MONSTERS[g].get("keen") for g, _ in groups if g in MONSTERS) \
                     and random.random() < SNEAK_PAST ** (1 + len(groups)):
                 continue                        # 潜行溜过去了（钱和掉落也没了，经济表里没扣）
+            if kind == "stairs" and gate:
+                # 关卡层：前厅的传送石一亮就能回城补给，再传回前厅：满血、带满这一趟的药进场
+                for h in heroes:
+                    if not h.down:
+                        h.hp, h.potions, h.effects, h.status = h.max_hp, max(h.potions, h.trip_potions), {}, None
             if kind == "stairs":
                 # 楼梯间守着头目或精英：血量低于七成先整备，这层还没扎营就扎营，再不够就喝药
                 # 头目层：楼梯间隔壁是休息点，能多扎一次营（不算这一层的次数，engine.do_camp）
@@ -1435,16 +1530,23 @@ def pct(x: float) -> str:
     return f"{x * 100:.0f}%"
 
 
+def gate_test(key: str, quality: str, depth: int = 25, n: int = 400, size: int = 1) -> tuple[float, float, float]:
+    """关卡头目：带药进场（普通 4 瓶、上限 13 瓶）。返回 (挨的伤害占上限, 团灭率, 平均轮数)"""
+    return fight_test("sword_shield", quality, min(TRIPS - 1, (depth - 1) // TRIP), depth, [(key, "boss")], GATES[key]["theme"],
+                      size=size, n=n, potions=CAP_POTIONS if quality == "cap" else 4)
+
+
 def fight_test(build: str, quality: str, trip: int, depth: int, groups: list[tuple[str, str]], theme: str,
-               size: int = 1, n: int = 400, light: Optional[int] = None, affix: Optional[str] = None) -> tuple[float, float, float]:
-    """单独一场：(平均掉血占上限, 团灭率, 平均轮数)。装备、升级按这一趟的经济结果，满血进场，不喝药"""
+               size: int = 1, n: int = 400, light: Optional[int] = None, affix: Optional[str] = None,
+               potions: int = 0) -> tuple[float, float, float]:
+    """单独一场：(平均掉血占上限, 团灭率, 平均轮数)。装备、升级按这一趟的经济结果，满血进场，默认不喝药（potions 给了就带着）"""
     lost = wiped = rounds = 0.0
     eco = [economy(quality, build) for _ in range(10)]
     boss = groups[0][1] == "boss"
     for i in range(n):
         heroes = make_heroes(build, quality, trip, eco[i % len(eco)][trip], size, depth)
         for h in heroes:
-            h.potions = 0
+            h.potions = potions
         mons = []
         for monster, rank in groups:
             mons += spawn(depth, monster, rank, theme, size, len(groups), boss, affix=affix)
