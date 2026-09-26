@@ -428,7 +428,7 @@ def unlocked_skills(skills: list[dict], depth: int) -> list[dict]:
 
 
 def due_skill(skills: list[dict], hp_ratio: float, acts: int, used: set, phased: bool = False,
-              dark: bool = False) -> Optional[int]:
+              dark: bool = False, light: int = 0) -> Optional[int]:
     """这一次出手该放哪一招（技能的下标），没有就是 None。acts 是这一场已经出手过几次，used 是放过的一次性技能，
     phased：转过阶段了（写了 phase: true 的招转阶段以后才放）；dark：星光暗着（when: dark 的招只在暗时按 every 放）"""
     for i, s in enumerate(skills):
@@ -437,6 +437,10 @@ def due_skill(skills: list[dict], hp_ratio: float, acts: int, used: set, phased:
         when = s.get("when")
         if when == "dark" and dark and acts > 0 and acts % s.get("every", 4) == 0:
             return i
+        if when == "light_at_least" and light >= s["value"] and acts > 0 and acts % s.get("every", 3) == 0:
+            return i
+        if when == "at_act" and acts >= s["value"]:
+            return i                            # every_random 换算来的：到了这次出手就放
         if when == "hp_below" and hp_ratio < s["value"] and i not in used:
             return i
         if when == "fight_start" and acts == 0 and i not in used:

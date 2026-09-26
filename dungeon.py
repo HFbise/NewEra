@@ -57,6 +57,17 @@ DEEP_LOOT, DEEP_ITEMS = "deep_loot.yaml", "deep_items.yaml"
 DEEP_READY = {"forge", "crystal", "silent", "desert", "dream", "fog", "astral"}
 
 
+GATE_EVERY = 25                         # 关卡头目层：第 25、50、75……层（dungeon.yaml gate_bosses）
+
+
+def gate_depth(depth: int) -> bool:
+    return depth > 0 and depth % GATE_EVERY == 0
+
+
+def gate_boss(key: str) -> dict:
+    return data().get("gate_bosses", {}).get(key) or {}
+
+
 def _yaml(name: str) -> dict:
     path = os.path.join(os.path.dirname(__file__), name)
     if not os.path.exists(path):
@@ -132,6 +143,11 @@ def _drops(kind: str, rank: str, theme: str, depth: int, stair: bool = False) ->
     楼梯间守卫（stair）一件都没掷中就从 stair_guard 补给池保底抽一件"""
     loot, out = loot_data(), []
     rules = loot["rules"]
+    if rank == "boss" and (g := gate_boss(kind)):
+        b = loot.get("gate_bosses", {}).get(g.get("loot", kind), {})
+        pick = list(b.get("pick_one", []))
+        random.shuffle(pick)
+        return pick[:1] + [i for i in pick[1:] if random.random() < b.get("other_chance", 0.2)]
     if rank == "boss":
         b = loot["bosses"].get(theme, {})
         if pick := [i for i in b.get("pick_one", []) if i not in LOOT_NOT_YET]:
@@ -402,7 +418,8 @@ def _template(cur: Cursor, depth: int, kind: str, rank: str, theme: str, share: 
            + (f"_g{share}" if share > 1 else "") + (f"_h{round(hp_mult * 10)}" if hp_mult != 1 else "")
            + ("_m" if minion else "") + (f"_a{attacks}" if attacks > 1 else "") + ("_lead" if leader else "")
            + ("_st" if stair and rank != "boss" else ""))
-    m = data()["themes"][theme]["boss"] if rank == "boss" else data()["monsters"][kind]
+    gate = gate_boss(kind) if rank == "boss" else {}
+    m = gate or (data()["themes"][theme]["boss"] if rank == "boss" else data()["monsters"][kind])
     hp, atk, df = monster_stats(depth, m, rank)
     fx = ELITE_AFFIXES.get(affix, {}) if rank == "elite" else {}
     hp = max(2 * SCALE, round(hp * hp_mult * fx.get("hp_mult", 1)))
@@ -440,6 +457,13 @@ def _template(cur: Cursor, depth: int, kind: str, rank: str, theme: str, share: 
         for key in ("stances", "quench", "nodes"):     # 铸像的冷却 / 熔化、泼泉水裂开；晶母的晶簇
             if m.get(key):
                 props[key] = m[key]
+        if gate:
+            # 关卡头目：招按阶段换（phases），罪、在他面前躲不了、被拽下来挨打加重
+            props |= {"gate": kind, "phases": m["phases"], "skills": m["phases"][0]["skills"], "title": m.get("title", ""),
+                      "loot": m.get("loot", kind)}
+            for key in ("sin", "hide_fails", "grounded_weak"):
+                if m.get(key):
+                    props[key] = m[key]
     for flag in ("animal", "light_averse", "undead", "keen", "ranged"):
         if m.get(flag):
             props[flag] = True
@@ -607,7 +631,8 @@ def _spawn(cur: Cursor, room: str, depth: int, kind: str, rank: str, theme: str,
         _put_item(cur, item, depth, npc=npc_id, boss=rank == "boss",
                   rarity={"boss": "rare", "elite": "uncommon"}.get(rank, "common"))
     if loot:
-        for _ in range(gem_count(rank, depth, theme)):
+        for _ in range(loot_data().get("gate_bosses", {}).get(gate_boss(kind).get("loot"), {}).get("gems", 0)
+                       if rank == "boss" and gate_boss(kind) else gem_count(rank, depth, theme)):
             put_gem(cur, pick_gem(theme), depth, npc=npc_id)
     for _ in range(ELITE_AFFIXES.get(affix, {}).get("minions", 0)):
         spawn_minions(cur, room, depth, kind, theme, 1)             # 号令的精英：带着一只同类小怪
@@ -726,7 +751,8 @@ def _make_floor(cur: Cursor, run: UUID, depth: int, above: Optional[str], size: 
     cur.execute("select theme from dungeon_floors where run_id = %s and depth between %s and %s",
                 (run, depth - THEME_GAP, depth - 1))
     recent = {r["theme"] for r in cur.fetchall()}
-    theme_key = _pick_theme(themes, depth, recent)
+    gate = random.choice(list(data().get("gate_bosses") or {})) if gate_depth(depth) and data().get("gate_bosses") else None
+    theme_key = gate_boss(gate)["theme"] if gate else _pick_theme(themes, depth, recent)
     theme = themes[theme_key]
     start, stairs, edges = layout()
     cells = [(r, c) for r in range(GRID) for c in range(GRID)]
@@ -742,6 +768,14 @@ def _make_floor(cur: Cursor, run: UUID, depth: int, above: Optional[str], size: 
             if len(spare) > 2:                  # 至少留两间战斗房
                 cell = spare.pop()
                 kinds[cell], forced[cell] = "event", key
+    ante = None
+    if gate:
+        # 关卡层的前厅：楼梯间隔壁挑一间（不是入口），换成空房（有传送石、能休息，不刷事件、不刷怪）
+        ante = random.choice([c for c in cells if c not in (start, stairs) and frozenset((c, stairs)) in edges]
+                             or [c for c in cells if c not in (start, stairs)])
+        old = next(c for c in cells if kinds[c] == "empty")
+        kinds[old], kinds[ante] = kinds[ante], "empty"
+        forced.pop(ante, None)
     pool = random.sample(theme["rooms"], len(theme["rooms"]))
     for cell in cells:
         kind = kinds[cell]
@@ -756,6 +790,8 @@ def _make_floor(cur: Cursor, run: UUID, depth: int, above: Optional[str], size: 
         props = {"dungeon": {"depth": depth, "theme": theme_key, "kind": kind},
                  # 头目层：楼梯间隔壁的房间是休息点，能多扎一次营（engine.do_camp）
                  **({"rest": True} if depth % BOSS_EVERY == 0 and kind != "stairs" and frozenset((cell, stairs)) in edges else {}),
+                 # 关卡层：前厅（楼梯间隔壁）有传送石，走进去就亮
+                 **({"stone": True, "gate_stone": True, "rest": True} if cell == ante else {}),
                  "env": {"light": max(0, min(100, light)), "ground": text.get("ground", "normal"),
                          "cover": bool(text.get("cover")),
                          **({"heat": theme["heat"]["pct"]} if theme.get("heat") else {}),
@@ -815,7 +851,7 @@ def _make_floor(cur: Cursor, run: UUID, depth: int, above: Optional[str], size: 
                     else _spawn_group(cur, rid, depth, kind, rank, theme_key, size, len(ranks)) * 0
         elif kind == "stairs":
             boss = depth % BOSS_EVERY == 0
-            _spawn_boss(cur, rid, depth, "boss" if boss else _pick_kind(theme, depth), "boss" if boss else "elite",
+            _spawn_boss(cur, rid, depth, gate or ("boss" if boss else _pick_kind(theme, depth)), "boss" if boss else "elite",
                         theme_key, size)
             cur.execute("insert into room_exits (room_id, direction, to_room) values (%s, 'down', %s)", (rid, GATE))
         elif kind == "treasure":
@@ -846,8 +882,9 @@ def _make_floor(cur: Cursor, run: UUID, depth: int, above: Optional[str], size: 
         FLOOR_HOOK(run, depth)              # 后台让 AI 重写还没人进过的房间（server._describe_floor）
     if above:
         cur.execute("insert into room_exits (room_id, direction, to_room) values (%s, 'up', %s)", (entry, above))
-    cur.execute("""insert into dungeon_floors (run_id, depth, theme, entry_room, stairs_room, party_size)
-                   values (%s, %s, %s, %s, %s, %s)""", (run, depth, theme_key, entry, _room_id(run, depth, stairs), size))
+    cur.execute("""insert into dungeon_floors (run_id, depth, theme, entry_room, stairs_room, party_size, state)
+                   values (%s, %s, %s, %s, %s, %s, %s)""", (run, depth, theme_key, entry, _room_id(run, depth, stairs), size,
+                                                        Jsonb({"gate": gate} if gate else {})))
     return entry
 
 
@@ -896,7 +933,15 @@ def _arrive(cur: Cursor, player, run: UUID, depth: int, above: Optional[str], on
         reveal(cur, entry)
         cur.execute("update players set flags = flags - '_reveal_next' where id = %s", (player.id,))
         facts.append(f"禁言碑上读到的路在{player.name}脑子里一条条亮了起来：这一层的地图都知道了")
-    if depth % BOSS_EVERY == 0:
+    cur.execute("select state from dungeon_floors where run_id = %s and depth = %s", (run, depth))
+    if g := gate_boss((cur.fetchone()["state"] or {}).get("gate")):
+        facts.append(f"这一层是关卡：楼梯间守着{g['name']}，不打倒它下不去（楼梯间隔壁的前厅有传送石和休息的地方）")
+        if above is None:
+            # 传送来的：落在前厅（关卡层的传送石在那儿）
+            cur.execute("select id from rooms where id like %s and (props->>'gate_stone')::boolean limit 1", (f"dg-{run.hex}-{depth}-%",))
+            if row := cur.fetchone():
+                entry = row["id"]
+    elif depth % BOSS_EVERY == 0:
         facts.append(f"这一层的楼梯间守着{t['boss']['name']}")
     return entry, facts
 

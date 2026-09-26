@@ -960,6 +960,10 @@ def do_move(cur: Cursor, player: Player, view: RoomView, a: Move) -> list[str]:
             if n.template.props.get("dungeon", {}).get("rank") in ("elite", "boss")
             and (n.status is None or n.status.kind == "prone")]):
         raise ActionError(f"{'、'.join(guards)}守在楼梯口，不打倒它（或者把它定住、捆住）下不去")
+    if a.direction == "down" and (gate := next((n for n in _enemies(cur, player.room_id) if n.template.props.get("gate")), None)) \
+            and _deepest(cur, player) <= dungeon.parse_room(player.room_id)[1] \
+            and str(dungeon.parse_room(player.room_id)[1]) not in (player.flags.get("gates") or {}):
+        raise ActionError(f"{gate.name}守着这一关：不打倒它，谁也下不去")
     if _room_env(cur, player.room_id).get("sealed") and _enemies(cur, player.room_id):
         raise ActionError("门被封死了，打完之前谁也出不去")
     # 被敌人发现、正在交手：得先逃跑成功（甩开了就不算被发现）才能离开
@@ -987,6 +991,12 @@ def do_move(cur: Cursor, player: Player, view: RoomView, a: Move) -> list[str]:
                 (to, Jsonb(Stealth(room=to, chance=DETECT_START, detected=bool(spotted), alerted=bool(spotted),
                                    start=_start_distance(cur, to)).model_dump()), player.id))
     room = load_room(cur, to)
+    if room.props.get("gate_stone"):
+        d = dungeon.parse_room(to)[1]
+        cur.execute("""update players set waypoints = array_append(waypoints, %s)
+                       where id = %s and not (%s = any(waypoints)) returning 1""", (d, player.id, d))
+        if cur.fetchone():
+            facts.append(f"前厅里的传送石亮了起来：以后在地窖里说「传送到第 {d} 层」就能直接到这里，倒下了也能马上回来重来")
     if (fog := _fog(cur, to)) and (foes := _enemies(cur, to)):
         # 浓雾：进门过一次察觉，过了就先听见怪在哪
         ok, _ = _check(cur, player, view, "perception", int(fog.get("perception_reveal", 2)) + dungeon.parse_room(to)[1] // 6)
@@ -1102,6 +1112,9 @@ def do_teleport(cur: Cursor, player: Player, view: RoomView, a: Teleport) -> lis
     elif here == dungeon.ENTRANCE:
         cur.execute("select waypoints from players where id = %s", (player.id,))
         points = cur.fetchone()["waypoints"]
+        cur.execute("select deepest_floor from players where id = %s", (player.id,))
+        if a.floor and dungeon.gate_depth(a.floor) and cur.fetchone()["deepest_floor"] >= a.floor:
+            points = list(points) + [a.floor]           # 关卡层的前厅：到过这么深的人都能回去挑战
         if a.floor is None or a.floor not in points:
             raise ActionError((f"{player.name}还没到过第 {a.floor} 层的传送石。" if a.floor else "")
                               + dungeon.waypoints_text(points))
@@ -2380,6 +2393,18 @@ def _npc_gone(cur: Cursor, player: Player, npc: Npc, tamed: bool = False) -> lis
                 (player.room_id, npc.id))
     facts = [f"{npc.name}平静下来，慢慢走开了" if tamed else f"{npc.name}被击败了"]
     rank = npc.template.props.get("dungeon", {}).get("rank")
+    if (gate := npc.template.props.get("gate")) and not tamed:
+        depth = str(npc.template.props.get("dungeon", {}).get("depth", 0))
+        title = npc.template.props.get("title", "")
+        cur.execute("""update players set flags = jsonb_set(jsonb_set(flags - '_sin', '{gates}',
+                           coalesce(flags->'gates', '{}'::jsonb) || jsonb_build_object(%s::text, %s::text)),
+                         '{gate_fails}', coalesce(flags->'gate_fails', '{}'::jsonb) - %s::text)
+                           || jsonb_build_object('titles', (select coalesce(jsonb_agg(distinct x), '[]'::jsonb) from
+                               jsonb_array_elements_text(coalesce(flags->'titles', '[]'::jsonb) || to_jsonb(%s::text)) x))
+                       where room_id = %s and hp > 0 returning name""", (depth, gate, depth, title, npc.room_id))
+        names = [r["name"] for r in cur.fetchall()]
+        if names:
+            facts.append(f"关卡打通了。{'、'.join(names)}得到了称号「{title}」，往下的楼梯敞开了")
     if rank in ("boss", "elite"):
         dungeon.log_fights(cur, [npc.id], "tamed" if tamed else "killed")
         # 召来、带来的小怪没了主心骨，四散逃走（它们不掉东西，留着只是白打一架）
@@ -2475,8 +2500,14 @@ def _hurt_player(cur: Cursor, target: Player, dmg: int, kind: str, by: str) -> t
 
 def _downed_by(cur: Cursor, player: Player, kind: str, by: str) -> None:
     """记下为什么倒下：npc 被怪打倒 / player 被人打倒 / poison 吃了有毒的东西，by 是谁、什么东西。
-    看店的 NPC 扶人时按这个说俏皮话（world.yaml 的 revive_lines）"""
+    看店的 NPC 扶人时按这个说俏皮话（world.yaml 的 revive_lines）。在关卡头目面前倒下记一次失败（下次它的血少一点）"""
     cur.execute("update players set downed_by = %s where id = %s", (Jsonb({"kind": kind, "by": by}), player.id))
+    cur.execute("""select t.props->'dungeon'->>'depth' as d from npcs n join npc_templates t on t.id = n.template_id
+                   where n.room_id = %s and n.alive and t.props ? 'gate' limit 1""", (player.room_id,))
+    if row := cur.fetchone():
+        cur.execute("""update players set flags = jsonb_set(flags, '{gate_fails}', coalesce(flags->'gate_fails', '{}'::jsonb)
+                         || jsonb_build_object(%s::text, least(%s, coalesce((flags->'gate_fails'->>%s)::int, 0) + 1)))
+                       where id = %s""", (row["d"], GATE_REMNANT_MAX, row["d"], player.id))
 
 
 def _npc_counter(cur: Cursor, player: Player, npc: Npc) -> list[str]:
@@ -2543,6 +2574,12 @@ def _npc_strike(cur: Cursor, player: Player, npc: Npc, verb: str, chance: float 
         atk += int(_tallies(cur, npc).get("mark_bonus", 2))     # 典狱长判了罪的人
     guard = sum(int(e.get("value", 0)) for e in _fire(cur, player, "hurt", "guard", npc))       # 恶犬项圈
     ambush = props.get("ambush") if props.get("ambush") and not _tally(cur, npc, "ambushed") else 1
+    if sneak := _tallies(cur, npc).get("sneak"):
+        _tally_merge(cur, npc, {"sneak": None})
+        ambush *= sneak                                     # 从看不见的地方出手
+    if _tallies(cur, npc).get("hide_punish") == str(player.id):
+        _tally_merge(cur, npc, {"hide_punish": None})
+        ambush *= 1.5
     if ambush != 1:
         _tally_merge(cur, npc, {"ambushed": 1})         # 雾鳗：每场第一口从雾里扑出来
     dmg = scale_damage(hurt_player_by(atk, _defense(cur, player), depth, guard=guard), props.get("dmg_mult", 1) * mult * ambush)
@@ -2737,7 +2774,7 @@ def effects_text(player: Player) -> str:
 
 def _on_hit(cur: Cursor, player: Player, npc: Npc, base: Optional[int] = None) -> list[str]:
     """怪打中人以后按 props.on_hit 的几率附带效果：中毒、流血、看不清、腐蚀，或者缠住、撞倒（状态）"""
-    hit = npc.template.props.get("on_hit")
+    hit = (_tallies(cur, npc).get("on_hit") if npc.template.props.get("phases") else None) or npc.template.props.get("on_hit")
     if not hit or player.hp <= 0:
         return []
     resist = gear_resist(cur, player, hit["kind"])       # 装备抗性：0 免疫，0.5 减半
@@ -2800,7 +2837,10 @@ def _inflict(cur: Cursor, player: Player, kind: str, label: str, depth: int, sou
         if kind == "stun" and _fx(_worn(cur, player), "resist_once", when="hurt", kind="stun") \
                 and _once_per_fight(cur, player, "resist_stun"):
             return [f"{player.name}眼前一黑又清醒过来，没被{label.removeprefix('被')}（这一场用过了）"]
-        st = Status(kind="incapacitated" if kind == "stun" else kind, label=label[:20], escape=escape,
+        # 状态栏里的说法不带"你"（"一截裹尸布缠住了你的手"这种只在打中那一句里用）
+        short = label if "你" not in label else ("被裹尸布缠住了" if wrapped else
+                                                 {"stun": "被打得晕头转向", "restrained": "被缠住了", "prone": "被撞倒在地"}[kind])
+        st = Status(kind="incapacitated" if kind == "stun" else kind, label=short[:20], escape=escape,
                     since=datetime.now(timezone.utc).isoformat(), wrapped=wrapped)
         _set_status(cur, "players", player.id, st)
         player.status = st
@@ -3275,6 +3315,12 @@ def do_hide(cur: Cursor, player: Player, view: RoomView, a: Hide) -> list[str]:
     """躲起来（隐匿）：成功了几率不再上涨；已经被发现的，躲成功就甩掉了（难度高一级）"""
     st = _stealth(player)
     foes = [n for n in _enemies(cur, player.room_id) if n.status is None]
+    if hunter := next((n for n in foes if n.template.props.get("hide_fails")), None):
+        # 英仙座：在他面前躲藏必定失败，还让他下一击更狠
+        _tally_merge(cur, hunter, {"hide_punish": str(player.id)})
+        st.detected, st.hidden = True, False
+        _save_stealth(cur, player, st)
+        return [f"{player.name}想找地方藏起来", f"{hunter.name}笑了一声：“你藏的那点本事，是我玩剩下的。”（下一击冲着{player.name}，更狠）"]
     if keen := next((n for n in foes if n.template.props.get("keen")), None):
         raise ActionError(_keen_line(keen, player.name))
     env = _room_env(cur, player.room_id)
@@ -3420,7 +3466,7 @@ def enemy_turn(conn: Connection, player_id: UUID, actions: list[PlayerAction],
                 if any(f.startswith(f"{npc.name}摆脱了") for r in results for f in r.facts):
                     continue
                 skill, acted = _boss_turn(cur, npc, [player], {player.id} if dodge else set())
-                facts += _memory(cur, npc) + skill
+                facts += _gate_phase(cur, npc) + _memory(cur, npc) + skill
                 if acted == "skip":
                     continue
                 props = npc.template.props
@@ -3674,7 +3720,7 @@ def round_enemies(conn: Connection, room_id: str, done: dict[UUID, list[tuple[Pl
             # 头目：该放技能就放（放技能就是这一次出手；判罪标完照样打）
             skill, acted = _boss_turn(cur, npc, [c["p"] for c in cands if c["p"].hp > 0 and "close" not in c],
                                       {c["p"].id for c in cands if c["dodge"] > 0})
-            facts += _memory(cur, npc) + skill
+            facts += _gate_phase(cur, npc) + _memory(cur, npc) + skill
             if acted == "skip":
                 continue
             # 一轮出手几次：一般一次；组队时房间怪满了、折成血的那些多打几次（dungeon._spawn_group）；
@@ -3737,6 +3783,100 @@ def _fare(cur: Cursor, npc: Npc, targets: list[Player], depth: int, theme: str, 
     return [], False
 
 
+GATE_REMNANT, GATE_REMNANT_MAX = 0.05, 3      # 关卡头目：每失败一次下次它的血 -5%，最多三次（-15%）
+
+
+SIN_SOURCES = {"consume": ("use",), "dodge": ("dodge",), "retreat": ("maneuver",), "flee": ("flee",)}
+
+
+def _sin(player: Player) -> int:
+    s = player.flags.get("_sin") or {}
+    return int(s.get("n", 0)) if s.get("room") == player.room_id else 0
+
+
+def _set_sin(cur: Cursor, player: Player, n: int) -> None:
+    player.flags["_sin"] = {"room": player.room_id, "n": n}
+    cur.execute("update players set flags = flags || jsonb_build_object('_sin', %s::jsonb) where id = %s",
+                (Jsonb(player.flags["_sin"]), player.id))
+
+
+def _add_sin(cur: Cursor, player_id: UUID, action) -> list[str]:
+    """在称心的头目（props.sin）面前逃避审判：吃喝、闪避、后退、逃跑，罪 +1（最多 max）"""
+    player = load_player(cur, player_id)
+    judge = next((n for n in _enemies(cur, player.room_id) if n.template.props.get("sin")), None)
+    if not judge:
+        return []
+    cfg = judge.template.props["sin"]
+    kinds = {a for src in cfg.get("sources", []) for a in SIN_SOURCES.get(src, ())}
+    if action.action not in kinds or (action.action == "maneuver" and getattr(action, "steps", 0) >= 0):
+        return []
+    n = min(int(cfg.get("max", 6)), _sin(player) + 1)
+    _set_sin(cur, player, n)
+    return [f"（天平上{player.name}那一端又沉了一点：罪 ×{n}，{judge.name}称心时每层重 40%）"]
+
+
+def _gate_phase(cur: Cursor, npc: Npc) -> list[str]:
+    """关卡头目（props.phases）：第一次出手前算失败的余威；血掉到下一阶段的 at 以下，换一套招，
+    进阶段的 label、env、summon、actions、atk、on_hit 一起生效"""
+    props = npc.template.props
+    phases = props.get("phases")
+    if not phases or npc.hp is None:
+        return []
+    t = _tallies(cur, npc)
+    facts = []
+    if not t.get("remnant_done"):
+        cur.execute("select coalesce(max((flags->'gate_fails'->>%s)::int), 0) as n from players where room_id = %s",
+                    (str(props["dungeon"]["depth"]), npc.room_id))
+        fails = min(GATE_REMNANT_MAX, cur.fetchone()["n"])
+        _tally_merge(cur, npc, {"remnant_done": 1})
+        if fails:
+            cut = round(npc.template.max_hp * GATE_REMNANT * fails)
+            npc.hp = max(1, npc.hp - cut)
+            cur.execute("update npcs set hp = %s where id = %s", (npc.hp, npc.id))
+            facts.append(f"{npc.name}身上还留着上次砍出的伤（失败的余威：血少了 {round(GATE_REMNANT * fails * 100)}%，"
+                         f"HP {npc.hp}/{npc.template.max_hp}）")
+    k = int(t.get("gphase", 0))
+    if k + 1 >= len(phases) or npc.hp / npc.template.max_hp >= phases[k + 1]["at"]:
+        return facts
+    ph = phases[k + 1]
+    upd = {"gphase": k + 1, "pending": None, "used": [], "rnd": {}}
+    if ph.get("actions"):
+        upd["extra_acts"] = int(t.get("extra_acts", 0)) + ph["actions"]
+    if ph.get("atk"):
+        upd["phase_atk"] = int(t.get("phase_atk", 0)) + ph["atk"]
+    if ph.get("on_hit"):
+        upd["on_hit"] = ph["on_hit"]
+    _tally_merge(cur, npc, upd)
+    facts.append(_by(npc, ph.get("label", "换了一副架势")))
+    env = ph.get("env") or {}
+    if env:
+        info = props.get("dungeon", {})
+        facts += _skill_effect(cur, npc, {"do": "phase", "env": env}, [], info.get("depth", 1), info.get("theme", ""))
+    if sm := ph.get("summon"):
+        info = props.get("dungeon", {})
+        names = dungeon.spawn_minions(cur, npc.room_id, info.get("depth", 1), sm["kind"], info.get("theme", ""), sm.get("count", 1))
+        facts.append(f"{'、'.join(names)}加入了战斗（这些是跟着{npc.name}来的，它一倒下就会跑）")
+    if ph.get("actions"):
+        facts.append(f"（{npc.name}的动作快了，一轮多出手 {ph['actions']} 次）")
+    return facts
+
+
+def _phase_skills(props: dict, t: dict, acts: int) -> tuple[list[dict], dict]:
+    """这一阶段的招（关卡头目按 gphase 取），every_random 换成"到第几次出手就放"（tally.rnd 记下一次）。
+    返回 (招, 新的 rnd)"""
+    skills = props["phases"][int(t.get("gphase", 0))]["skills"] if props.get("phases") else props.get("skills") or []
+    rnd = dict(t.get("rnd") or {})
+    out = []
+    for i, s in enumerate(skills):
+        if s.get("when") == "every_random":
+            lo, hi = s["value"]
+            if str(i) not in rnd:
+                rnd[str(i)] = acts + random.randint(lo, hi)
+            s = {**s, "when": "at_act", "value": rnd[str(i)], "every_random": [lo, hi]}
+        out.append(s)
+    return out, rnd
+
+
 def _memory(cur: Cursor, npc: Npc) -> list[str]:
     """永不醒来的人（props.memories）：血掉到 at 以下，房间整个换成另一段记忆（名字、光亮、掩体、环境物件、灼热）"""
     mems = npc.template.props.get("memories") or []
@@ -3767,6 +3907,10 @@ def _boss_turn(cur: Cursor, npc: Npc, targets: list[Player], dodging: Optional[s
     skills = props.get("skills")
     if not skills or not targets or npc.hp is None:
         return [], False
+    if (fly := _tally(cur, npc, "flying")) > 0:
+        _tally_merge(cur, npc, {"flying": fly - 1})         # 飞鞋：盘旋的回合一轮轮过去
+    if _tally(cur, npc, "grounded"):
+        _tally_merge(cur, npc, {"grounded": 0})
     if muted := _tally(cur, npc, "muted"):
         _tally_merge(cur, npc, {"muted": muted - 1})        # 被禁了声：这一下只能普通地打
         return [], False
@@ -3778,6 +3922,8 @@ def _boss_turn(cur: Cursor, npc: Npc, targets: list[Player], dodging: Optional[s
     t = _tallies(cur, npc)
     acts, used = t.get("acts", 0), set(t.get("used", []))
     upd: dict = {"acts": acts + 1}
+    skills, rnd = _phase_skills(props, t, acts)
+    upd["rnd"] = rnd
     if t.get("silence"):
         upd["silence"] = t["silence"] - 1
     info = props.get("dungeon", {})
@@ -3812,11 +3958,14 @@ def _boss_turn(cur: Cursor, npc: Npc, targets: list[Player], dodging: Optional[s
             return regen_facts + [f"{npc.name}挨了这一下重的，聚起来的招一下子散了（打断了）"], True
         _tally_merge(cur, npc, upd)
         return regen_facts + _skill_effect(cur, npc, s["then"], targets, depth, theme, dodging), True
-    i = due_skill(skills, npc.hp / npc.template.max_hp, acts, used, bool(t.get("phased")), _star_dark(cur, npc.room_id))
+    i = due_skill(skills, npc.hp / npc.template.max_hp, acts, used, bool(t.get("phased")), _star_dark(cur, npc.room_id),
+                  _light(cur, npc.room_id))
     if i is None:
         _tally_merge(cur, npc, upd)
         return regen_facts, False
     s = skills[i]
+    if er := s.get("every_random"):
+        upd["rnd"] = rnd | {str(i): acts + random.randint(*er)}      # 下一次隔几下再放，猜不准
     upd["casts"] = t.get("casts", []) + [s["do"]]
     if s.get("when") in ("hp_below", "fight_start"):
         upd["used"] = sorted(used | {i})
@@ -3863,12 +4012,36 @@ def _skill_effect(cur: Cursor, npc: Npc, s: dict, targets: list[Player], depth: 
     facts = [_by(npc, s["label"], _you_of(cur, npc, s, targets))] if s.get("label") else []
     do = s["do"]
     dodging = dodging or set()
+    if do == "vanish":
+        _tally_merge(cur, npc, {"vanished": 1, "sneak": s.get("sneak_mult", 1.8)})
+        return facts
+    if do == "flight":
+        _tally_merge(cur, npc, {"flying": s.get("rounds", 2) + 1})
+        return facts
+    if do == "petrify":
+        for p in _boss_targets(cur, npc, s.get("target", "all"), targets):
+            if (flag := UNLESS_FLAGS.get(s.get("unless"))) and load_player(cur, p.id).flags.get(flag):
+                facts.append(f"{p.name}紧紧闭着眼，没有看那道光")
+                continue
+            facts += _inflict(cur, load_player(cur, p.id), "stun", "被那道光照成了一尊石像", depth, npc.name, escape=1)
+        return facts
     if do == "strike":
         # 蓄力重击：被瞄准的人闪避减半，写了 cover_halves 的全场大招躲在掩体后面减半
         cover = bool(_room_env(cur, npc.room_id).get("cover"))
         atk = npc.template.attack + int(_tallies(cur, npc).get("phase_atk", 0))
-        for p in _boss_targets(cur, npc, s.get("target", "highest_threat"), targets):
+        hit = _boss_targets(cur, npc, s.get("target", "highest_threat"), targets)
+        if below := s.get("only_below"):
+            # 斩首：只砍血量低于 only_below 的人，没人伤得够重就落空
+            hit = [p for p in hit if p.hp / max(1, p.max_hp) < below]
+            if not hit:
+                return facts + ["镰刀划过一道弧线落了空：没有人伤得够重"]
+        for p in hit:
             dmg = round(hurt_player_by(atk, _defense(cur, p), depth) * s.get("mult", 2.0))
+            if per := s.get("per_sin"):
+                sin = _sin(p)
+                dmg = round(dmg * (1 + per * sin))      # 称心：罪越重越疼
+                if sin:
+                    facts.append(f"天平上{p.name}那一端重重地沉了下去（罪 ×{sin}）")
             note = ""
             if p.id in dodging:
                 dmg, note = dmg // 2, f"，{p.name}闪开了大半"
@@ -3878,6 +4051,12 @@ def _skill_effect(cur: Cursor, npc: Npc, s: dict, targets: list[Player], depth: 
             facts += [f"{npc.name}这一击落在{p.name}身上，造成 {max(SCALE, dmg)} 点伤害{note}"] + hurt
             for e in s.get("effects", []) if p.hp > 0 else []:
                 facts += _inflict(cur, p, e["kind"], e.get("label", ""), depth, npc.name, turns=e.get("turns"), base=dmg)
+            if s.get("per_sin"):
+                if (cv := s.get("convict")) and _sin(p) >= cv.get("sin_at_least", 4) and p.hp > 0:
+                    e = cv["effect"]
+                    facts += [f"{p.name}被定了罪：天平那一端再也抬不起来"] \
+                        + _inflict(cur, p, e["kind"], "被定了罪", depth, npc.name, turns=e.get("turns"), heal_mult=e.get("heal_mult"))
+                _set_sin(cur, p, _sin(p) // 2)          # 称完减半（向下取整）
         if s.get("target") == "marked":
             _tally_merge(cur, npc, {"mark": None})
         return facts
@@ -3981,6 +4160,8 @@ def _skill_effect(cur: Cursor, npc: Npc, s: dict, targets: list[Player], depth: 
                               s.get("heal_mult"))
         return facts
     if do == "self_heal":
+        if s.get("unless_status") == "burning" and _tally(cur, npc, "singed"):
+            return facts + [f"{npc.name}身上还带着火，符上的金光一碰就散了（没回成血）"]
         gain = math.ceil(npc.template.max_hp * s.get("heal", 0.2))
         npc.hp = min(npc.template.max_hp, npc.hp + gain)
         cur.execute("update npcs set hp = %s where id = %s", (npc.hp, npc.id))
@@ -4206,6 +4387,17 @@ def do_attack(cur: Cursor, player: Player, view: RoomView, a: Attack) -> list[st
         dmg = math.ceil(dmg * crit.get("mult", 2))
     if npc.template.props.get("swarm"):
         dmg = max(SCALE, dmg // 2)              # 虫群：一下只拍死一小片
+    if npc.template.props.get("grounded_weak") and _tally(cur, npc, "grounded"):
+        dmg = round(dmg * npc.template.props["grounded_weak"])      # 刚被拽下来，还没站稳
+    if _tally(cur, npc, "vanished"):
+        # 隐身：这一下落空；群伤照样打得到，察觉过了能听声辨位
+        _tally_merge(cur, npc, {"vanished": 0})
+        ok, rolled = _check(cur, player, view, "perception", 2 + npc.template.props.get("dungeon", {}).get("depth", 0) // 10)
+        if not ok and not any(e["do"] == "splash" for e in fired):
+            return [f"{player.name}{how}{npc.name}刚才站的地方，却扑了个空：他早就不在那儿了"] + rolled
+        dmg_note0 = rolled + [f"{player.name}听出了他的位置，这一下结结实实打中了"]
+    else:
+        dmg_note0 = []
     if npc.template.props.get("lure") and not _tally(cur, npc, "lured"):
         _tally_merge(cur, npc, {"lured": 1})
         ok, rolled = _check(cur, player, view, "perception", 2 + npc.template.props.get("dungeon", {}).get("depth", 0) // 6)
@@ -4225,7 +4417,7 @@ def do_attack(cur: Cursor, player: Player, view: RoomView, a: Attack) -> list[st
     cur.execute("update players set flags = flags || jsonb_build_object('_last_target', %s::text) where id = %s", (str(npc.id), player.id))
     player.flags["_last_target"] = str(npc.id)
     facts, dead = _hurt_npc(cur, player, npc, dmg)
-    facts[:0] = dmg_note
+    facts[:0] = dmg_note0 + dmg_note
     if not shooter and not dead and (thorns := npc.template.props.get("thorns"))             and _roll(npc.template.props.get("thorns_chance", 1.0)):
         hurt, _ = _hurt_player(cur, player, thorns, "npc", npc.name)          # 荆棘的精英：近战砍它被扎回来
         facts += [f"{npc.name}身上的硬刺扎了回来，{player.name}受到 {thorns} 点伤害"] + hurt
@@ -5776,6 +5968,36 @@ def _heat(cur: Cursor, player_id: UUID, action: str) -> list[str]:
     return [f"热浪烤得{player.name}头昏眼花，掉了 {dmg} 点血"] + hurt
 
 
+FLIGHT_FREE = {"say", "look", "reject", "close_eyes", "pinch", "struggle", "stand", "talk"}
+GROUNDERS = ("绳", "网", "钩索")                  # 拿这些东西拽他更容易
+
+
+def _flight(cur: Cursor, player: Player, view: RoomView, action) -> Optional[list[str]]:
+    """飞鞋（关卡头目 flight）：他在头顶盘旋时，别的动作都会被他俯冲打断（作废，挨一下 ×0.5）；
+    冲着他做的花样（抓脚踝、甩绳子、撒网）或者装着钩索箭射他，是把他拽下来：运动判定，成了飞行结束，这一轮他挨打 ×1.5"""
+    if action.action in FLIGHT_FREE or not dungeon.is_dungeon(player.room_id):
+        return None
+    flyer = next((n for n in _enemies(cur, player.room_id) if _tally(cur, n, "flying") > 0), None)
+    if not flyer:
+        return None
+    target = getattr(action, "target", None)
+    at_him = target in view.refs and view.refs[target] == flyer.id
+    grapple = any(_prop(w, "loaded_ammo") == "grapple_bolt" or (w.props or {}).get("loaded_ammo") == "grapple_bolt"
+                  for w in _weapons(cur, player))
+    if at_him and (action.action == "stunt" or (action.action == "attack" and grapple)):
+        tool = next((i for i in view.inventory if any(w in i.name for w in GROUNDERS)), None)
+        depth = dungeon.parse_room(player.room_id)[1]
+        ok, rolled = _check(cur, player, view, "athletics", max(1, 2 + depth // 10 - (1 if tool or grapple else 0)))
+        if ok:
+            _tally_merge(cur, flyer, {"flying": 0, "grounded": 1})
+            how = f"用{tool.name}" if tool else "射出钩索箭" if grapple else "一把抓住他的脚踝"
+            return [f"{player.name}{how}，把{flyer.name}从半空拽了下来"] + rolled + [f"（{flyer.name}摔在地上还没站稳：这一轮挨打 ×1.5）"]
+        return [f"{player.name}想把{flyer.name}拽下来，没够着"] + rolled \
+            + _npc_strike(cur, player, flyer, "从头顶俯冲下来", 1.0, 0.5)
+    return [f"{player.name}刚一动，{flyer.name}就从头顶俯冲下来，把这一下打断了"] \
+        + _npc_strike(cur, player, flyer, "借着俯冲划了一刀", 1.0, 0.5)
+
+
 def execute(conn: Connection, view: RoomView, action: PlayerAction) -> ActionResult:
     # 两个玩家同时互相动手（互殴、互相急救）会各自先锁自己再锁对方，Postgres 判死锁回滚其中一个，重来一次就行
     for attempt in range(2):
@@ -5790,6 +6012,8 @@ def execute(conn: Connection, view: RoomView, action: PlayerAction) -> ActionRes
                            or st.kind == "prone" and action.action in PRONE_BLOCKED
                            or st.kind == "incapacitated" and action.action != "struggle"):
                     raise ActionError(f"{player.name}{st.label}，" + ("得先站起来" if st.kind == "prone" else "做不到"))
+                if (grab := _flight(cur, player, view, action)) is not None:
+                    return ActionResult(action=action.action, success=False, facts=grab)
                 facts = HANDLERS[action.action](cur, player, view, action)
                 facts += _heat(cur, player.id, action.action)
             return ActionResult(action=action.action, success=True, facts=facts)
@@ -5871,6 +6095,9 @@ def execute_all(conn: Connection, view: RoomView, actions: list[PlayerAction], e
         if result.success and dungeon.is_dungeon(view.room.id) and action.action not in ("look", "reject"):
             with conn.transaction():
                 result.facts += _floor_clock(_cursor(conn), view.player.id)
+        if result.success and action.action in ("use", "dodge", "maneuver", "flee") and dungeon.is_dungeon(view.room.id):
+            with conn.transaction():
+                result.facts += _add_sin(_cursor(conn), view.player.id, action)
         if result.success and action.action in NOISY and dungeon.is_dungeon(view.room.id):
             with conn.transaction():
                 cur = _cursor(conn)
