@@ -101,7 +101,7 @@ All game content lives in YAML (`world.yaml`, `dungeon.yaml`, `items_dungeon.yam
 | File | What it does |
 |---|---|
 | `server.py` | HTTP API, turn pipeline, combat round scheduling |
-| `engine.py` | the rules engine: every action handler, combat, stealth, effects, NPC services |
+| `engine/` | the rules engine, one module per topic: `combat`, `stealth`, `environment`, `bosses`, `rounds`, `effects`, `gear`, `actions`, `npc_trade`, `npc_social`, `smith`, … and `dispatch` (the entry points). See `engine/__init__.py` for how the modules share one namespace |
 | `rules.py` | pure formulas (damage, hit chance, scaling by depth, upgrade odds), shared with the simulator |
 | `dungeon.py` | floor generation, themes, spawning, loot |
 | `commands.py` | rule-based parser for common commands |

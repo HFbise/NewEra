@@ -347,7 +347,7 @@ def _revive_quip(room_id: str, keeper_tid: str, player_id: UUID, player_name: st
                      (player_id, keeper_tid, f"{player_name}倒在你店里，你把他扶起来照料好了，说：{line}"[:engine.NPC_LOG_LIMIT]))
 
 
-engine.REVIVE_HOOK = _revive_hook
+engine.set_revive_hook(_revive_hook)
 
 
 def _floor_hook(run, depth: int) -> None:
