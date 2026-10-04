@@ -2,56 +2,166 @@
 
 规则引擎：校验并执行玩家动作，写数据库，输出 facts。不调用 AI，全是确定性代码。
 
-The engine used to be one 7,000-line file whose functions call each other freely (combat calls stealth,
-stealth calls environment, bosses call combat ...). It is split by topic into the modules below, and all
-of them share one namespace, exactly as they did in the single file:
+One module per topic. Modules import each other explicitly (``from . import combat``) and call across with the
+module name (``combat.hurt_npc(...)``); names starting with an underscore are private to their module. Several
+topics depend on each other (combat needs stealth, stealth needs the environment, bosses call back into combat),
+which module-level imports handle fine. This file re-exports what the server, the AI layer and the tests use.
 
-1. modules load in MODULES order; each one starts with the names of the modules before it, so module-level
-   code (constants, the action table in dispatch) can use them;
-2. once all are loaded, every module gets every name, so functions can call functions defined later;
-3. the package exposes the union, so callers keep using ``engine.load_view``, ``engine.execute_all`` ...
-
-以前是一个七千多行的文件，函数之间互相调用。按主题拆成下面这些模块，但仍然共用一个命名空间（跟拆之前一样）：
-按顺序加载、每个模块先拿到前面模块的名字；全部加载完再把所有名字补给每个模块；包本身对外暴露全部名字。
+每个主题一个模块，模块之间显式 import、用模块名调用；下划线开头的是模块私有的。这里导出 server、ai 和测试用到的名字。
 """
-import importlib.util
-import sys
 
-MODULES = [
-    "core",            # imports, tuning constants, ActionError
-    "helpers",         # ref resolution, item lookup, dice, skill checks, NPC tallies
-    "loading",         # reading state from the database
-    "gear",            # equipment effects, defense, equip / unequip
-    "effects",         # status effects and control on players
-    "environment",     # light, ground, heat, fog, star cycle, noise, features
-    "stealth",         # detection, hiding, distance, dodging
-    "combat",          # attacks, stunts, damage, enemy turns
-    "ranged",          # ranged weapons, ammo, cover, smoke
-    "bosses",          # boss skills, phases, gate bosses
-    "rounds",          # party combat rounds
-    "duel",            # player-versus-player duels
-    "party",           # following and parties
-    "actions",         # moving, taking, using items, resting
-    "dungeon_events",  # event-room services
-    "smith",           # upgrades, gems, donations, curses
-    "npc_trade",       # talking, trading, NPC giving and making items
-    "npc_social",      # affinity, memory, quests, gifts, news
-    "item_info",       # item and monster descriptions for the UI
-    "dispatch",        # execute / execute_all and the action table
+from . import (
+    core, helpers, loading, equipment, afflictions, environment, stealth, combat, ranged_combat, bosses, rounds,
+    duels, parties, everyday, dungeon_events, smith, npc_trade, npc_social, item_info, dispatch,
+)
+from rules import HEAL_PCT, HEAL_PCT_ALCOHOL, base_price, skill_progress
+from .core import ActionError, DUEL_RULES, ONLINE_WINDOW, START_DISTANCE, START_ROOM
+from .helpers import find_exit
+from .loading import (
+    cursor, delete_player, drop_sleepers, load_items, load_npcs, load_player, load_room, load_view,
+    set_revive_hook, sleep, touch,
+)
+from .equipment import LORE_MARK, gear_totals, heal_scale
+from .afflictions import effects_text, inflict
+from .environment import glare, heat, light_info
+from .stealth import distance_word
+from .combat import npc_counter, pick_target
+from .bosses import boss_turn
+from .rounds import (
+    ROUND_ACTIONS, ROUND_INSTANT, claim_round, end_round, in_round, queue_round, round_due, round_enemies,
+    round_info, unstick_rounds,
+)
+from .everyday import do_camp, do_move, give_player_new
+from .smith import do_upgrade, upgradable
+from .npc_trade import (
+    GIFT_FACT, RARE_ASK_RE, RELUCTANT_FACT, RETURNED_FACT, SELL_MAX_COUNT, buy_quotes, can_eject, can_gift,
+    creatable_kinds, create_limits, get_offers, give_tip, giveable_items, known_goods, made_allowed, made_spec,
+    npc_buy_made, npc_eject, npc_gift, npc_give, npc_hand, npc_menu, npc_sell, quote_made, rare_stock, sellable,
+    set_offer, shop_directory,
+)
+from .npc_social import (
+    NPC_LOG_LIMIT, REFILL_FACT, add_npc_log, adjust_affinity, affinity_word, clip_npc_said, get_affinity,
+    get_npc_memory, last_bought, memory_material, npc_bonds, perks, quest_turn, return_gift, set_npc_memory,
+)
+from .item_info import MONSTER_LORE, effect_text, item_detail, monster_notes
+from .dispatch import execute, execute_all
+
+__all__ = [
+    "core",
+    "helpers",
+    "loading",
+    "equipment",
+    "afflictions",
+    "environment",
+    "stealth",
+    "combat",
+    "ranged_combat",
+    "bosses",
+    "rounds",
+    "duels",
+    "parties",
+    "everyday",
+    "dungeon_events",
+    "smith",
+    "npc_trade",
+    "npc_social",
+    "item_info",
+    "dispatch",
+    "HEAL_PCT",
+    "HEAL_PCT_ALCOHOL",
+    "base_price",
+    "skill_progress",
+    "ActionError",
+    "DUEL_RULES",
+    "ONLINE_WINDOW",
+    "START_DISTANCE",
+    "START_ROOM",
+    "find_exit",
+    "cursor",
+    "delete_player",
+    "drop_sleepers",
+    "load_items",
+    "load_npcs",
+    "load_player",
+    "load_room",
+    "load_view",
+    "set_revive_hook",
+    "sleep",
+    "touch",
+    "LORE_MARK",
+    "gear_totals",
+    "heal_scale",
+    "effects_text",
+    "inflict",
+    "glare",
+    "heat",
+    "light_info",
+    "distance_word",
+    "npc_counter",
+    "pick_target",
+    "boss_turn",
+    "ROUND_ACTIONS",
+    "ROUND_INSTANT",
+    "claim_round",
+    "end_round",
+    "in_round",
+    "queue_round",
+    "round_due",
+    "round_enemies",
+    "round_info",
+    "unstick_rounds",
+    "do_camp",
+    "do_move",
+    "give_player_new",
+    "do_upgrade",
+    "upgradable",
+    "GIFT_FACT",
+    "RARE_ASK_RE",
+    "RELUCTANT_FACT",
+    "RETURNED_FACT",
+    "SELL_MAX_COUNT",
+    "buy_quotes",
+    "can_eject",
+    "can_gift",
+    "creatable_kinds",
+    "create_limits",
+    "get_offers",
+    "give_tip",
+    "giveable_items",
+    "known_goods",
+    "made_allowed",
+    "made_spec",
+    "npc_buy_made",
+    "npc_eject",
+    "npc_gift",
+    "npc_give",
+    "npc_hand",
+    "npc_menu",
+    "npc_sell",
+    "quote_made",
+    "rare_stock",
+    "sellable",
+    "set_offer",
+    "shop_directory",
+    "NPC_LOG_LIMIT",
+    "REFILL_FACT",
+    "add_npc_log",
+    "adjust_affinity",
+    "affinity_word",
+    "clip_npc_said",
+    "get_affinity",
+    "get_npc_memory",
+    "last_bought",
+    "memory_material",
+    "npc_bonds",
+    "perks",
+    "quest_turn",
+    "return_gift",
+    "set_npc_memory",
+    "MONSTER_LORE",
+    "effect_text",
+    "item_detail",
+    "monster_notes",
+    "execute",
+    "execute_all",
 ]
-
-_shared: dict = {}
-for _name in MODULES:
-    _spec = importlib.util.find_spec(f"{__name__}.{_name}")
-    _module = importlib.util.module_from_spec(_spec)
-    _module.__dict__.update(_shared)                 # names from the modules loaded so far
-    sys.modules[_spec.name] = _module
-    _spec.loader.exec_module(_module)
-    _shared.update({k: v for k, v in vars(_module).items() if not k.startswith("__")})
-
-for _name in MODULES:                                # back-fill: functions may call later modules at run time
-    _module = sys.modules[f"{__name__}.{_name}"]
-    for _k, _v in _shared.items():
-        _module.__dict__.setdefault(_k, _v)
-
-globals().update(_shared)

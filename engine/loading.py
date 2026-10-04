@@ -1,6 +1,15 @@
 """Loading game state from the database into pydantic models. / 从数据库读出状态"""
-# 这个包里的模块共用一个命名空间：engine/__init__.py 按 MODULES 的顺序加载，每个模块都能直接用别的模块里的名字
-# （跟拆分前在同一个文件里一样）。All modules in this package share one namespace; see engine/__init__.py.
+from collections import defaultdict
+from typing import Callable, Optional
+from uuid import NAMESPACE_URL, UUID, uuid5
+
+from psycopg import Connection, Cursor
+from psycopg.rows import dict_row
+
+from schema import Dispenser, Duel, Feature, ItemInstance, Npc, OtherPlayer, Player, Room, RoomExit, RoomView
+
+from .core import ActionError, FORAGE_CHANCE, ONLINE_WINDOW, STATUS_MAX
+from . import afflictions, duels, environment, helpers, parties
 
 
 ITEM_SELECT = """
@@ -16,7 +25,7 @@ from npcs n join npc_templates t on t.id = n.template_id
 """
 
 
-def _cursor(conn: Connection) -> Cursor:
+def cursor(conn: Connection) -> Cursor:
     return conn.cursor(row_factory=dict_row)
 
 
@@ -141,12 +150,12 @@ def sleep(conn: Connection, player_id: UUID) -> None:
 def delete_player(conn: Connection, player_id: UUID) -> None:
     """删角色：身上的东西先放到所在房间地上（不然任务物品会永远消失），再删账号，玩家行级联删除"""
     with conn.transaction():
-        cur = _cursor(conn)
+        cur = cursor(conn)
         player = load_player(cur, player_id, lock=True)
         if player.party_id:
-            _leave_party(cur, player)
+            parties.leave_party(cur, player)
         for item in load_items(cur, "i.player_id = %s", (player_id,), lock=True):
-            _move_item(cur, item, room_id=player.room_id)
+            helpers.move_item(cur, item, room_id=player.room_id)
         # 开发期账号是 server.py 塞进 auth.users 的假用户；正式版走 Supabase Auth 的删除接口
         cur.execute("delete from auth.users where id = %s", (player_id,))
 
@@ -154,8 +163,8 @@ def delete_player(conn: Connection, player_id: UUID) -> None:
 def _refresh_room(cur: Cursor, room_id: str) -> None:
     """刷新：NPC 复活、门自动锁回、物品重新出现、看店的 NPC 扶起倒下的人。
     不用后台任务，有人在这个房间（发命令或页面轮询）时顺手检查，没人的房间不用管"""
-    _respawn_npcs(cur, room_id)
-    _keeper_revive(cur, room_id)
+    respawn_npcs(cur, room_id)
+    keeper_revive(cur, room_id)
     # 负面状态到点自动解除
     for table in ("players", "npcs"):
         cur.execute(
@@ -217,7 +226,7 @@ def set_revive_hook(hook: Callable[[str, str, UUID, str, dict, str], None]) -> N
     REVIVE_HOOK = hook
 
 
-def _keeper_revive(cur: Cursor, room_id: str) -> list[str]:
+def keeper_revive(cur: Cursor, room_id: str) -> list[str]:
     """看店的 NPC（配了 revive_lines、不敌对、醒着）把自己店里倒下的人扶起来，回满血。
     房间里的人会看到一条动态；返回 facts 给当回合用"""
     cur.execute(
@@ -229,7 +238,7 @@ def _keeper_revive(cur: Cursor, room_id: str) -> list[str]:
     keeper = cur.fetchone()
     if keeper is None:
         return []
-    cur.execute(f"""update players set hp = max_hp + {RESTORE_MAX_HP}, max_hp = max_hp + {RESTORE_MAX_HP},
+    cur.execute(f"""update players set hp = max_hp + {afflictions.RESTORE_MAX_HP}, max_hp = max_hp + {afflictions.RESTORE_MAX_HP},
                         effects = coalesce((select jsonb_agg(e) from jsonb_array_elements(effects) e where e->>'kind' in ('whet', 'cheer')), '[]'::jsonb), updated_at = now() where room_id = %s and hp <= 0
                     returning id, name, max_hp, downed_by""", (room_id,))
     facts = []
@@ -250,7 +259,7 @@ def _keeper_revive(cur: Cursor, room_id: str) -> list[str]:
     return facts
 
 
-def _respawn_npcs(cur: Cursor, room_id: str, found: bool = False) -> list[str]:
+def respawn_npcs(cur: Cursor, room_id: str, found: bool = False) -> list[str]:
     """NPC 死了 respawn_seconds 秒后，没有醒着的玩家在场就悄悄原地复活；
     有人搜寻（found=True）就不用等，直接找出来。返回复活的名字"""
     cur.execute(
@@ -271,7 +280,7 @@ def load_view(conn: Connection, player_id: UUID) -> RoomView:
     """构建给意图解析 AI 的房间上下文，并分配短编号。顺便跑一次房间刷新"""
     # 只读也包在事务里：psycopg 默认非 autocommit，事务外查询会留下一个不提交的隐式事务
     with conn.transaction():
-        cur = _cursor(conn)
+        cur = cursor(conn)
         _refresh_room(cur, load_player(cur, player_id).room_id)
         player = load_player(cur, player_id)          # 刷新可能解除了自己的状态，重新读
         cur.execute(
@@ -294,10 +303,10 @@ def load_view(conn: Connection, player_id: UUID) -> RoomView:
             cur.execute("select name from players where id = %s", (player.following,))
             following = cur.fetchone()["name"]
         room = load_room(cur, player.room_id)
-        if env := env_text(cur, room):
+        if env := environment.env_text(cur, room):
             room.details = (room.details + "\n" + env).strip()
-        _end_stale_duels(cur)
-        duel = _active_duel(cur, player.id)
+        duels.end_stale_duels(cur)
+        duel = duels.active_duel(cur, player.id)
         cur.execute(
             """select p.name from duels d join players p on p.id = d.challenger
                where d.target = %s and not d.accepted order by d.created_at""", (player.id,))

@@ -1,6 +1,16 @@
 """Affinity, NPC memory, quests, gifts, news and nudges. / 好感、NPC 记忆、委托、回礼、更新告示和提醒"""
-# 这个包里的模块共用一个命名空间：engine/__init__.py 按 MODULES 的顺序加载，每个模块都能直接用别的模块里的名字
-# （跟拆分前在同一个文件里一样）。All modules in this package share one namespace; see engine/__init__.py.
+import re
+from datetime import datetime, timezone
+from typing import Optional
+from uuid import UUID
+
+from psycopg import Connection, Cursor
+
+import dungeon
+from schema import ActionResult, Npc, Player
+
+from .core import AFFINITY_RANGE, AFFINITY_STEP, ActionError
+from . import helpers, loading, npc_trade, smith
 
 
 UPGRADE_NUDGE = "_upgrade_nudge"         # players.flags：莉娜提醒过升级了（下划线开头的是内部记号，侧栏不显示）
@@ -12,11 +22,11 @@ NUDGE_GOLD, NUDGE_DEPTH = 20, 3
 BOW_NUDGE = "_bow_nudge"
 
 
-def _bow_nudge(cur: Cursor, player: Player, npc: Npc) -> list[str]:
+def bow_nudge(cur: Cursor, player: Player, npc: Npc) -> list[str]:
     """第一次拿着弓弩回村：麦琪顺口提一句，拿远程的最好找人挡在前面（每人一次）"""
     if not npc.template.props.get("inn") or player.flags.get(BOW_NUDGE) or dungeon.is_dungeon(player.room_id):
         return []
-    bow = next((w for w in _weapons(cur, player) if _prop(w, "ranged") or _prop(w, "loads")), None)
+    bow = next((w for w in helpers.weapons(cur, player) if helpers.prop(w, "ranged") or helpers.prop(w, "loads")), None)
     if bow is None:
         return []
     cur.execute("update players set flags = flags || jsonb_build_object(%s::text, true) where id = %s", (BOW_NUDGE, player.id))
@@ -28,7 +38,7 @@ def _bow_nudge(cur: Cursor, player: Player, npc: Npc) -> list[str]:
 NUDGE_AGAIN = 5                         # 提醒过以后，最深层数每再深这么多、条件还满足，就再提一次（"忘了"的人也能再听到）
 
 
-def _deepest(cur: Cursor, player: Player) -> int:
+def player_deepest(cur: Cursor, player: Player) -> int:
     cur.execute("select deepest_floor from players where id = %s", (player.id,))
     return cur.fetchone()["deepest_floor"]
 
@@ -37,11 +47,11 @@ def _nudge_due(cur: Cursor, player: Player, key: str) -> bool:
     """这条提醒现在该不该说：没提过，或者上次提的时候最深层数比现在浅 NUDGE_AGAIN 层以上（flags 里记着上次的层数；
     以前记的 true 当作第 0 层）"""
     last = player.flags.get(key)
-    return last is None or last is False or _deepest(cur, player) >= int(last) + NUDGE_AGAIN
+    return last is None or last is False or player_deepest(cur, player) >= int(last) + NUDGE_AGAIN
 
 
 def _nudge_mark(cur: Cursor, player: Player, key: str) -> None:
-    deepest = _deepest(cur, player)
+    deepest = player_deepest(cur, player)
     cur.execute("update players set flags = flags || jsonb_build_object(%s::text, %s::int) where id = %s", (key, deepest, player.id))
     player.flags[key] = deepest
 
@@ -87,7 +97,7 @@ NEWS = [
 NEWS_SEEN = "_news"
 
 
-def _news(cur: Cursor, player: Player, npc: Npc) -> list[str]:
+def news(cur: Cursor, player: Player, npc: Npc) -> list[str]:
     """麦琪在酒馆里八卦最近的更新（每个版本每人一次）"""
     seen = player.flags.get(NEWS_SEEN)
     if not npc.template.props.get("inn") or not NEWS or seen == NEWS[0][0]:
@@ -109,19 +119,19 @@ ARMOR_NUDGE, GEM_NUDGE, POTION_NUDGE = "_armor_nudge", "_gem_nudge", "_potion_nu
 ARMOR_NUDGE_GOLD, POTION_NUDGE_DEPTH = 100, 8
 
 
-def _armor_nudge(cur: Cursor, player: Player, npc: Npc) -> list[str]:
+def armor_nudge(cur: Cursor, player: Player, npc: Npc) -> list[str]:
     """身上的防具一件都没升过、兜里有 100 金以上：莉娜提防具"""
     if not npc.template.props.get("upgrades") or player.gold < ARMOR_NUDGE_GOLD or dungeon.is_dungeon(player.room_id):
         return []
-    worn = [i for i in _worn(cur, player) if i.template.type == "armor" and i.defense > 0]
+    worn = [i for i in helpers.worn(cur, player) if i.template.type == "armor" and i.defense > 0]
     if not worn or any(i.props.get("plus") for i in worn) or not _nudge_due(cur, player, ARMOR_NUDGE):
         return []
     _nudge_mark(cur, player, ARMOR_NUDGE)
     return [f"{npc.name}敲了敲{player.name}身上的{worn[0].name}：“光磨刀不补甲，下面的怪可不跟你讲道理。”"
-            f"（防具也能升级：说「升级{worn[0].name}」，+1 要 {upgrade_terms(worn[0])[1]} 金币）"]
+            f"（防具也能升级：说「升级{worn[0].name}」，+1 要 {smith.upgrade_terms(worn[0])[1]} 金币）"]
 
 
-def _gem_nudge(cur: Cursor, player: Player, npc: Npc) -> list[str]:
+def gem_nudge(cur: Cursor, player: Player, npc: Npc) -> list[str]:
     """背包里有宝石、身上的装备有空孔：莉娜说孔空着也是空着"""
     if not npc.template.props.get("upgrades") or dungeon.is_dungeon(player.room_id):
         return []
@@ -138,32 +148,32 @@ def _gem_nudge(cur: Cursor, player: Player, npc: Npc) -> list[str]:
             f"（镶宝石免费：说「把某某宝石镶到{r['holed']}上」）"]
 
 
-def _potion_nudge(cur: Cursor, player: Player, npc: Npc) -> list[str]:
+def potion_nudge(cur: Cursor, player: Player, npc: Npc) -> list[str]:
     """到过第 8 层以下、身上一瓶血药都没有：麦琪提一句"""
     if not npc.template.props.get("inn") or dungeon.is_dungeon(player.room_id):
         return []
     cur.execute("select 1 from item_instances where player_id = %s and template_id = 'blood_potion' limit 1", (player.id,))
-    if cur.fetchone() or _deepest(cur, player) < POTION_NUDGE_DEPTH or not _nudge_due(cur, player, POTION_NUDGE):
+    if cur.fetchone() or player_deepest(cur, player) < POTION_NUDGE_DEPTH or not _nudge_due(cur, player, POTION_NUDGE):
         return []
     _nudge_mark(cur, player, POTION_NUDGE)
     return [f"{npc.name}上下打量了{player.name}一圈，撇撇嘴：“又空着手往下跑？连瓶血药都不带，等着我去捡你啊？”"
             "（杂货铺的诺艾尔卖血药，倒下的队友也能灌）"]
 
 
-def _upgrade_nudge(cur: Cursor, player: Player, npc: Npc) -> list[str]:
+def upgrade_nudge(cur: Cursor, player: Player, npc: Npc) -> list[str]:
     """带着钱回村、下过第 3 层、手上的武器还没升过：铁匠见到时主动提一句（之后每深 5 层还没升就再提）。
     不然新人不知道能升级，第 6 层撞墙也不知道为什么"""
     if (not npc.template.props.get("upgrades") or player.gold < NUDGE_GOLD
             or dungeon.is_dungeon(player.room_id)):
         return []
-    if _deepest(cur, player) < NUDGE_DEPTH or not _nudge_due(cur, player, UPGRADE_NUDGE):
+    if player_deepest(cur, player) < NUDGE_DEPTH or not _nudge_due(cur, player, UPGRADE_NUDGE):
         return []
-    weapon = next((w for w in _weapons(cur, player) if not w.props.get("plus") and not _prop(w, "lights")), None)
+    weapon = next((w for w in helpers.weapons(cur, player) if not w.props.get("plus") and not helpers.prop(w, "lights")), None)
     if weapon is None:
         return []
     _nudge_mark(cur, player, UPGRADE_NUDGE)
     return [f"{npc.name}瞥见{player.name}手上那把没回过炉的{weapon.name}，皱起了眉头，像是看不下去"
-            f"（她能帮你升级：说「升级{weapon.name}」，+1 要 {upgrade_terms(weapon)[1]} 金币）"]
+            f"（她能帮你升级：说「升级{weapon.name}」，+1 要 {smith.upgrade_terms(weapon)[1]} 金币）"]
 
 
 # 任务定义在 world.yaml 的 quests，进度按玩家记在 player_quests：没记录 = 没接，offered = NPC 提过，
@@ -174,9 +184,9 @@ def quest_turn(conn: Connection, player_id: UUID, npc_id: UUID) -> tuple[list[Ac
     返回 (奖励的执行结果, 给叙事的任务情况 [(new|active|done|closed, 任务)])"""
     results, context = [], []
     with conn.transaction():
-        cur = _cursor(conn)
-        player = load_player(cur, player_id, lock=True)
-        npcs = load_npcs(cur, "n.id = %s", (npc_id,))
+        cur = loading.cursor(conn)
+        player = loading.load_player(cur, player_id, lock=True)
+        npcs = loading.load_npcs(cur, "n.id = %s", (npc_id,))
         if not npcs:
             return results, context
         npc = npcs[0]
@@ -190,7 +200,7 @@ def quest_turn(conn: Connection, player_id: UUID, npc_id: UUID) -> tuple[list[Ac
             # 两种完成条件：身上有标记（打死哥布林），或者带着要的东西来找发布者（锈剑）
             brought = None
             if q["needs_item"]:
-                brought = next(iter(load_items(cur, "i.player_id = %s and i.template_id = %s",
+                brought = next(iter(loading.load_items(cur, "i.player_id = %s and i.template_id = %s",
                                                (player_id, q["needs_item"]), lock=True)), None)
             done = bool(q["done_flag"] and player.flags.get(q["done_flag"])) or brought is not None
             if q["status"] == "rewarded":
@@ -239,9 +249,9 @@ def _set_quest(cur: Cursor, player_id: UUID, quest_id: str, status: str) -> None
 
 def get_affinity(conn: Connection, player_id: UUID, npc_id: UUID) -> int:
     with conn.transaction():
-        cur = _cursor(conn)
-        npcs = load_npcs(cur, "n.id = %s", (npc_id,))
-        return _affinity(cur, load_player(cur, player_id), npcs[0]) if npcs else 0
+        cur = loading.cursor(conn)
+        npcs = loading.load_npcs(cur, "n.id = %s", (npc_id,))
+        return npc_trade.affinity_of(cur, loading.load_player(cur, player_id), npcs[0]) if npcs else 0
 
 
 NPC_MEMORY_LIMIT = 300                  # NPC 对每个玩家的长期记忆总结上限（字）
@@ -299,7 +309,7 @@ def get_npc_memory(conn: Connection, player_id: UUID, npc_id: UUID, query: str =
     """NPC 对这个玩家记得什么：长期记忆总结 + 最近几条完整来往 + 按玩家这句话（query）从更早的记录里翻出的相关几条。
     按 NPC 模板记，NPC 复活、重新 seed 都不丢"""
     with conn.transaction():
-        cur = _cursor(conn)
+        cur = loading.cursor(conn)
         cur.execute(
             """select r.memory from player_npc_relations r join npcs n on n.template_id = r.npc_template
                where r.player_id = %s and n.id = %s""",
@@ -340,7 +350,7 @@ def get_npc_memory(conn: Connection, player_id: UUID, npc_id: UUID, query: str =
 def memory_material(conn: Connection, player_id: UUID, npc_template: str) -> tuple[str, list[str]]:
     """后台整理摘要用：(旧摘要, 最近 NPC_SUMMARY_WINDOW 条完整记录，从早到晚)"""
     with conn.transaction():
-        cur = _cursor(conn)
+        cur = loading.cursor(conn)
         cur.execute("select memory from player_npc_relations where player_id = %s and npc_template = %s",
                     (player_id, npc_template))
         row = cur.fetchone()
@@ -354,7 +364,7 @@ def memory_material(conn: Connection, player_id: UUID, npc_template: str) -> tup
 def last_bought(conn: Connection, player_id: UUID, npc: Npc) -> Optional[str]:
     """这个客人上次在这个 NPC 这儿买的东西（"再来一捆"说的就是它）"""
     with conn.transaction():
-        cur = _cursor(conn)
+        cur = loading.cursor(conn)
         cur.execute("""select entry from npc_memory_log where player_id = %s and npc_template = %s and entry like '%%卖给了%%'
                        order by id desc limit 1""", (player_id, npc.template.id))
         row = cur.fetchone()
@@ -405,9 +415,9 @@ def adjust_affinity(conn: Connection, player_id: UUID, npc_id: UUID, delta: int)
     lo, hi = AFFINITY_RANGE
     try:
         with conn.transaction():
-            cur = _cursor(conn)
-            player = load_player(cur, player_id, lock=True)
-            npcs = load_npcs(cur, "n.id = %s", (npc_id,))
+            cur = loading.cursor(conn)
+            player = loading.load_player(cur, player_id, lock=True)
+            npcs = loading.load_npcs(cur, "n.id = %s", (npc_id,))
             if not npcs or not npcs[0].alive or npcs[0].room_id != player.room_id:
                 raise ActionError("对方不在这里")
             npc = npcs[0]
@@ -455,7 +465,7 @@ def return_gift(conn: Connection, player_id: UUID, npc: Npc) -> list[ActionResul
     if not gifts:
         return []
     with conn.transaction():
-        cur = _cursor(conn)
+        cur = loading.cursor(conn)
         cur.execute("select affinity, gifts from player_npc_relations where player_id = %s and npc_template = %s for update",
                     (player_id, npc.template.id))
         row = cur.fetchone()
@@ -465,7 +475,7 @@ def return_gift(conn: Connection, player_id: UUID, npc: Npc) -> list[ActionResul
         if not due:
             return []
         tier, g = due[0], gifts[str(due[0])] if str(due[0]) in gifts else gifts[due[0]]
-        player = load_player(cur, player_id)
+        player = loading.load_player(cur, player_id)
         cur.execute("update player_npc_relations set gifts = array_append(gifts, %s) where player_id = %s and npc_template = %s",
                     (tier, player_id, npc.template.id))
         facts = [f"{npc.name}送给{player.name}：{g['text']}（{GIFT_BACK_FACT}，好感到了 {tier}）"]
@@ -473,7 +483,7 @@ def return_gift(conn: Connection, player_id: UUID, npc: Npc) -> list[ActionResul
             facts.append(f"{npc.name}{scene}")               # 送的时候的动作（诺艾尔从怀里的书里抽出书签）
         if item := g.get("item"):
             if item == "lina_blade":
-                facts += _exclusive_blade(cur, player, npc)
+                facts += smith.exclusive_blade(cur, player, npc)
             else:
                 cur.execute("insert into item_instances (template_id, player_id) values (%s, %s)", (item, player_id))
                 cur.execute("select props ? 'empty' as refill from item_templates where id = %s", (item,))
@@ -502,7 +512,7 @@ def perks(cur: Cursor, player_id: UUID, npc_template: Optional[str] = None) -> s
 def npc_bonds(conn: Connection, player_id: UUID, npc: Npc) -> list[str]:
     """NPC 台词里可以提的别人的交情：这个玩家跟别的 NPC（熟客以上），别的玩家跟这个 NPC（朋友以上）"""
     with conn.transaction():
-        cur = _cursor(conn)
+        cur = loading.cursor(conn)
         cur.execute("""select t.name, r.affinity from player_npc_relations r join npc_templates t on t.id = r.npc_template
                        where r.player_id = %s and r.npc_template <> %s and r.affinity >= 20 order by r.affinity desc""",
                     (player_id, npc.template.id))

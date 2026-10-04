@@ -1,9 +1,20 @@
 """Player status effects and control (poison, bleed, blind, silence, blessings, restraints). / 玩家身上的效果和控制状态"""
-# 这个包里的模块共用一个命名空间：engine/__init__.py 按 MODULES 的顺序加载，每个模块都能直接用别的模块里的名字
-# （跟拆分前在同一个文件里一样）。All modules in this package share one namespace; see engine/__init__.py.
+from datetime import datetime, timezone
+from typing import Optional
+from uuid import UUID
+
+from psycopg import Cursor
+from psycopg.types.json import Jsonb
+
+import dungeon
+from rules import BLEED_DAMAGE, CORRODE_HP, EFFECT_TURNS, POISON_HIT, SCALE, dot_value
+from schema import Effect, Npc, Player, RoomView, Stand, Status, Struggle
+
+from .core import ActionError
+from . import combat, environment, equipment, everyday, helpers, stealth
 
 
-def _set_status(cur: Cursor, table: str, obj_id: UUID, status: Optional[Status]) -> None:
+def set_status(cur: Cursor, table: str, obj_id: UUID, status: Optional[Status]) -> None:
     cur.execute(f"update {table} set status = %s where id = %s",
                 (Jsonb(status.model_dump()) if status else None, obj_id))
 
@@ -23,20 +34,20 @@ FLOOR_EFFECTS = ("whet", "bless")       # 只管这一层的（source 记 run:de
 RESTORE_MAX_HP = "coalesce((select sum((e->>'hp')::int) from jsonb_array_elements(effects) e), 0)"
 
 
-def _effect(player: Player, kind: str) -> Optional[Effect]:
+def effect(player: Player, kind: str) -> Optional[Effect]:
     return next((e for e in player.effects if e.kind == kind), None)
 
 
-def _poisoned(player: Player) -> float:
-    return POISON_HIT if _effect(player, "poison") else 0.0
+def poisoned(player: Player) -> float:
+    return POISON_HIT if effect(player, "poison") else 0.0
 
 
-def _bled(player: Player, dmg: int) -> int:
+def bled(player: Player, dmg: int) -> int:
     """流血时打出的伤害打折"""
-    return max(SCALE, round(dmg * BLEED_DAMAGE)) if _effect(player, "bleed") and dmg > 0 else dmg
+    return max(SCALE, round(dmg * BLEED_DAMAGE)) if effect(player, "bleed") and dmg > 0 else dmg
 
 
-def _save_effects(cur: Cursor, player: Player) -> None:
+def save_effects(cur: Cursor, player: Player) -> None:
     cur.execute("update players set effects = %s where id = %s", (Jsonb([e.model_dump() for e in player.effects]), player.id))
 
 
@@ -47,27 +58,27 @@ def effects_text(player: Player) -> str:
                     for e in player.effects)
 
 
-def _on_hit(cur: Cursor, player: Player, npc: Npc, base: Optional[int] = None) -> list[str]:
+def on_hit(cur: Cursor, player: Player, npc: Npc, base: Optional[int] = None) -> list[str]:
     """怪打中人以后按 props.on_hit 的几率附带效果：中毒、流血、看不清、腐蚀，或者缠住、撞倒（状态）"""
-    hit = (_tallies(cur, npc).get("on_hit") if npc.template.props.get("phases") else None) or npc.template.props.get("on_hit")
+    hit = (helpers.tallies(cur, npc).get("on_hit") if npc.template.props.get("phases") else None) or npc.template.props.get("on_hit")
     if not hit or player.hp <= 0:
         return []
-    resist = gear_resist(cur, player, hit["kind"])       # 装备抗性：0 免疫，0.5 减半
-    if resist <= 0 or not _roll(hit.get("chance", 0.25) * resist):
+    resist = equipment.gear_resist(cur, player, hit["kind"])       # 装备抗性：0 免疫，0.5 减半
+    if resist <= 0 or not helpers.roll(hit.get("chance", 0.25) * resist):
         return []
     depth = npc.template.props.get("dungeon", {}).get("depth", 1)
     if hit["kind"] == "charm":
         # 迷惑：迷迷糊糊往雾里走了一步，离所有怪都远一格
-        st = _stealth(player)
-        for n in _enemies(cur, player.room_id):
-            _set_distance(st, n, _distance(st, n) + 1)
-        _save_stealth(cur, player, st)
-        return [_on_you(player.name, hit.get("label", "被迷住了，往后退了一步")) + "（离怪都远了一格）"]
-    return _inflict(cur, player, hit["kind"], hit.get("label", ""), depth, npc.name, hit.get("escape", 2), hit.get("turns"),
+        st = stealth.stealth_state(player)
+        for n in combat.enemies_in(cur, player.room_id):
+            stealth.set_distance(st, n, stealth.distance(st, n) + 1)
+        stealth.save_stealth(cur, player, st)
+        return [helpers.on_you(player.name, hit.get("label", "被迷住了，往后退了一步")) + "（离怪都远了一格）"]
+    return inflict(cur, player, hit["kind"], hit.get("label", ""), depth, npc.name, hit.get("escape", 2), hit.get("turns"),
                    hit.get("value_mult", 1.0), base, void_add=int(hit.get("void_difficulty", 0)))
 
 
-def _inflict(cur: Cursor, player: Player, kind: str, label: str, depth: int, source: str, escape: int = 2,
+def inflict(cur: Cursor, player: Player, kind: str, label: str, depth: int, source: str, escape: int = 2,
              turns: Optional[int] = None, value_mult: float = 1.0, base: Optional[float] = None,
              heal_mult: Optional[float] = None, void_add: int = 0) -> list[str]:
     """给玩家上一个效果：怪打中时附带的（_on_hit），决斗里对手装备触发的（_pvp_hit_extras）。
@@ -77,8 +88,8 @@ def _inflict(cur: Cursor, player: Player, kind: str, label: str, depth: int, sou
         if not good:
             return []
         player.effects = [e for e in player.effects if e not in good]
-        _save_effects(cur, player)
-        return [f"{_on_you(player.name, label or '身上的好兆头被吸走了')}（{'、'.join(e.label or EFFECT_NAMES[e.kind] for e in good)}没了）"]
+        save_effects(cur, player)
+        return [f"{helpers.on_you(player.name, label or '身上的好兆头被吸走了')}（{'、'.join(e.label or EFFECT_NAMES[e.kind] for e in good)}没了）"]
     wrapped = kind == "wrapped"
     if wrapped:
         kind, label = "restrained", label or "被裹尸布缠住了，东西都拿不起来"
@@ -89,31 +100,31 @@ def _inflict(cur: Cursor, player: Player, kind: str, label: str, depth: int, sou
         if guard.get("kind") == ("incapacitated" if kind == "stun" else kind) and guard.get("left", 0) > 0:
             return [f"{player.name}刚{'爬起来' if kind == 'prone' else '挣脱出来'}，还提防着，没再{(label if label.startswith('被') else '被' + label) if label else '被控住'}"]
         label = label or {"stun": "被打得晕头转向", "restrained": "被缠住了", "prone": "被撞倒在地"}[kind]
-        if kind == "stun" and _fx(_worn(cur, player), "resist_once", when="hurt", kind="stun") \
-                and _once_per_fight(cur, player, "resist_stun"):
+        if kind == "stun" and equipment.fx(helpers.worn(cur, player), "resist_once", when="hurt", kind="stun") \
+                and equipment.once_per_fight(cur, player, "resist_stun"):
             return [f"{player.name}眼前一黑又清醒过来，没被{label.removeprefix('被')}（这一场用过了）"]
         # 状态栏里的说法不带"你"（"一截裹尸布缠住了你的手"这种只在打中那一句里用）
         short = label if "你" not in label else ("被裹尸布缠住了" if wrapped else
                                                  {"stun": "被打得晕头转向", "restrained": "被缠住了", "prone": "被撞倒在地"}[kind])
         st = Status(kind="incapacitated" if kind == "stun" else kind, label=short[:20], escape=escape,
                     since=datetime.now(timezone.utc).isoformat(), wrapped=wrapped)
-        _set_status(cur, "players", player.id, st)
+        set_status(cur, "players", player.id, st)
         player.status = st
-        return [_on_you(player.name, label) + ("，得先挣脱（火一碰就能烧断）" if wrapped else "，得先挣脱" if kind == "restrained"
+        return [helpers.on_you(player.name, label) + ("，得先挣脱（火一碰就能烧断）" if wrapped else "，得先挣脱" if kind == "restrained"
                                             else "，得先爬起来" if kind == "prone"
                                             else "，失去战斗能力")] \
-            + (_noise(cur, player, "fall") + _void_fall(cur, player, void_add) if kind == "prone" else [])
+            + (environment.make_noise(cur, player, "fall") + environment.void_fall(cur, player, void_add) if kind == "prone" else [])
     label = label or EFFECT_NAMES[kind]
     # 中毒、流血按那一下的伤害算（value_mult：这只怪的毒、血口子轻一点）；腐蚀、看不清照旧
     value = dot_value(kind, base, depth, value_mult) if kind != "wound" else round(100 * (0.5 if heal_mult is None else heal_mult))
-    old = _effect(player, kind)
+    old = effect(player, kind)
     if old:
         full = turns or EFFECT_TURNS[kind]
         if old.left >= full:
-            return [f"{_on_you(player.name, label)}，不过{EFFECT_NAMES[kind]}已经挂满了"]
+            return [f"{helpers.on_you(player.name, label)}，不过{EFFECT_NAMES[kind]}已经挂满了"]
         old.left += 1                           # 重复中招只延长一回合，封顶到原本的持续时间
-        _save_effects(cur, player)
-        return [f"{_on_you(player.name, label)}，{EFFECT_NAMES[kind]}多挂了一回合（还剩 {old.left}）"]
+        save_effects(cur, player)
+        return [f"{helpers.on_you(player.name, label)}，{EFFECT_NAMES[kind]}多挂了一回合（还剩 {old.left}）"]
     e = Effect(kind=kind, value=value, left=turns or EFFECT_TURNS[kind], label=label[:20], source=source)     # turns：这只怪自己的持续轮数（on_hit.turns）
     what = {"poison": f"接下来 {e.left} 回合每回合掉 {value} 点血，出手也不准了",
             "bleed": f"接下来 {e.left} 个动作每动一下掉 {value} 点血，使不上劲",
@@ -128,8 +139,8 @@ def _inflict(cur: Cursor, player: Player, kind: str, label: str, depth: int, sou
         cur.execute("update players set max_hp = %s, hp = %s where id = %s", (player.max_hp, player.hp, player.id))
         what = f"防御 -{value}，血量上限暂时 -{e.hp}，持续 {e.left} 回合"
     player.effects.append(e)
-    _save_effects(cur, player)
-    return [f"{_on_you(player.name, label)}（{EFFECT_NAMES[kind]}：{what}）"]
+    save_effects(cur, player)
+    return [f"{helpers.on_you(player.name, label)}（{EFFECT_NAMES[kind]}：{what}）"]
 
 
 def _floor_tag(room_id: str) -> str:
@@ -137,18 +148,18 @@ def _floor_tag(room_id: str) -> str:
     return f"{run.hex}:{depth}"
 
 
-def _bless(player: Player, stat: str) -> float:
+def bless(player: Player, stat: str) -> float:
     """这一层身上的祝福（许愿池、清醒梦、星图）加的比例"""
     return sum(e.value / 100 for e in player.effects if e.kind == "bless" and e.stat == stat)
 
 
-def _give_bless(cur: Cursor, player: Player, stat: str, pct: int, label: str) -> None:
+def give_bless(cur: Cursor, player: Player, stat: str, pct: int, label: str) -> None:
     player.effects = [e for e in player.effects if not (e.kind == "bless" and e.stat == stat)] + [
         Effect(kind="bless", value=pct, left=1, label=label, source=_floor_tag(player.room_id), stat=stat)]
-    _save_effects(cur, player)
+    save_effects(cur, player)
 
 
-def _tick_effects(cur: Cursor, player: Player, unit: str) -> list[str]:
+def tick_effects(cur: Cursor, player: Player, unit: str) -> list[str]:
     """unit="turn"：每条消息开头结一次中毒、看不清、腐蚀；unit="action"：每个动作前结一次流血。
     时间到了就消退（腐蚀把血量上限还回去）"""
     if not player.effects or player.hp <= 0:
@@ -183,12 +194,12 @@ def _tick_effects(cur: Cursor, player: Player, unit: str) -> list[str]:
             facts.append(f"{player.name}身上的{EFFECT_NAMES[e.kind]}消退了")
             continue
         if e.kind in ("poison", "bleed") and player.hp > 0:
-            hurt, _ = _hurt_player(cur, player, e.value, "npc", e.source or EFFECT_NAMES[e.kind])
+            hurt, _ = combat.hurt_player(cur, player, e.value, "npc", e.source or EFFECT_NAMES[e.kind])
             facts += [f"{player.name}{EFFECT_NAMES[e.kind]}，掉了 {e.value} 点血"] + hurt
         e.left -= 1
         keep.append(e)
     player.effects = keep
-    _save_effects(cur, player)
+    save_effects(cur, player)
     return facts
 
 
@@ -202,7 +213,7 @@ def _guard_control(cur: Cursor, player: Player, kind: str) -> None:
                 (CTRL_GUARD, Jsonb(player.flags[CTRL_GUARD]), player.id))
 
 
-def _guard_tick(cur: Cursor, player_id: UUID) -> None:
+def guard_tick(cur: Cursor, player_id: UUID) -> None:
     """一个敌人回合过去了：刚挣脱的保护用掉"""
     cur.execute("update players set flags = flags - %s where id = %s and flags ? %s", (CTRL_GUARD, player_id, CTRL_GUARD))
 
@@ -212,7 +223,7 @@ def do_stand(cur: Cursor, player: Player, view: RoomView, a: Stand) -> list[str]
     st = player.status
     if st is None or st.kind != "prone":
         raise ActionError(f"{player.name}没有倒在地上" + (f"，而是{st.describe()}" if st else ""))
-    _set_status(cur, "players", player.id, None)
+    set_status(cur, "players", player.id, None)
     _guard_control(cur, player, "prone")
     return [f"{player.name}从地上爬了起来"]
 
@@ -225,18 +236,18 @@ def do_struggle(cur: Cursor, player: Player, view: RoomView, a: Struggle) -> lis
         raise ActionError(f"{player.name}没有被困住，用不着挣脱")
     if st.kind == "prone":
         return do_stand(cur, player, view, Stand(action="stand"))
-    if st.wrapped and (fire := next((w for w in _worn(cur, player) if _burning(w) or _prop(w, "fire")), None)):
+    if st.wrapped and (fire := next((w for w in helpers.worn(cur, player) if everyday.burning(w) or helpers.prop(w, "fire")), None)):
         # 裹尸布怕火：拿着点着的火把、带火的兵器，一碰就烧断
-        _set_status(cur, "players", player.id, None)
+        set_status(cur, "players", player.id, None)
         _guard_control(cur, player, st.kind)
         return [f"{player.name}把{fire.name}往身上的裹尸布一燎，干透的布呼地烧断了", f"{player.name}摆脱了“{st.label}”的状态"]
     diff = max(1, max(a.difficulty, st.escape - 1) - st.attempts)
-    ok, rolled = _check(cur, player, view, "acrobatics" if st.kind == "restrained" else None, diff)
+    ok, rolled = helpers.check(cur, player, view, "acrobatics" if st.kind == "restrained" else None, diff)
     facts = [f"{player.name}尝试：{a.description or '挣脱'}"] + rolled
     if ok:
-        _set_status(cur, "players", player.id, None)
+        set_status(cur, "players", player.id, None)
         _guard_control(cur, player, st.kind)
         return facts + [f"{player.name}摆脱了“{st.label}”的状态"]
     st.attempts += 1
-    _set_status(cur, "players", player.id, st)
+    set_status(cur, "players", player.id, st)
     return facts + [f"{player.name}还{st.label}，没能摆脱"]

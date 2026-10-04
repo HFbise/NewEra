@@ -1,6 +1,16 @@
 """Dungeon event-room services (wish pool, mirror hall, memory door, ...). / 地牢事件房的服务"""
-# 这个包里的模块共用一个命名空间：engine/__init__.py 按 MODULES 的顺序加载，每个模块都能直接用别的模块里的名字
-# （跟拆分前在同一个文件里一样）。All modules in this package share one namespace; see engine/__init__.py.
+import random
+import re
+
+from psycopg import Cursor
+from psycopg.types.json import Jsonb
+
+import dungeon
+from rules import SCALE, stat_text
+from schema import Dispenser, Effect, Npc, Player
+
+from .core import ActionError
+from . import afflictions, equipment, everyday, helpers, loading, smith, stealth
 
 
 WISHES = [("atk_pct", 15, "许愿池的祝福（攻击 +15%）"), ("dodge", 10, "许愿池的祝福（对方命中 -10%）"),
@@ -18,7 +28,7 @@ MEMORY_FRAGMENTS = {
 }
 
 
-def _bottle(cur: Cursor, player: Player, d: Dispenser) -> list[str]:
+def bottle(cur: Cursor, player: Player, d: Dispenser) -> list[str]:
     """漂流瓶：随机一张别人写过的纸条（没有就是空的），另外有几率捡到 bonus_item"""
     cur.execute("""select props from item_instances where props ? 'note' and coalesce(player_id::text, '') <> %s
                    order by random() limit 1""", (str(player.id),))
@@ -28,14 +38,14 @@ def _bottle(cur: Cursor, player: Player, d: Dispenser) -> list[str]:
     props = {k: v for k, v in (row["props"] if row else {}).items() if k in ("note", "writable", "name")}
     cur.execute("insert into item_instances (template_id, player_id, props) values (%s, %s, %s)", (tpl, player.id, Jsonb(props)))
     facts = [f"{player.name}拔开瓶塞，倒出一张" + (f"写了字的纸条：“{props['note']}”" if props.get("note") else "空白的纸条")]
-    if (b := d.extra.get("bonus_item")) and _roll(b.get("chance", 0)):
-        _give_player_new(cur, player, b["item"])
+    if (b := d.extra.get("bonus_item")) and helpers.roll(b.get("chance", 0)):
+        everyday.give_player_new(cur, player, b["item"])
         cur.execute("select name from item_templates where id = %s", (b["item"],))
         facts.append(f"瓶身上挂着的{cur.fetchone()['name']}也一起到了手里")
     return facts
 
 
-def _memory_door(cur: Cursor, player: Player, d: Dispenser) -> list[str]:
+def memory_door(cur: Cursor, player: Player, d: Dispenser) -> list[str]:
     """回忆之门：推开一扇门，看见那个人很久以前的一段往事；第一次看到某个人的，好感 +3"""
     seen = set(player.flags.get("_memories") or [])
     keys = [k for k in d.extra.get("npcs", list(MEMORY_FRAGMENTS)) if k in MEMORY_FRAGMENTS]
@@ -53,7 +63,7 @@ def _memory_door(cur: Cursor, player: Player, d: Dispenser) -> list[str]:
     return facts
 
 
-def _wish(cur: Cursor, player: Player, d: Dispenser) -> list[str]:
+def wish(cur: Cursor, player: Player, d: Dispenser) -> list[str]:
     """许愿池：付 cost_gold × 层数的钱，这一层随机一个小祝福；整层声响已经到 fail_if_noise_at_least 就不灵（钱照付）"""
     depth = dungeon.parse_room(player.room_id)[1]
     cost = int(d.extra.get("cost_gold", 10)) * depth
@@ -64,66 +74,66 @@ def _wish(cur: Cursor, player: Player, d: Dispenser) -> list[str]:
     if noise >= int(d.extra.get("fail_if_noise_at_least", 99)):
         return [f"{player.name}往池里投了 {cost} 金币，钱币沉下去时却溅起了一圈水花：这一层太吵了，愿望不灵（声响 {noise}）"]
     stat, pct, label = random.choice(WISHES)
-    _give_bless(cur, player, stat, pct, label)
+    afflictions.give_bless(cur, player, stat, pct, label)
     return [f"{player.name}往池里轻轻投了 {cost} 金币，钱币无声地沉了下去", f"{player.name}得到了{label}，出了这一层就散"]
 
 
-def _cleanse(cur: Cursor, player: Player) -> list[str]:
+def cleanse(cur: Cursor, player: Player) -> list[str]:
     """忏悔室：清掉身上所有减益（腐蚀扣的血量上限还回去），回血量上限的 15%"""
     bad = [e for e in player.effects if e.kind not in ("whet", "cheer", "bless")]
     back = sum(e.hp for e in bad)
     player.effects = [e for e in player.effects if e not in bad]
-    _save_effects(cur, player)
+    afflictions.save_effects(cur, player)
     gain = round((player.max_hp + back) * 0.15)
     cur.execute("update players set max_hp = max_hp + %s, hp = least(max_hp + %s, hp + %s), status = null where id = %s",
                 (back, back, gain, player.id))
     return [f"{player.name}在帘子后面轻声说完了自己做过的事，木板后面的人叹了口气",
-            f"{player.name}身上的晦气散了" + (f"（{'、'.join(EFFECT_NAMES[e.kind] for e in bad)}都消退了）" if bad else "")
+            f"{player.name}身上的晦气散了" + (f"（{'、'.join(afflictions.EFFECT_NAMES[e.kind] for e in bad)}都消退了）" if bad else "")
             + f"，回了 {gain} 点血"]
 
 
-def _read_stele(cur: Cursor, player: Player, d: Dispenser) -> list[str]:
+def read_stele(cur: Cursor, player: Player, d: Dispenser) -> list[str]:
     """禁言碑：下一层进去时整层地图都知道；代价是接下来一阵子禁声（说不了话、念不了书卷）"""
     depth = dungeon.parse_room(player.room_id)[1]
     cur.execute("update players set flags = flags || jsonb_build_object('_reveal_next', %s::int) where id = %s", (depth + 1, player.id))
     ss = d.extra.get("self_status") or {}
     player.effects = [e for e in player.effects if e.kind != "silence"] + [
         Effect(kind="silence", value=1, left=int(ss.get("actions", 10)), label="读完碑文说不出话", source="禁言碑")]
-    _save_effects(cur, player)
+    afflictions.save_effects(cur, player)
     return [f"{player.name}一行行读完了碑文，下一层的路都记在了心里", f"读完以后{player.name}喉咙发紧，很长一段时间都说不出话来（禁声）"]
 
 
-def _mirror_duel(cur: Cursor, player: Player, d: Dispenser) -> list[str]:
+def mirror_duel(cur: Cursor, player: Player, d: Dispenser) -> list[str]:
     """镜厅：镜子里走出一个照着他打出来的倒影（血六成，攻防跟他一样），打死了掉宝石和晶粉"""
     f = dungeon.floor_info(cur, player.room_id)
-    atk, df = gear_totals(player.attack, player.defense, load_items(cur, "i.player_id = %s", (player.id,)))
+    atk, df = equipment.gear_totals(player.attack, player.defense, loading.load_items(cur, "i.player_id = %s", (player.id,)))
     cfg = next((e for e in dungeon.data()["events"].values() if e.get("take", {}).get("service") == "mirror_duel"), {})
     name = dungeon.spawn_mirror(cur, player.room_id, player.id, player.name, max(SCALE, round(player.max_hp * 0.6)), atk, df,
                                 f["depth"], f["theme"], cfg.get("take", {}).get("reward", ["gem"]))
-    st = _stealth(player)
+    st = stealth.stealth_state(player)
     st.detected, st.hidden = True, False
-    _save_stealth(cur, player, st)
+    stealth.save_stealth(cur, player, st)
     return [f"{player.name}对着镜子看了一眼，镜子里的人却没有跟着眨眼，一步跨了出来：是{name}"]
 
 
-def _free_upgrade(cur: Cursor, player: Player, d: Dispenser) -> list[str]:
+def free_upgrade(cur: Cursor, player: Player, d: Dispenser) -> list[str]:
     """未熄的锻炉（service: free_upgrade）：照着锻造纹敲，手上的主武器免费升一级；满级了、手上没武器就给一份碎铁"""
-    weapon = next((w for w in _weapons(cur, player) if w.equipped_slot == "right_hand"), None) \
-        or next(iter(_weapons(cur, player)), None)
-    if weapon is None or weapon.props.get("plus", 0) >= upgrade_cap(player, weapon):
-        _give_player_new(cur, player, SCRAP)
+    weapon = next((w for w in helpers.weapons(cur, player) if w.equipped_slot == "right_hand"), None) \
+        or next(iter(helpers.weapons(cur, player)), None)
+    if weapon is None or weapon.props.get("plus", 0) >= smith.upgrade_cap(player, weapon):
+        everyday.give_player_new(cur, player, smith.SCRAP)
         return [f"{player.name}照着锻造纹敲了一阵，" + ("手上的兵器已经锻到头了" if weapon else "手上没拿兵器")
                 + "，只敲下来一份好铁（碎铁）"]
     stat, level = "damage", weapon.props.get("plus", 0) + 1
     name = re.sub(r" \+\d+$", "", weapon.name) + f" +{level}"
-    new = weapon.damage + _step(weapon, stat)
+    new = weapon.damage + smith.step(weapon, stat)
     cur.execute("update item_instances set props = (props - 'upgrade_fails') || %s where id = %s",
                 (Jsonb({"plus": level, stat: new, "name": name}), weapon.id))
     return [f"{player.name}照着铁砧上的锻造纹，把{weapon.name}放进炉火里敲打了一番",
             f"{weapon.name}变成了{name}，伤害 {stat_text(new)}（没花钱）"]
 
 
-def _stele(cur: Cursor, npc: Npc, player: Player) -> list[str]:
+def stele(cur: Cursor, npc: Npc, player: Player) -> list[str]:
     """地窖石碑（world.yaml props.leaderboard）：看它、跟它说话，碑面上都会显出到过地牢最深处的人，
     还有这个人能直接传送到哪几层"""
     if not npc.template.props.get("leaderboard"):

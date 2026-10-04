@@ -1,16 +1,28 @@
 """Turn entry points: execute, execute_all, the action table. / 入口：执行一回合的动作"""
-# 这个包里的模块共用一个命名空间：engine/__init__.py 按 MODULES 的顺序加载，每个模块都能直接用别的模块里的名字
-# （跟拆分前在同一个文件里一样）。All modules in this package share one namespace; see engine/__init__.py.
+from typing import Callable
+from uuid import UUID
+
+from psycopg import Connection, errors as pg_errors
+
+import dungeon
+from rules import ENEMY_EVERY
+from schema import ActionResult, PlayerAction, RoomView
+
+from .core import ActionError, DOWNED_ALLOWED, PRONE_BLOCKED, RESTRAINED_BLOCKED
+from . import (
+    afflictions, bosses, combat, duels, environment, equipment, everyday, loading, npc_trade, parties,
+    ranged_combat, smith, stealth,
+)
 
 
 HANDLERS: dict[str, Callable[..., list[str]]] = {
-    "move": do_move, "look": do_look, "take": do_take, "drop": do_drop, "use": do_use,
-    "equip": do_equip, "unequip": do_unequip, "attack": do_attack, "talk": do_talk, "give": do_give, "freeform": do_freeform,
-    "say": do_say, "revive": do_revive, "stunt": do_stunt, "struggle": do_struggle,
-    "follow": do_follow, "unfollow": do_unfollow, "leave_party": do_leave_party, "kick": do_kick,
-    "maneuver": do_maneuver, "dodge": do_dodge, "tame": do_tame, "uncurse": do_uncurse, "reload": do_reload, "refill": do_refill,
-    "transfer": do_transfer, "reroll": do_reroll, "rename": do_rename, "write": do_write, "socket": do_socket, "unsocket": do_unsocket, "refine": do_refine, "donate": do_donate, "take_donated": do_take_donated, "dismantle": do_dismantle, "close_eyes": do_close_eyes, "pinch": do_pinch, "hide": do_hide, "search": do_search, "reject": do_reject,
-    "upgrade": do_upgrade, "pay": do_pay, "sell": do_sell, "respawn": do_respawn, "stand": do_stand, "rest": do_rest, "camp": do_camp, "teleport": do_teleport, "challenge": do_challenge, "accept_duel": do_accept_duel, "decline_duel": do_decline_duel, "flee": do_flee,
+    "move": everyday.do_move, "look": everyday.do_look, "take": everyday.do_take, "drop": everyday.do_drop, "use": everyday.do_use,
+    "equip": equipment.do_equip, "unequip": equipment.do_unequip, "attack": combat.do_attack, "talk": npc_trade.do_talk, "give": npc_trade.do_give, "freeform": everyday.do_freeform,
+    "say": everyday.do_say, "revive": everyday.do_revive, "stunt": combat.do_stunt, "struggle": afflictions.do_struggle,
+    "follow": parties.do_follow, "unfollow": parties.do_unfollow, "leave_party": parties.do_leave_party, "kick": parties.do_kick,
+    "maneuver": combat.do_maneuver, "dodge": stealth.do_dodge, "tame": combat.do_tame, "uncurse": smith.do_uncurse, "reload": ranged_combat.do_reload, "refill": everyday.do_refill,
+    "transfer": smith.do_transfer, "reroll": smith.do_reroll, "rename": smith.do_rename, "write": everyday.do_write, "socket": smith.do_socket, "unsocket": smith.do_unsocket, "refine": smith.do_refine, "donate": smith.do_donate, "take_donated": everyday.do_take_donated, "dismantle": smith.do_dismantle, "close_eyes": combat.do_close_eyes, "pinch": combat.do_pinch, "hide": stealth.do_hide, "search": stealth.do_search, "reject": everyday.do_reject,
+    "upgrade": smith.do_upgrade, "pay": npc_trade.do_pay, "sell": npc_trade.do_sell, "respawn": everyday.do_respawn, "stand": afflictions.do_stand, "rest": everyday.do_rest, "camp": everyday.do_camp, "teleport": everyday.do_teleport, "challenge": duels.do_challenge, "accept_duel": duels.do_accept_duel, "decline_duel": duels.do_decline_duel, "flee": duels.do_flee,
 }
 
 
@@ -19,8 +31,8 @@ def execute(conn: Connection, view: RoomView, action: PlayerAction) -> ActionRes
     for attempt in range(2):
         try:
             with conn.transaction():
-                cur = _cursor(conn)
-                player = load_player(cur, view.player.id, lock=True)
+                cur = loading.cursor(conn)
+                player = loading.load_player(cur, view.player.id, lock=True)
                 if player.hp <= 0 and action.action not in DOWNED_ALLOWED:
                     raise ActionError(f"{player.name}已经倒下了，动弹不得，只能等人急救")
                 st = player.status
@@ -28,10 +40,10 @@ def execute(conn: Connection, view: RoomView, action: PlayerAction) -> ActionRes
                            or st.kind == "prone" and action.action in PRONE_BLOCKED
                            or st.kind == "incapacitated" and action.action != "struggle"):
                     raise ActionError(f"{player.name}{st.label}，" + ("得先站起来" if st.kind == "prone" else "做不到"))
-                if (grab := _flight(cur, player, view, action)) is not None:
+                if (grab := bosses.flight(cur, player, view, action)) is not None:
                     return ActionResult(action=action.action, success=False, facts=grab)
                 facts = HANDLERS[action.action](cur, player, view, action)
-                facts += _heat(cur, player.id, action.action)
+                facts += environment.heat(cur, player.id, action.action)
             return ActionResult(action=action.action, success=True, facts=facts)
         except ActionError as e:
             return ActionResult(action=action.action, success=False, facts=[str(e)])
@@ -50,45 +62,45 @@ def execute_all(conn: Connection, view: RoomView, actions: list[PlayerAction], e
         pending += _tick(conn, view.player.id, "action")
         # 喝醉了说话含糊：改的是原话本身，叙事、旁人、NPC 听到的都是醉话
         if view.player.drunk and action.action in ("say", "talk"):
-            action.message = slur(action.message)
+            action.message = environment.slur(action.message)
         result = execute(conn, view, action)
         result.facts[:0], pending = pending, []
         if result.success and dungeon.is_dungeon(view.room.id) and action.action not in ("look", "reject"):
             with conn.transaction():
-                result.facts += _floor_clock(_cursor(conn), view.player.id)
+                result.facts += environment.floor_clock(loading.cursor(conn), view.player.id)
         if result.success and action.action in ("use", "dodge", "maneuver", "flee") and dungeon.is_dungeon(view.room.id):
             with conn.transaction():
-                result.facts += _add_sin(_cursor(conn), view.player.id, action)
-        if result.success and action.action in NOISY and dungeon.is_dungeon(view.room.id):
+                result.facts += bosses.add_sin(loading.cursor(conn), view.player.id, action)
+        if result.success and action.action in environment.NOISY and dungeon.is_dungeon(view.room.id):
             with conn.transaction():
-                cur = _cursor(conn)
-                result.facts += _noise(cur, load_player(cur, view.player.id), NOISY[action.action])
+                cur = loading.cursor(conn)
+                result.facts += environment.make_noise(cur, loading.load_player(cur, view.player.id), environment.NOISY[action.action])
         if action.action in ("equip", "unequip", "drop", "give", "sell"):
             with conn.transaction():
-                result.facts += _sync_gear_hp(_cursor(conn), view.player.id)
+                result.facts += equipment.sync_gear_hp(loading.cursor(conn), view.player.id)
         results.append(result)
         if not result.success:
             break
         # 在有看店 NPC 的地方伤了人：当场被轰出去，后面的动作不做了。那里不许决斗，一般伤不了人，
         # 整人（捆住、迷眼）不算
         if (action.action in ("attack", "stunt") and action.target not in view.refs
-                and any("点伤害" in f for f in result.facts) and (kicked := _keeper_eject(conn, view))):
+                and any("点伤害" in f for f in result.facts) and (kicked := npc_trade.keeper_eject(conn, view))):
             result.facts += kicked
             return results
         if enemies and i - since == ENEMY_EVERY:
-            enemy, acted = enemy_turn(conn, view.player.id, actions[since:i], results[since:i])
+            enemy, acted = combat.enemy_turn(conn, view.player.id, actions[since:i], results[since:i])
             since = i
             result.facts += enemy
             if acted and i < len(actions):
                 result.facts.append(f"{view.player.name}被打断了，后面的动作没来得及做")
                 return results
     if enemies and since < len(results):
-        results[-1].facts += enemy_turn(conn, view.player.id, actions[since:len(results)], results[since:])[0]
+        results[-1].facts += combat.enemy_turn(conn, view.player.id, actions[since:len(results)], results[since:])[0]
     return results
 
 
 def _tick(conn: Connection, player_id: UUID, unit: str) -> list[str]:
     with conn.transaction():
-        cur = _cursor(conn)
-        player = load_player(cur, player_id, lock=True)
-        return _tick_effects(cur, player, unit) + (_recover_thrown(cur, player) if unit == "turn" else [])
+        cur = loading.cursor(conn)
+        player = loading.load_player(cur, player_id, lock=True)
+        return afflictions.tick_effects(cur, player, unit) + (ranged_combat.recover_thrown(cur, player) if unit == "turn" else [])

@@ -135,7 +135,7 @@ def players():
         items = _rows(conn, """select i.player_id, coalesce(i.props->>'name', t.name) as name, i.quantity, i.equipped_slot from item_instances i
                                join item_templates t on t.id = i.template_id where i.player_id is not null order by t.name""")
         with conn.transaction():
-            gear = engine.load_items(engine._cursor(conn), "i.player_id is not null and i.equipped_slot is not null", ())
+            gear = engine.load_items(engine.cursor(conn), "i.player_id is not null and i.equipped_slot is not null", ())
     for p in rows:
         p["inventory"] = [i for i in items if i["player_id"] == p["id"]]
         # 攻防算上装备（跟玩家侧栏一样），players 表里存的只是空手的底子
@@ -163,7 +163,7 @@ class PlayerOp(BaseModel):
 def player_op(player_id: UUID, req: PlayerOp):
     with pool.connection() as conn:
         with conn.transaction():
-            cur = engine._cursor(conn)
+            cur = engine.cursor(conn)
             try:
                 p = engine.load_player(cur, player_id, lock=True)
             except engine.ActionError:
@@ -187,7 +187,7 @@ def player_op(player_id: UUID, req: PlayerOp):
                 conn.execute("update players set hp = %s where id = %s", (hp, player_id))
                 _announce(conn, p.room_id, f"管理员把{p.name}的 HP 改成了 {hp}。")
             elif req.op == "give":
-                cur = engine._cursor(conn)
+                cur = engine.cursor(conn)
                 cur.execute("select id, name from item_templates where id = %s or name = %s limit 1",
                             (req.item or "", req.item or ""))
                 t = cur.fetchone()
@@ -195,7 +195,7 @@ def player_op(player_id: UUID, req: PlayerOp):
                     raise HTTPException(400, f"没有叫「{req.item}」的物品")
                 n = max(1, min(99, req.count))
                 for _ in range(n):
-                    engine._give_player_new(cur, p, t["id"])
+                    engine.give_player_new(cur, p, t["id"])
                 _announce(conn, p.room_id, f"管理员给了{p.name}{'' if n == 1 else f' {n} 件'}{t['name']}。")
             elif req.op == "password":
                 from server import _hash_password       # server 引用了 admin，这里用到时再导入

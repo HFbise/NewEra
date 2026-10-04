@@ -1,6 +1,12 @@
 """Item and monster descriptions shown in the UI. / 界面上的物品、怪物说明"""
-# 这个包里的模块共用一个命名空间：engine/__init__.py 按 MODULES 的顺序加载，每个模块都能直接用别的模块里的名字
-# （跟拆分前在同一个文件里一样）。All modules in this package share one namespace; see engine/__init__.py.
+import dungeon
+from rules import (
+    AVOID_CAP, ELITE_AFFIXES, ENRAGE_ATK, ENRAGE_BELOW, ENRAGE_FROM, GEM_SLOT_WORDS, GEM_TIER_WORDS, GEM_TOP,
+    HEAL_PCT, HEAL_PCT_ALCOHOL, SUMMON_MAX, WEAK_MULT, base_price, gem_effects, stat_text,
+)
+from schema import ItemInstance, Npc, SKILL_NAMES
+
+from . import afflictions, environment, helpers, npc_trade, ranged_combat
 
 
 TYPE_NAMES = {"weapon": "武器", "armor": "防具", "consumable": "吃喝", "key": "钥匙", "misc": "杂物", "gem": "宝石"}
@@ -24,7 +30,7 @@ WHEN_NAMES = {"passive": "", "attack": "每次出手", "hit": "打中时", "kill
 GIFT_FOR = {"ore": "莉娜", "wine": "麦琪", "book": "诺艾尔"}
 
 
-def _effect_line(e: dict) -> str:
+def effect_line(e: dict) -> str:
     v, k = e.get("value", 0), e.get("kind", "")
     what = {
         "splash": f"其他敌人各挨 {v} 点", "chain": f"电到另一个敌人 {v} 点", "bonus": f"伤害 +{v}",
@@ -80,7 +86,7 @@ def monster_notes(npc: Npc) -> str:
                                      ("guard_allies", "举着挡板护着同伴：近战砍它身后的同伴，一半会被它挡下；同伴都倒下它就跑"))
               if p.get(key)]
     if hit := p.get("on_hit"):
-        notes.append(f"打中人时有几率让人{EFFECT_NAMES.get(hit['kind'], STATE_NAMES.get(hit['kind'], hit['kind']))}")
+        notes.append(f"打中人时有几率让人{afflictions.EFFECT_NAMES.get(hit['kind'], STATE_NAMES.get(hit['kind'], hit['kind']))}")
     if (a := p.get("attacks", 1)) > 1:
         notes.append(f"一轮出手 {a} 次")
     if affix := ELITE_AFFIXES.get(p.get("affix")):
@@ -91,14 +97,14 @@ def monster_notes(npc: Npc) -> str:
     if p.get("dungeon", {}).get("rank") == "boss" and depth >= ENRAGE_FROM:
         notes.append(f"血量低于 {round(ENRAGE_BELOW * 100)}% 会狂暴，攻击 +{ENRAGE_ATK}")
     if immune := p.get("immune"):
-        notes.append("不吃：" + "、".join(EFFECT_NAMES.get(k, STATE_NAMES.get(k, k)) for k in immune))
+        notes.append("不吃：" + "、".join(afflictions.EFFECT_NAMES.get(k, STATE_NAMES.get(k, k)) for k in immune))
     if "fire" in (p.get("resist_element") or []):
         notes.append("不怕火：火把、火油箭、余烬石打它都不算弱点")
     if st := p.get("stances"):
         notes.append(f"每出手 {st.get('every', 3)} 次在冷却和熔化之间换一次：冷却时又硬又手软，熔化时变软但下手更重；"
                      "熔化的时候泼一瓶泉水，它会淬火裂开，下一次出手之前防御归零、挨的伤害 ×1.5")
     if weak := p.get("weak"):
-        notes.append(f"弱点：{WEAK_WORDS.get(weak, weak)}（{WEAK_HOW.get(weak, '')}伤害 ×{WEAK_MULT:g}）")
+        notes.append(f"弱点：{ranged_combat.WEAK_WORDS.get(weak, weak)}（{WEAK_HOW.get(weak, '')}伤害 ×{WEAK_MULT:g}）")
     if p.get("pack"):
         notes.append("成群的：一个房间最多两只，领头的那只一倒，剩下的夹着尾巴跑；扔根肉骨头（麦琪后厨卖）能引开，安抚容易些")
     return "\n".join(notes + ["（诺艾尔的怪物图鉴）"])
@@ -119,7 +125,7 @@ def _skill_note(s: dict) -> str:
     what = {"summon": f"叫来帮手（{helper}，{count}，最多同时 {SUMMON_MAX} 只，"
                       f"不掉东西，主子一死就跑）",
             "status_all": f"让所有人{STATE_NAMES.get(s.get('kind'), s.get('kind'))}",
-            "effect_all": f"让所有人{EFFECT_NAMES.get(s.get('kind'), s.get('kind'))}",
+            "effect_all": f"让所有人{afflictions.EFFECT_NAMES.get(s.get('kind'), s.get('kind'))}",
             "telegraph": "先预告一招大的，下一次出手放出来（预告那一轮狠狠砍它一下能打断）",
             "mark": f"判罪：盯住一个人，打他 +{s.get('bonus', 2)}，打中一次就了结",
             "self_heal": f"回 {round(s.get('heal', 0.2) * 100)}% 的血",
@@ -134,7 +140,7 @@ def _gem_lines(item: ItemInstance) -> list[str]:
            + ("；没镶上去的可以找诺艾尔刷品质" if tier < GEM_TOP else "")]
     cats = ["weapon", "armor", "trinket"] if p.get("gem_slot") == "any" else [p.get("gem_slot")]
     for c in cats:
-        out += [(f"镶在{GEM_SLOT_WORDS[c]}上：" if p.get("adapts") else "") + _effect_line(e) for e in gem_effects(p, tier, c)]
+        out += [(f"镶在{GEM_SLOT_WORDS[c]}上：" if p.get("adapts") else "") + effect_line(e) for e in gem_effects(p, tier, c)]
     if p.get("numeric"):
         caps = dungeon.gem_rules()["body_caps"]
         out.append(f"纯数值的宝石：全身合计最多防御 +{caps['defense']}、血量上限 +{caps['max_hp']}")
@@ -145,9 +151,9 @@ def item_detail(item: ItemInstance, curse_sense: bool = False) -> str:
     """给人看的物品详情：类型、数值、特殊效果、参考价、描述。诅咒平时看不出来，
     有诺艾尔的诅咒辨识笔记（回礼 curse_sense）才看得出；戴上了的自己知道"""
     t = item.template
-    head = item.name + f"（{USE_KINDS[_use_kind(item)] if t.type == 'consumable' else TYPE_NAMES.get(t.type, t.type)}"
+    head = item.name + f"（{environment.USE_KINDS[environment.use_kind(item)] if t.type == 'consumable' else TYPE_NAMES.get(t.type, t.type)}"
     if t.slot:
-        head += f" · {'双手' if _prop(item, 'two_handed') else PART_NAMES.get(t.slot, t.slot)}"
+        head += f" · {'双手' if helpers.prop(item, 'two_handed') else PART_NAMES.get(t.slot, t.slot)}"
     lines = [head + "）"] + (["酒馆武器桶里别人留下的：店里不收，用不上了可以放回桶里"] if item.props.get("donated") else [])
     stats = []
     if item.damage:
@@ -155,17 +161,17 @@ def item_detail(item: ItemInstance, curse_sense: bool = False) -> str:
     if item.defense:
         stats.append(f"防御 {stat_text(item.defense)}")
     if item.heal:
-        stats.append(f"回血 {item.heal * (HEAL_PCT_ALCOHOL if _is_alcohol(item) else HEAL_PCT)}%（按血量上限）")
+        stats.append(f"回血 {item.heal * (HEAL_PCT_ALCOHOL if environment.is_alcohol(item) else HEAL_PCT)}%（按血量上限）")
     if item.harm:
-        stats.append(f"有毒，掉 {item.harm} 点血" + ("（认得出来就没事）" if _prop(item, "harm_check") else ""))
-    if light := _prop(item, "light"):
+        stats.append(f"有毒，掉 {item.harm} 点血" + ("（认得出来就没事）" if helpers.prop(item, "harm_check") else ""))
+    if light := helpers.prop(item, "light"):
         stats.append(f"光亮 +{light}")
     if stats:
         lines.append("，".join(stats))
     extra = {
         "lights": "拿到手上就点燃（光亮 +35），在地牢里撑两层", "cursed": "诅咒：戴上就卸不下来",
-        "cure": f"能治{STATE_NAMES.get(_prop(item, 'cure'), '')}", "refuel": "倒在快灭的火把上让它重新烧旺",
-        "whet": f"这一层普通攻击伤害 +{_prop(item, 'whet')}", "room_light": f"这个房间光亮 +{_prop(item, 'room_light')}，走开就散",
+        "cure": f"能治{STATE_NAMES.get(helpers.prop(item, 'cure'), '')}", "refuel": "倒在快灭的火把上让它重新烧旺",
+        "whet": f"这一层普通攻击伤害 +{helpers.prop(item, 'whet')}", "room_light": f"这个房间光亮 +{helpers.prop(item, 'room_light')}，走开就散",
         "holy": "泼向亡灵或怕光的怪能重创它", "throw": "能掷出去", "stun": "念出来房间里所有敌人定住",
         "recall": "在地牢里用，传回村子", "camp": "扎营时多回 30% 血", "alcohol": "酒，喝多了会醉",
         "sober": "喝了马上酒醒",
@@ -176,32 +182,32 @@ def item_detail(item: ItemInstance, curse_sense: bool = False) -> str:
         "bait": "安抚野兽时先扔一根过去，驯兽难度 -1（成不成都用掉一根）",
         "writable": "能写几句话（说「在纸条上写……」），写了就改不了",
     }
-    if t.type == "consumable" and _use_kind(item) in MEDICINE_KINDS:
+    if t.type == "consumable" and environment.use_kind(item) in environment.MEDICINE_KINDS:
         lines.append("能给别人用：用药的人医药越高回得越多，给人用药能练医药")
-    lines += [text for key, text in extra.items() if _prop(item, key)
+    lines += [text for key, text in extra.items() if helpers.prop(item, key)
               and (key != "cursed" or curse_sense or item.equipped_slot)]
-    if block := _prop(item, "block"):
+    if block := helpers.prop(item, "block"):
         lines.append(f"格挡：{round(block * 100)}% 几率完全挡下一击（跟闪避合计最多 {round(AVOID_CAP * 100)}%，挡不住中毒流血）")
-    if mag := _prop(item, "magazine"):
+    if mag := helpers.prop(item, "magazine"):
         lines.append(f"一匣 {mag} 发，还剩 {item.props.get('shots', mag)} 发")
-    if (steps := _prop(item, "reload_steps")) and steps > 1:
+    if (steps := helpers.prop(item, "reload_steps")) and steps > 1:
         lines.append(f"装填要 {steps} 次")
     if item.props.get("loaded_ammo"):
         lines.append("装着一发特殊弹药")
-    if uses := _prop(item, "uses"):
+    if uses := helpers.prop(item, "uses"):
         lines.append(f"能用 {item.props.get('uses_left', uses)} 次")
-    if gift := _prop(item, "gift"):
-        lines.append(f"{GIFT_FOR.get(gift, '')}喜欢的小礼物（每天收一件）" if _prop(item, "gift_value")
+    if gift := helpers.prop(item, "gift"):
+        lines.append(f"{GIFT_FOR.get(gift, '')}喜欢的小礼物（每天收一件）" if helpers.prop(item, "gift_value")
                      else f"{GIFT_FOR.get(gift, '')}最想要的礼物")
     if t.type != "gem":                     # 宝石的 effects 是按品质的数组，下面按这颗的品质单独列
-        lines += [_effect_line(e) for e in _prop(item, "effects") or []]
+        lines += [effect_line(e) for e in helpers.prop(item, "effects") or []]
     if t.type == "gem":
         lines += _gem_lines(item)
     if (n := item.props.get("sockets")):
         gems = item.props.get("gems") or []
         lines.append(f"宝石孔 {len(gems)}/{n}" + ("：" + "、".join(g["name"] for g in gems) if gems else "（找莉娜镶宝石）"))
-        lines += ["  " + _effect_line(e) for e in item.props.get("gem_fx") or []]
-    if price := base_price(item_stats(item)):
+        lines += ["  " + effect_line(e) for e in item.props.get("gem_fx") or []]
+    if price := base_price(npc_trade.item_stats(item)):
         lines.append(f"参考价 {price} 金币")
     lines.append(item.description)
     return "\n".join(lines)

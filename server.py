@@ -131,13 +131,13 @@ def state(conn, view: RoomView, after: Optional[int] = None) -> dict:
               for n, hp, awake, st in cur.fetchall()]
     cur.execute("select id, name from rooms where id = any(%s)", ([e.to_room for e in view.exits],))
     room_names = dict(cur.fetchall())
-    light = engine.light_info(engine._cursor(conn), view.player, view.room)      # 地牢里的光亮和它的效果
+    light = engine.light_info(engine.cursor(conn), view.player, view.room)      # 地牢里的光亮和它的效果
     combat = engine.round_info(conn, view.player)                                  # 战斗回合：谁出手了、在等谁
-    minimap = dungeon.minimap(engine._cursor(conn), view.room.id)                   # 地牢这一层的小地图
+    minimap = dungeon.minimap(engine.cursor(conn), view.room.id)                   # 地牢这一层的小地图
     totals = engine.gear_totals(view.player.attack, view.player.defense, view.inventory)
-    unlocked = engine.perks(engine._cursor(conn), view.player.id)                    # 回礼解锁的本事
+    unlocked = engine.perks(engine.cursor(conn), view.player.id)                    # 回礼解锁的本事
     sense = "curse_sense" in unlocked
-    menus = {n.id: engine.npc_menu(engine._cursor(conn), view.player.id, n) for n in view.npcs}   # 店主能办的事、货和标价
+    menus = {n.id: engine.npc_menu(engine.cursor(conn), view.player.id, n) for n in view.npcs}   # 店主能办的事、货和标价
     party = []                                  # 队友在哪、醒着没有（侧栏队伍一栏）
     if view.player.party_id:
         cur.execute(f"""select p.name, r.name, p.room_id = %s, p.hp,
@@ -281,7 +281,7 @@ def placeholder_dialogue(conn, view: RoomView, npc_ref: str) -> list[ActionResul
     npc_id = view.resolve(npc_ref)
     results = []
     with conn.transaction():
-        npcs = engine.load_npcs(engine._cursor(conn), "n.id = %s", (npc_id,))
+        npcs = engine.load_npcs(engine.cursor(conn), "n.id = %s", (npc_id,))
     if not npcs:
         return results
     gives = npcs[0].template.props.get("gives", {})
@@ -293,7 +293,7 @@ def placeholder_dialogue(conn, view: RoomView, npc_ref: str) -> list[ActionResul
 
 def _load_npc(conn, npc_id: UUID):
     with conn.transaction():
-        npcs = engine.load_npcs(engine._cursor(conn), "n.id = %s", (npc_id,))
+        npcs = engine.load_npcs(engine.cursor(conn), "n.id = %s", (npc_id,))
     return npcs[0] if npcs else None
 
 
@@ -364,7 +364,7 @@ def _describe_floor(run, depth: int) -> None:
         material = None
         for _ in range(20):                  # 生成那一层的事务提交了才看得到
             with pool.connection() as conn:
-                material = dungeon.rooms_for_ai(engine._cursor(conn), run, depth)
+                material = dungeon.rooms_for_ai(engine.cursor(conn), run, depth)
                 conn.commit()
             if material:
                 break
@@ -374,7 +374,7 @@ def _describe_floor(run, depth: int) -> None:
         texts = ai.dungeon_rooms(pool, material)
         if texts:
             with pool.connection() as conn, conn.transaction():
-                dungeon.apply_ai_rooms(engine._cursor(conn), run, depth, material["theme"], texts)
+                dungeon.apply_ai_rooms(engine.cursor(conn), run, depth, material["theme"], texts)
     except Exception:                        # 后台失败就留着模板，不影响游戏
         import traceback
         traceback.print_exc()
@@ -390,7 +390,7 @@ def _sweep_dungeons() -> None:
         time.sleep(SWEEP_SECONDS)
         try:
             with pool.connection() as conn, conn.transaction():
-                dungeon.cleanup(engine._cursor(conn))
+                dungeon.cleanup(engine.cursor(conn))
         except Exception:               # 清理失败下次再来，不影响游戏
             import traceback
             traceback.print_exc()
@@ -500,7 +500,7 @@ def run_turn(req: CommandReq):
         view.player.stealth and view.player.stealth.room == view.room.id and view.player.stealth.detected)
     if view.player.hp > 0 and not all(a.action in engine.ROUND_INSTANT for a in actions) and not sneaking_out:
         with pool.connection() as conn:
-            fighting = engine.in_round(engine._cursor(conn), view.room.id, pid)
+            fighting = engine.in_round(engine.cursor(conn), view.room.id, pid)
             conn.commit()
             if fighting:
                 engine.queue_round(conn, pid, view.room.id, req.text, [a.model_dump() for a in actions], source, notes)
@@ -555,8 +555,8 @@ def run_turn(req: CommandReq):
                 bonds = engine.npc_bonds(conn, pid, npc)          # 台词里可以提的别人的交情
                 memory = engine.get_npc_memory(conn, pid, npc_id, req.text)
                 if engine.can_eject(npc):
-                    ex = engine._find_exit(engine._cursor(conn), npc.room_id, npc.template.props["eject_to"])
-                    eject_to = engine.load_room(engine._cursor(conn), ex["to_room"]).name if ex else None
+                    ex = engine.find_exit(engine.cursor(conn), npc.room_id, npc.template.props["eject_to"])
+                    eject_to = engine.load_room(engine.cursor(conn), ex["to_room"]).name if ex else None
                     conn.commit()
             recent = _recent_events(conn, now_view.room.id, pid)
             if npc:
@@ -770,7 +770,7 @@ def _resolve_round(room_id: str) -> None:
                              (room_id, Jsonb(lines), "\n".join(lines),
                               Jsonb({"round": rnd, "inputs": [(n, t) for n, t, _ in turns], "players": parsed,
                                      "names": [n for n, _, _ in turns]})))
-            room = engine.load_room(engine._cursor(conn), room_id)
+            room = engine.load_room(engine.cursor(conn), room_id)
             conn.commit()
         story = None
         if ai.enabled() and (turns or enemy):

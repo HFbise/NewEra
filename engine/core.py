@@ -11,61 +11,7 @@ Shared imports, tuning constants and ActionError. / 公共 import、常量、Act
   view = load_view(conn, player_id)
   results = execute_all(conn, view, parsed.actions)
 """
-
-
-import math
-
-
-import random
-
-
-import re
-
-
-from collections import defaultdict
-
-
-from types import SimpleNamespace
-
-
-from datetime import datetime, timezone
-
-
-from typing import Any, Callable, Optional
-
-
-from uuid import NAMESPACE_URL, UUID, uuid4, uuid5
-
-
-from psycopg import Connection, Cursor
-
-
-from psycopg import errors as pg_errors
-
-
-from psycopg.rows import dict_row
-
-
-from psycopg.types.json import Jsonb
-
-
-import dungeon
-
-
-from rules import *                 # noqa: F403  纯规则（命中、减伤、价钱、升级、怪物数值）见 rules.py
-
-
-from commands import REST_TALK_RE
-
-
-from schema import (
-    ActionResult, Attack, Drop, Equip, Feature, Follow, Freeform, Give, ItemInstance, LeaveParty, Kick, Look,
-    Move, Npc, OtherPlayer, Player, PlayerAction, Reject, Revive, Room, RoomExit, RoomView, Say, Status, Struggle,
-    Stunt, Take, Talk, Unfollow, Unequip, Use, dir_name, Dispenser, SLOT_CHOICES, SLOT_NAMES, Dodge, Hide, Maneuver, Search, Stealth, Tame,
-    Uncurse, Reload, Refill, Transfer, Reroll, Rename, Write, Socket, Unsocket, Refine, Donate, TakeDonated, Dismantle, CloseEyes, Pinch,
-    AcceptDuel, Challenge, DeclineDuel, Duel, Flee, SKILL_NAMES, Upgrade, Respawn, Stand, Rest, Pay, Camp, Teleport, Sell,
-    Effect,
-)
+from rules import steps
 
 
 START_ROOM = "square"                   # 新角色出生、后台传送回去的地方
@@ -174,7 +120,7 @@ def assassinate_difficulty(depth: int) -> int:
     return ASSASSINATE_DIFFICULTY + round(steps(depth, 6))
 
 
-KEEN_EXTRA = 2                          # 对警觉的怪偷袭暗杀难度 +2（它们一见面就发现人，见 _keen_spotted）
+KEEN_EXTRA = 2                          # 对警觉的怪偷袭暗杀难度 +2（它们一见面就发现人，见 keen_spotted）
 
 
 PRONE_DECISIVE_DIFFICULTY = 3           # 对刚被绊倒在地的下狠手（打晕、断手、一击毙命）难度至少这么高

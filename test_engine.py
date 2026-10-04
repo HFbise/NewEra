@@ -92,7 +92,7 @@ def main():
         view = v()
         hans = view.resolve(ref(view, "麦琪"))
         check("giveable 为空", engine.giveable_items(conn, TEST_ID, hans) == [])
-        key_id = engine.load_items(engine._cursor(conn), "i.npc_id = %s", (hans,))[0].id
+        key_id = engine.load_items(engine.cursor(conn), "i.npc_id = %s", (hans,))[0].id
         conn.commit()
         check("npc_give 被拒", not engine.npc_give(conn, TEST_ID, hans, key_id).success)
         step(conn, view, {"action": "attack", "target": ref(view, "麦琪")}, expect=False)

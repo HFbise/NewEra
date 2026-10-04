@@ -519,7 +519,7 @@ def stance_of(m) -> dict:
 
 
 def heal_scale(h: Hero, amount: int) -> int:
-    """重伤：受到的治疗 × value%（engine._heal_scale）"""
+    """重伤：受到的治疗 × value%（engine.heal_scale）"""
     w = h.effects.get("wound")
     return round(amount * w["value"] / 100) if w else amount
 
@@ -601,7 +601,7 @@ def make_nodes(boss: Mon, cfg: dict, n: Optional[int] = None) -> list[Mon]:
 
 
 def pick_target(mon: Mon, heroes: list[Hero], hits: dict) -> Hero:
-    """engine._pick_target：野兽扑血最少的；怕光的躲开拿火把的；远程的先射拿火把的；别的先打上一轮打它的人"""
+    """engine.pick_target：野兽扑血最少的；怕光的躲开拿火把的；远程的先射拿火把的；别的先打上一轮打它的人"""
     live = [h for h in heroes if not h.down]
     if mon.props.get("animal"):
         return min(live, key=lambda h: (h.hp / h.max_hp, random.random()))
@@ -712,7 +712,7 @@ class Fight:
     heat_mult: float = 1.0
 
     def tick_action(self, h: Hero) -> None:
-        """流血：每个动作前掉血；灼热的楼层每个动作也烤掉一点（engine._heat，不看防御）"""
+        """流血：每个动作前掉血；灼热的楼层每个动作也烤掉一点（engine.heat，不看防御）"""
         if self.heat and not h.down:
             h.hp -= max(1, round(h.max_hp * self.heat * self.heat_mult))
             if h.hp <= 0:
@@ -933,7 +933,7 @@ class Fight:
         if not shooter and m.hp > 0 and (thorns := m.props.get("thorns")) and random.random() < m.props.get("thorns_chance", 1.0):
             self.hurt_hero(h, thorns)
         self.hits[id(m)] = h
-        # 被定住、迷倒的挨打时掷一次挣脱（engine._npc_counter）
+        # 被定住、迷倒的挨打时掷一次挣脱（engine.npc_counter）
         if m.hp > 0 and m.status and not m.status.get("freed"):
             if random.random() < R.escape_chance(m.status["escape"], m.status["attempts"]):
                 m.status = {"freed": True}
@@ -942,7 +942,7 @@ class Fight:
 
     # ---- 怪 ----
     def boss_turn(self, m: Mon) -> bool:
-        """engine._boss_turn：该放技能就放，返回这次出手是不是用掉了"""
+        """engine.boss_turn：该放技能就放，返回这次出手是不是用掉了"""
         targets = [h for h in self.heroes if not h.down]
         if not m.skills or not targets:
             return False
@@ -1163,7 +1163,7 @@ class Fight:
             h.stepped = False
             if self.glare and not h.down and not h.eyes and self.light() >= self.glare.get("at", 70) \
                     and random.random() < self.glare.get("chance", 0.25) and "blind" not in h.effects:
-                h.effects["blind"] = {"value": 1, "left": 1}       # 晶面反光晃眼（engine._glare）
+                h.effects["blind"] = {"value": 1, "left": 1}       # 晶面反光晃眼（engine.glare）
             h.eyes = h.pinch = False
         self.room_turn()
 
@@ -1261,7 +1261,7 @@ class Fight:
         self.afflict(h, hit["kind"], m.depth, hit, dmg)
 
     def afflict(self, h: Hero, kind: str, depth: int, hit: dict, base: Optional[float] = None) -> None:
-        """怪打中附带的、头目全场放的效果（engine._inflict）：中毒流血按那一下的伤害（rules.dot_value），
+        """怪打中附带的、头目全场放的效果（engine.inflict）：中毒流血按那一下的伤害（rules.dot_value），
         重复中招只延长一回合；刚挣脱、爬起来的这个敌人回合不再被同一种控制打中"""
         if h.down:
             return

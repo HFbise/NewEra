@@ -608,7 +608,7 @@ def _names(view: RoomView) -> str:
 def _stray_english(text: str, source: str) -> list[str]:
     """中文里夹的英文词（4.5 偶尔写出 "existing"）：输入里本来就有的（玩家名、玩家原话、HP）不算"""
     return [w for w in re.findall(r"[A-Za-z]{3,}", text) if w.lower() not in source.lower()]
-# 玩家说要白给 NPC 钱、NPC 还没收（engine._tip）：这回合只能问一句"真要给我？"，不能写成已经收下
+# 玩家说要白给 NPC 钱、NPC 还没收（engine.give_tip）：这回合只能问一句"真要给我？"，不能写成已经收下
 TIP_PENDING = "还没收"
 TOOK_MONEY_RE = re.compile(r"接过|收下|收了|收进|收着|塞进|揣进|放进.{0,4}(口袋|钱袋|腰包)|我收")
 
