@@ -9,11 +9,11 @@ themes:
   forge:
     name: 地底熔炉
     light: 60                   # 熔岩照着，光亮偏高：钱掉得少一点，这是这里的代价
-    min_depth: 16               #第 16 层起才进主题池；老的六个主题 16 层以后不再出现
-    heat:                       #灼热：这一层每做一个"动身子"的动作掉血量上限的 1%（不看防御，不受最少 10 点保底，最少 1 点）
+    min_depth: 16               # 第 16 层起才进主题池；老的六个主题 16 层以后不再出现
+    heat:                       # 灼热：这一层每做一个"动身子"的动作掉血量上限的 1%（不看防御，不受最少 10 点保底，最少 1 点）
       pct: 0.01
       actions: [move, attack, stunt, dodge, flee, search]
-    fixed_events: {cooling_cistern: 2}     #每层固定刷两间冷却水池（泉水房）
+    fixed_events: {cooling_cistern: 2}     # 每层固定刷两间冷却水池（泉水房）
     intro: 石阶越往下越烫，空气里满是铁锈和硫磺的味道，远处传来一下一下沉闷的锤声，像是有什么东西几千年来一直没停过手。
     entry:
       name: 熔炉之门
@@ -71,7 +71,7 @@ themes:
       - {name: 蒸汽阀门, max_tier: heavy}
       - {name: 堆成山的熔渣, max_tier: light}
       - {name: 断掉的传送链, max_tier: light}
-    traps:                      #本主题自己的陷阱描写，没写的主题用全局 traps
+    traps:                      # 本主题自己的陷阱描写，没写的主题用全局 traps
       - 脚下一块铁板突然翻开，底下是一槽冒着热气的铁水
       - 墙上的管道咔的一声，喷出一股滚烫的蒸汽
       - 一排地砖被烧得通红，踩上去才发现鞋底在冒烟
@@ -90,14 +90,14 @@ themes:
       def: 20
       immune: [bleed, poison, restrained]
       resist_element: [fire]
-      weak: water               #熔化状态时被泼泉水会淬火裂开，见 quench
+      weak: water               # 熔化状态时被泼泉水会淬火裂开，见 quench
       actions: {16: 2, 31: 3}
-      stances:                  #每出手 every 次在两种状态之间切换，开场是冷却
+      stances:                  # 每出手 every 次在两种状态之间切换，开场是冷却
         every: 3
         start: cold
         cold: {def: 40, atk: -20, label: 铸像身上的红光一点点褪去，青铜又变得冰冷坚硬}
         molten: {def: -20, atk: 20, label: 炉门里的火猛地窜高，铸像的表面开始发红软化，每一锤都带着铁水}
-      quench:                   #熔化状态时往它身上泼泉水（这瓶泉水用掉）
+      quench:                   # 熔化状态时往它身上泼泉水（这瓶泉水用掉）
         label: 泉水泼在烧红的青铜上，嗤的一声腾起白雾，铸像身上裂开了一道口子
         cracked_rounds: 1       # 裂开一个敌人回合：防御归零，挨的伤害 ×1.5，跳过它的下一次出手
         then_stance: cold
@@ -113,9 +113,9 @@ themes:
   crystal:
     name: 水晶洞窟
     light: 65
-    light_range: [50, 80]       #每个房间的自然光亮在这个范围里随机
+    light_range: [50, 80]       # 每个房间的自然光亮在这个范围里随机
     min_depth: 16
-    glare:                      #炫光：光亮到 at 以上，每个敌人回合有 chance 几率被晃得看不清一回合；这一回合闭眼的人不会
+    glare:                      # 炫光：光亮到 at 以上，每个敌人回合有 chance 几率被晃得看不清一回合；这一回合闭眼的人不会
       at: 70
       chance: 0.25
     intro: 石阶两侧的岩壁开始泛光，一簇簇透明的晶体从缝里长出来，把远处的光折成一片晃眼的碎彩，脚步声在晶体之间来回弹个不停。
@@ -171,7 +171,7 @@ themes:
         description: 一处营地整个被晶体吞了进去，帐篷、火堆、工具都成了透明的雕塑。
         details: 有两个矿工的身影也被封在晶体里，一个在弯腰挖矿，一个抬头望着洞顶，嘴张着，像是在喊什么。
     features:
-      - {name: 巨大的晶簇, max_tier: heavy, on_break: {light: -20}}     #打碎以后房间光亮下降
+      - {name: 巨大的晶簇, max_tier: heavy, on_break: {light: -20}}     # 打碎以后房间光亮下降
       - {name: 悬垂的晶锥, max_tier: heavy, on_break: {light: -10}}
       - {name: 共鸣晶柱, max_tier: heavy}
       - {name: 晶片堆, max_tier: light}
@@ -196,7 +196,7 @@ themes:
       immune: [bleed, poison]
       weak: pierce
       actions: {16: 2, 31: 3}
-      nodes:                    #晶簇：每颗是一个能单独打的目标；还有晶簇在时本体防御 +60
+      nodes:                    # 晶簇：每颗是一个能单独打的目标；还有晶簇在时本体防御 +60
         count: 3
         hp_pct: 0.08            # 每颗血量是本体上限的 8%
         while_alive: {def: 60}
@@ -214,7 +214,7 @@ themes:
     name: 静默神殿
     light: 25
     min_depth: 16
-    noise:                      #声响：整层一个声响值，大声的动作会往上加；满了就引来游荡的怪
+    noise:                      # 声响：整层一个声响值，大声的动作会往上加；满了就引来游荡的怪
       max: 10
       add: {talk: 1, read: 2, break: 2, heavy_hit: 1, aoe: 2, fall: 1, flee: 1}
       full: {summon: wanderer, reset_to: 5}   # 满了以后引来一只游荡的怪（第 21 层起一群），直接扑到你所在的房间，声响回落到 5
@@ -270,7 +270,7 @@ themes:
         description: 一座钟楼的底层，头顶是看不到尽头的黑暗，一根粗绳从黑暗里垂下来。
         details: 绳子的末端被钉死在地上，钉子上挂着一块木牌，上面刻着一个大大的叉。绳子偶尔会自己轻轻晃一下。
     features:
-      - {name: 悬挂的铜钟, max_tier: heavy, noise: 5}        #用它（砸、推）会一下加 5 点声响
+      - {name: 悬挂的铜钟, max_tier: heavy, noise: 5}        # 用它（砸、推）会一下加 5 点声响
       - {name: 石像底座, max_tier: heavy}
       - {name: 巨大的香炉, max_tier: heavy}
       - {name: 烛台架, max_tier: light, lamp: true}     # 点着的长明烛，砸了房间暗一截
@@ -289,14 +289,14 @@ themes:
       name: 无舌的大祭司
       description: 一个身披白袍的高大身影，脸上罩着一张没有嘴的银面具，手里握着一只没有铃舌的铜铃，走路时白袍下摆拖过地面，一点声音都没有。
       persona: 他割掉了自己的舌头，好让神殿永远安静。他恨一切声音，谁在他面前出声，谁就是在亵渎。他出手的时候也不发出一点声响。
-      hp: 1.0                   # 初版1.2，模拟对到第 16 层普通档 41% / 5%
+      hp: 1.0                   # 初版 1.2，模拟对到第 16 层普通档 41% / 5%
       atk: 10
       def: 10
       immune: [silence, blind]
       weak: bright
       actions: {16: 2, 31: 3}
-      silence_field: true       #他在场时念书、卷轴全部无效
-      noise_heal: 0.03          #你每做一个会加声响的动作，他回血量上限的 3%
+      silence_field: true       # 他在场时念书、卷轴全部无效
+      noise_heal: 0.03          # 你每做一个会加声响的动作，他回血量上限的 3%
       skills:
         - {when: every, value: 3, do: combo, target: highest_threat, label: 他抬起没有嘴的面具看了你一眼，你喉咙一紧，眼前也跟着发黑,
            effects: [{kind: silence}, {kind: blind}]}
@@ -317,7 +317,7 @@ monsters:
     def: 30
     perception: -1
     immune: [bleed, poison]
-    resist_element: [fire]      #火属性对它不算弱点，也不加伤害
+    resist_element: [fire]      # 火属性对它不算弱点，也不加伤害
     weak: pierce
     on_hit: {kind: prone, chance: 0.25, label: 被傀儡一把推翻在地}
   fire_salamander:
@@ -380,7 +380,7 @@ monsters:
     def: 10
     ranged: true
     verb: 把一束光折成利刃射了过来
-    reflect_ranged: 0.3         #远程攻击打它有 30% 几率被折回射手身上
+    reflect_ranged: 0.3         # 远程攻击打它有 30% 几率被折回射手身上
     on_hit: {kind: blind, chance: 0.2, label: 一道彩光直直扎进眼睛里}
   crystallized_miner:
     name: 晶化矿工
@@ -409,7 +409,7 @@ monsters:
     atk: -10
     ranged: true
     verb: 嗡的一声，一圈看不见的震波荡了过来
-    shield_allies: {every: 3, absorb: 1}     #每出手 3 次给一个同伴套一层晶甲，挡掉它挨的下一次伤害
+    shield_allies: {every: 3, absorb: 1}     # 每出手 3 次给一个同伴套一层晶甲，挡掉它挨的下一次伤害
 
   # ---- 静默神殿 ----
   mute_monk:
@@ -428,7 +428,7 @@ monsters:
     def: 40
     perception: -1
     immune: [bleed, poison]
-    dormant: true               #平时不动也不算敌人；所在房间的声响累计到 wake_noise 就醒
+    dormant: true               # 平时不动也不算敌人；所在房间的声响累计到 wake_noise 就醒
     wake_noise: 3
     on_hit: {kind: prone, chance: 0.3, label: 石拳砸下来，把你整个人砸倒在地}
   echo_wraith:
@@ -448,7 +448,7 @@ monsters:
     persona: 什么都看不见，却什么都听得见。你只要一动，它就知道你在哪；你一动不动，它就找不到你。
     hp: 0.9
     atk: 10
-    hearing: true               #能发现潜行的人；但这一轮没有动身子的人它发现不了
+    hearing: true               # 能发现潜行的人；但这一轮没有动身子的人它发现不了
   bell_ringer:
     name: 敲钟人
     description: 一个驼背的老修士，手里攥着一只小铜铃，铃舌没有绑，他却一直小心翼翼地捂着。
@@ -457,7 +457,7 @@ monsters:
     atk: -10
     ranged: true
     verb: 摇了一下铜铃
-    bell: {every: 3, atk: 10, noise: 3}      #每出手 3 次摇一次铃：全场的怪攻击 +10（这一场），声响 +3
+    bell: {every: 3, atk: 10, noise: 3}      # 每出手 3 次摇一次铃：全场的怪攻击 +10（这一场），声响 +3
 
 # ======================= 事件房（合并进 events） =======================
 events:
@@ -474,14 +474,14 @@ events:
     description: 一座小锻炉里的炭火居然还没灭，旁边的铁砧上摆着一把磨得发亮的锻锤。
     details: 炉火烧得正旺，像是有人刚离开不久。铁砧上刻着一圈矮人的锻造纹，照着纹路敲，也许能把手里的兵器再打磨一番。火星迸得很凶，手上得稳。
     take: {name: 锻炉, service: free_upgrade, skill: sleight, difficulty: 2, fail: 火星迸进了袖口，烫得人直甩手, fail_damage: 40}
-    #service: free_upgrade：成功就给手上的主武器免费升一级（满级了改成给一份碎铁）
+    # service: free_upgrade：成功就给手上的主武器免费升一级（满级了改成给一份碎铁）
   orichalcum_seam:
     name: 奥利哈刚矿脉
     light: bright
     description: 一面被熔岩烤裂的岩壁里露出一条青灰色的矿脉，比上面矿坑里见过的都要粗。
     details: 矿脉被烤得微微发红，敲下来的碎块还是烫的。岩缝里时不时喷出一股热气，挖的时候得看准时机。
     take: {name: 矿脉, item: ore, where: 里, skill: athletics, difficulty: 2, bonus_gem: 0.5, fail: 一股热蒸汽从矿脉缝里喷了出来, fail_damage: 40}
-    #bonus_gem：成功时另有这个几率多掉一颗本主题的宝石
+    # bonus_gem：成功时另有这个几率多掉一颗本主题的宝石
   lava_bridge:
     name: 熔岩吊桥
     light: bright
@@ -496,7 +496,7 @@ events:
     description: 一条晶脉从岩壁里斜斜地穿出来，里面嵌着几颗颜色各异的宝石，亮得像要烧起来。
     details: 晶脉很脆，要把宝石完整地撬下来，得顺着纹路下刀。撬坏了，碎晶会像玻璃渣一样迸出来。
     take: {name: 晶脉, item: gem, where: 里, skill: sleight, difficulty: 2, fail: 晶脉啪的一声裂开，碎晶扎进了手背, fail_damage: 30}
-    #item: gem：从本主题的宝石池里按本层品质抽一颗
+    # item: gem：从本主题的宝石池里按本层品质抽一颗
   whispering_echo:
     name: 回声洞
     light: dim
@@ -509,7 +509,7 @@ events:
     description: 一间四壁都是光滑晶面的石厅，每一面都照出一个你，其中一个没有跟着你动。
     details: 那个不动的倒影慢慢从晶面里走了出来，手里拿着和你一样的武器，脸上的表情却比你冷得多。
     take: {name: 倒影, service: mirror_duel, reward: [gem, crystal_dust]}
-    #service: mirror_duel：刷出一个"你的倒影"，攻防血是你的七成；打赢了拿一颗宝石和一份晶粉，打输只是被赶出去
+    # service: mirror_duel：刷出一个"你的倒影"，攻防血是你的七成；打赢了拿一颗宝石和一份晶粉，打输只是被赶出去
 
   # ---- 静默神殿 ----
   wishing_pool:
@@ -518,18 +518,18 @@ events:
     description: 一口圆形的石池，池底铺满了古老的钱币，池边刻着一行小字：静静地投，静静地许。
     details: 池水平静得像一面镜子，扔进去的东西沉下去时一点水花都没有。要是投币的时候发出了声音，据说愿望就不灵了。
     take: {name: 许愿池, service: wish, cost_gold: 10, fail_if_noise_at_least: 5}
-    #service: wish：付一枚金币的钱（按层数涨），这一层随机得到一个小祝福（攻击、闪避、回血三选一）；声响已经到 5 以上就不灵
+    # service: wish：付一枚金币的钱（按层数涨），这一层随机得到一个小祝福（攻击、闪避、回血三选一）；声响已经到 5 以上就不灵
   confessional:
     name: 忏悔室
     light: dark
     description: 一间只放得下一个人的小木格间，帘子后面有一块雕着花的木板，板后隐约有人在听。
     details: 木板上有一个小孔，凑近了能闻到一股很淡的香。据说在这里轻声说出自己做过的事，身上的晦气就会散去。
     take: {name: 忏悔室, service: cleanse}
-    #service: cleanse：清掉身上所有减益，回血量上限的 15%；这一层只能用一次
+    # service: cleanse：清掉身上所有减益，回血量上限的 15%；这一层只能用一次
   silence_stele:
     name: 禁言碑
     light: dim
     description: 一块黑色的石碑上刻满了细小的文字，碑前的地上跪着一圈石像，都低着头。
     details: 碑文说的是下面一层的路。读得懂的人会明白，但读完以后很长一段时间都说不出话来。
     take: {name: 石碑, service: reveal_next_floor, self_status: {kind: silence, actions: 10}, skill: investigation, difficulty: 2, fail: 字太小太密，读着读着就花了眼}
-    #service: reveal_next_floor：下一层进去时整层地图都是知道的；代价是接下来 10 个动作被禁声
+    # service: reveal_next_floor：下一层进去时整层地图都是知道的；代价是接下来 10 个动作被禁声

@@ -10,8 +10,8 @@ themes:
     name: 沙漠迷城
     light: 50
     min_depth: 21
-    shifting_exits: {every: 8}  #整层每过 8 个动作，随机两三间房的出口重新连接；入口和楼梯的位置不变
-    sand:                       #ground: sand 的房间（流沙）
+    shifting_exits: {every: 8}  # 整层每过 8 个动作，随机两三间房的出口重新连接；入口和楼梯的位置不变
+    sand:                       # ground: sand 的房间（流沙）
       move_max: 1               # 一个动作最多挪一格（平时两格）
       stuck_chance: 0.3         # 想靠近或拉开时，30% 几率陷在原地挪不动；运动每级减 athletics_step
       athletics_step: 0.05
@@ -89,7 +89,7 @@ themes:
       name: 无面法老
       description: 一个身披金袍的高大木乃伊，头上戴着沉重的法老冠冕，冠冕下面却没有脸，只有一片平滑的金箔。
       persona: 他生前是这座城的王，为了永生把自己的脸献给了山岳之上的那一位。他恨一切有脸的人，要把他们也裹进布里，永远陪着他。
-      hp: 1.0                   # 初版1.2、两波木乃伊；模拟里裹尸布太多，第 21 层普通档团灭近五成
+      hp: 1.0                   # 初版 1.2、两波木乃伊；模拟里裹尸布太多，第 21 层普通档团灭近五成
       atk: 10
       def: 20
       undead: true
@@ -110,8 +110,8 @@ themes:
     name: 梦境回廊
     light: 40
     min_depth: 21
-    light_jitter: 30            #每个敌人回合，光亮在基础值上下随机浮动这么多
-    dislocate: {every: 3}       #战斗中每 3 个敌人回合，所有人和怪的距离重新随机（0 到 2），有的怪会直接出现在你身边
+    light_jitter: 30            # 每个敌人回合，光亮在基础值上下随机浮动这么多
+    dislocate: {every: 3}       # 战斗中每 3 个敌人回合，所有人和怪的距离重新随机（0 到 2），有的怪会直接出现在你身边
     shifting_exits: {every: 6}
     intro: 石阶走着走着就不再往下了，而是往上，再往前，最后你推开一扇门，门后是一条铺着地毯的走廊，墙上挂着你好像在哪里见过的画。
     entry:
@@ -190,7 +190,7 @@ themes:
       immune: [blind, stun]
       weak: bright
       actions: {16: 2, 31: 3}
-      memories:                 #转阶段时整个房间变成另一段记忆：房间名、描写、环境物件和场地规则一起换
+      memories:                 # 转阶段时整个房间变成另一段记忆：房间名、描写、环境物件和场地规则一起换
         - at: 0.66
           room: {name: 记忆里的酒馆, light: dim, cover: true, features: [{name: 满墙的酒瓶, max_tier: heavy}, {name: 吧台, max_tier: heavy}]}
           label: 四周的走廊像被揉皱的纸一样塌下去，你站在了一间熟悉的酒馆里
@@ -210,7 +210,7 @@ themes:
     name: 迷雾葬海
     light: 30
     min_depth: 21
-    fog:                        #浓雾
+    fog:                        # 浓雾
       start_distance: 1         # 战斗开始时怪直接出现在一步之遥（平时是几步开外）
       ranged_far_mult: 0.5      # 远程打"几步开外"命中减半
       torch_mult: 0.5           # 火把的光亮只算一半
@@ -271,7 +271,7 @@ themes:
         description: 一座巨大的船坞，一排排木架上停着几十艘小船，每一艘都盖着白布。
         details: 有几块白布被风掀开了一角，露出下面枯瘦的手。船坞尽头的水面上，一盏绿灯在雾里缓缓地移动。
     features:
-      - {name: 雾笛, max_tier: heavy, clears_fog: 3}         #用它以后 3 个敌人回合内雾散开，浓雾规则暂停
+      - {name: 雾笛, max_tier: heavy, clears_fog: 3}         # 用它以后 3 个敌人回合内雾散开，浓雾规则暂停
       - {name: 倾倒的桅杆, max_tier: heavy}
       - {name: 生锈的船锚, max_tier: heavy}
       - {name: 缆绳堆, max_tier: light}
@@ -290,14 +290,14 @@ themes:
       name: 渡魂者
       description: 一个撑着黑船的高大身影，全身裹在湿透的黑斗篷里，只露出一双干枯的手，船头挂着一盏幽绿的灯。
       persona: 他在这片海上摆渡了不知道多少年，只认一个规矩：过河要付钱。付了钱的，他送你一程；不付钱的，他就把你也送到对岸去。
-      hp: 1.0                   # 初版1.2，模拟对到第 21 层普通档 63% / 18%
+      hp: 1.0                   # 初版 1.2，模拟对到第 21 层普通档 63% / 18%
       atk: 20
       def: 10
       undead: true
       immune: [restrained, poison]
       weak: bright
       actions: {16: 2, 31: 3}
-      fare:                     #收船费：每出手 every 次伸手要钱，金额 = gold_per_depth × 层数
+      fare:                     # 收船费：每出手 every 次伸手要钱，金额 = gold_per_depth × 层数
         every: 4
         gold_per_depth: 5
         label: 他把船桨横在身前，伸出一只干枯的手，手心朝上（给他钱，他这一轮就收手；不给，下一次出手是一记重击）
@@ -314,8 +314,8 @@ themes:
     name: 星界秘境
     light: 50
     min_depth: 26
-    star_cycle: {period: 4, swing: 35}   #光亮每 4 个敌人回合在"基础 + 35"和"基础 − 35"之间切换，像大陵五那样一明一暗
-    void:                       #edge: true 的房间里被撞倒或击退时，过一次运动判定，失败就坠入虚空
+    star_cycle: {period: 4, swing: 35}   # 光亮每 4 个敌人回合在"基础 + 35"和"基础 − 35"之间切换，像大陵五那样一明一暗
+    void:                       # edge: true 的房间里被撞倒或击退时，过一次运动判定，失败就坠入虚空
       check: athletics
       base_difficulty: 2        # 再加层数
       fall_damage_pct: 0.15     # 掉血量上限的 15%，被传回上一个房间，这场战斗等于重新进来
@@ -392,7 +392,7 @@ themes:
       name: 堕落的星官
       description: 一个披着星光斗篷的高大身影，脸是一片旋转的星云，手里握着一根顶端嵌着暗红宝石的长杖，杖头每闪一下，星空就跟着暗一下。
       persona: 他曾经负责看守星座的运行，后来爱上了那颗会眨眼的魔星，偷偷改动了它的节奏。现在他只想让星空永远按他的心意明灭。
-      hp: 1.1                   # 初版1.3、攻击 20；模拟对到第 26 层普通档 67% / 9%
+      hp: 1.1                   # 初版 1.3、攻击 20；模拟对到第 26 层普通档 67% / 9%
       atk: 10
       def: 20
       immune: [blind, prone]
@@ -418,7 +418,7 @@ monsters:
     atk: 10
     def: 20
     animal: true
-    native: true                #本地的怪，不受流沙影响
+    native: true                # 本地的怪，不受流沙影响
     on_hit: {kind: poison, chance: 0.3, label: 尾刺扎进了肩膀，伤口一阵阵发麻}
   mummy:
     name: 木乃伊
@@ -438,7 +438,7 @@ monsters:
     atk: 20
     def: 10
     keen: true
-    pack_max: 1                 #每群最多一只，不成群出现
+    pack_max: 1                 # 每群最多一只，不成群出现
     on_hit: {kind: bleed, chance: 0.25, label: 长戟的倒钩在身上撕开一道口子}
   sand_spirit:
     name: 沙之灵
@@ -459,7 +459,7 @@ monsters:
     atk: -10
     animal: true
     native: true
-    swarm: true                 #虫群：单体攻击只打掉一半，群伤、溅射打它 ×2
+    swarm: true                 # 虫群：单体攻击只打掉一半，群伤、溅射打它 ×2
     on_hit: {kind: bleed, chance: 0.35, label: 甲虫钻进了衣服，咬出一片细密的血点}
   tomb_priest:
     name: 冥祭司
@@ -488,7 +488,7 @@ monsters:
     persona: 它知道你所有的招数，因为它就是你。你打它一下，它就学着还你一下。
     hp: 0.9
     atk: 0
-    mirror_attack: 0.7          #它的攻击力是你的攻击力的七成（按它面前的那个人算）
+    mirror_attack: 0.7          # 它的攻击力是你的攻击力的七成（按它面前的那个人算）
   dream_tapir:
     name: 梦食貘
     description: 一头长着象鼻的黑白色怪兽，身上的毛像云一样蓬松，鼻子一吸一吸地在空气里找着什么。
@@ -497,7 +497,7 @@ monsters:
     atk: 0
     animal: true
     on_hit: {kind: dispel, chance: 0.5, label: 它的长鼻子一吸，你身上的好兆头全被吸走了}
-    #kind: dispel：打中时清掉你身上的增益（磨刀石、私酿、祝福、晶甲这类）
+    # kind: dispel：打中时清掉你身上的增益（磨刀石、私酿、祝福、晶甲这类）
   whisperer:
     name: 呓语者
     description: 一个瘦得只剩骨头的影子，嘴一直在动，说着谁也听不懂的梦话。
@@ -515,7 +515,7 @@ monsters:
     atk: -10
     ranged: true
     verb: 甩过来一根发光的丝线
-    revive_once: 0.5            #一场限一次：把倒下的同伴拉起来，回到血量上限的一半
+    revive_once: 0.5            # 一场限一次：把倒下的同伴拉起来，回到血量上限的一半
 
   # ---- 迷雾葬海 ----
   drowned_sailor:
@@ -532,7 +532,7 @@ monsters:
     persona: 它用那盏灯引人过来，等你伸手去够，它就一口咬下去。
     hp: 1.0
     atk: 20
-    lure: true                  #你对它的第一次攻击会打在灯上落空；察觉判定过了就能直接打到身子
+    lure: true                  # 你对它的第一次攻击会打在灯上落空；察觉判定过了就能直接打到身子
   reef_crab:
     name: 礁石蟹
     description: 一只背甲上长满了藤壶和海草的大螃蟹，一只钳子比另一只大出三倍，钳口上满是锯齿。
@@ -552,7 +552,7 @@ monsters:
     atk: 20
     animal: true
     native: true
-    ambush: 1.5                 #每场战斗它的第一击伤害 ×1.5
+    ambush: 1.5                 # 每场战斗它的第一击伤害 ×1.5
   wreck_ghost:
     name: 船骸幽灵
     description: 一个半透明的水手，提着一盏早已熄灭的风灯，在船骸之间飘来飘去，像是在找什么东西。
@@ -571,7 +571,7 @@ monsters:
     ranged: true
     verb: 唱了一句，歌声钻进了耳朵
     on_hit: {kind: charm, chance: 0.25, label: 你迷迷糊糊地朝雾里走了一步}
-    #kind: charm：被迷住的人往后退一步（离怪远一格）；组队时这一次攻击会打到队友身上
+    # kind: charm：被迷住的人往后退一步（离怪远一格）；组队时这一次攻击会打到队友身上
 
   # ---- 星界秘境 ----
   astral_fish:
@@ -595,7 +595,7 @@ monsters:
     immune: [bleed, poison]
     weak: pierce
     on_hit: {kind: prone, chance: 0.35, void_difficulty: 1, label: 被它一头撞飞了出去}
-    #void_difficulty：它撞倒人时，坠入虚空的判定难度再 +1
+    # void_difficulty：它撞倒人时，坠入虚空的判定难度再 +1
   constellation_beast:
     name: 星座兽
     description: 一头由星光连线勾勒出来的野兽，有时是狮子，有时是蝎子，有时是一条长蛇，星星就是它的眼睛和爪尖。
@@ -603,7 +603,7 @@ monsters:
     hp: 1.0
     atk: 20
     keen: true
-    dark_evasion: 0.3           #星光暗的时候，打它的命中再减 30%
+    dark_evasion: 0.3           # 星光暗的时候，打它的命中再减 30%
   void_eye:
     name: 虚空之眼
     description: 一只悬在虚空里的巨大眼睛，没有眼皮，瞳孔是一片纯粹的黑暗，盯着谁，谁就觉得自己在往下掉。
@@ -612,7 +612,7 @@ monsters:
     atk: 10
     ranged: true
     verb: 盯了你一眼
-    only_dark: true             #只在星光暗的时候出现和行动；亮的时候它从场上消失（不算被打死）
+    only_dark: true             # 只在星光暗的时候出现和行动；亮的时候它从场上消失（不算被打死）
     on_hit: {kind: blind, chance: 0.3, label: 你和那片黑暗对视了一眼，眼前一下子什么都没了}
   gravity_priest:
     name: 引力祭司
@@ -622,7 +622,7 @@ monsters:
     atk: -10
     ranged: true
     verb: 手一挥，一股看不见的力把你往外推
-    pull: {every: 3, knockback: true}      #每出手 3 次：把一个人往石台边推一下（在边缘房间要过坠落判定），或者把一个同伴拉回身边
+    pull: {every: 3, knockback: true}      # 每出手 3 次：把一个人往石台边推一下（在边缘房间要过坠落判定），或者把一个同伴拉回身边
 
 # ======================= 事件房（合并进 events） =======================
 events:
@@ -633,14 +633,14 @@ events:
     description: 一间藏在假墓室后面的宝库，门口的地砖上刻满了警告的符号，每一块的颜色都不太一样。
     details: 宝库里堆着金器和彩绘的箱子，但地上的每一块砖都可能是机关。要拿到东西，得看清楚哪几块砖能踩。
     take: {name: 宝库, item: treasure_pool, where: 里, skill: sleight, difficulty: 3, fail: 踩错了一块砖，墙里射出一排毒针, fail_damage: 60}
-    #item: treasure_pool：从本主题的宝箱池里抽一件
+    # item: treasure_pool：从本主题的宝箱池里抽一件
   hourglass_room:
     name: 沙漏房
     light: dim
     description: 一间石室的正中立着一只一人高的沙漏，沙子正在往下流，石室另一头的石台上放着一袋古币。
     details: 你一踏进门，身后的石门就开始缓缓落下。沙漏上刻着一行字：沙尽之前离开。
     take: {name: 石台, item: gold_pouch, where: 上, service: timed, actions: 3}
-    #service: timed：进门以后 actions 个动作之内拿到东西并离开，否则门关上，要打一架才能出去
+    # service: timed：进门以后 actions 个动作之内拿到东西并离开，否则门关上，要打一架才能出去
   mural_gallery:
     name: 壁画长廊
     light: dim
@@ -656,21 +656,21 @@ events:
     description: 走廊的墙上嵌着三扇门，门上分别挂着一只锡杯、一把锻锤和一本旧书。
     details: 门缝里透出的光各不相同，一扇是暖黄的酒馆灯光，一扇是橘红的炉火，一扇是冷清的月光。推开一扇，就能看见那个人很久以前的一段往事。
     take: {name: 门, service: memory, npcs: [innkeeper, smith, shopkeeper]}
-    #service: memory：选一扇门，看到那个 NPC 过去的一段片段（写在 NPC 设定里），第一次看某个 NPC 的片段好感 +3
+    # service: memory：选一扇门，看到那个 NPC 过去的一段片段（写在 NPC 设定里），第一次看某个 NPC 的片段好感 +3
   lucid_dream:
     name: 清醒梦
     light: dim
     description: 一间什么都没有的白色房间，只有正中间放着一面镜子，镜子里的你正在冲你眨眼。
     details: 你忽然意识到这是一个梦，只要你相信，梦里的东西就会听你的话。
     take: {name: 镜子, service: buff, buff: {atk_pct: 0.2, scope: floor}, skill: investigation, difficulty: 2, fail: 你还是分不清这是不是梦，镜子里的你失望地转过了身}
-    #service: buff：这一层攻击 +20%
+    # service: buff：这一层攻击 +20%
   endless_stair:
     name: 无尽楼梯
     light: dark
     description: 一段往下的楼梯，走到底又回到了楼梯顶上，你已经走了三遍了。
     details: 每一遍都有一点不一样：第二遍的扶手是冷的，第三遍的台阶多了一级。找出规律，也许就能走出去。
     take: {name: 楼梯, service: shortcut, skill: investigation, difficulty: 3, fail: 又走了一遍，还是回到了原地，腿都酸了, fail_damage: 30}
-    #service: shortcut：成功就直接走到这一层的楼梯间
+    # service: shortcut：成功就直接走到这一层的楼梯间
 
   # ---- 迷雾葬海 ----
   stranded_treasure_ship:
@@ -685,14 +685,14 @@ events:
     description: 一座还算完好的石头灯塔，塔顶的灯室里有一盏巨大的油灯，灯芯是干的，旁边放着一桶油。
     details: 通往塔顶的楼梯已经朽了一半，要爬上去得小心。灯点亮以后，这片雾能散开不少。
     take: {name: 灯室, service: clear_fog, skill: athletics, difficulty: 2, fail: 楼梯断了一截，你摔回了半层楼, fail_damage: 30}
-    #service: clear_fog：这一层剩下的时间里雾散一半（start_distance 回到 2，远程和火把的减半取消）
+    # service: clear_fog：这一层剩下的时间里雾散一半（start_distance 回到 2，远程和火把的减半取消）
   message_bottle:
     name: 漂流瓶
     light: dim
     description: 一片小小的沙滩上，浪一次次地把一只玻璃瓶推上来，又卷回去。
     details: 瓶子里塞着一张纸条，被海水泡得有点皱。瓶身上还挂着一块小小的木牌，上面刻着一个名字。
     take: {name: 瓶子, service: player_note, bonus_item: {item: ship_plaque, chance: 0.3}}
-    #service: player_note：随机拿到一张其他玩家写过、丢掉的纸条（没有就给一张空纸条）；30% 几率另外捡到船牌
+    # service: player_note：随机拿到一张其他玩家写过、丢掉的纸条（没有就给一张空纸条）；30% 几率另外捡到船牌
 
   # ---- 星界秘境 ----
   star_chart:
@@ -708,7 +708,7 @@ events:
     description: 一块石台被砸出了一个大坑，坑底嵌着一颗还在冒烟的陨石，陨石的裂缝里闪着五颜六色的光。
     details: 陨石还很烫，裂缝里的宝石却亮得惊人。要把它们撬出来，得忍着烫、手要稳。
     take: {name: 陨石, item: gem, gem_min_tier: 3, where: 里, skill: sleight, difficulty: 3, fail: 陨石突然迸出一股热气，烫得你缩回了手, fail_damage: 50}
-    #gem_min_tier：抽到的宝石至少是闪亮
+    # gem_min_tier：抽到的宝石至少是闪亮
   void_edge:
     name: 虚空边缘
     light: dark

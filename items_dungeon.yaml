@@ -1,5 +1,4 @@
 # 地牢物品：格式跟 world.yaml 的 items: 一样，seed 时合并进去
-#
 # ---------------------------------------------------------------------------
 # 新增的 props 键
 #   light: N          光亮 +N，不写 burning 就不会烧完。永久光源（没有 burning）身上只算最亮的一件，火把另外叠加；
@@ -9,7 +8,6 @@
 #   用掉型道具的新键：cure（解某个状态）、refuel（把弱光火把烧回某个样子）、whet（这一层武器伤害 +N）、
 #     reveal_floor（显示这一层地图）、holy（对亡灵/怕光怪打一下，值是伤害档位）、room_light（这个房间光亮 +N）、
 #     throw（能掷出去，值是最高伤害档位）、opens（能开的特殊锁）、uses（能用几次，不写就是 1 次）
-#
 # props.effects：装备着时的特殊效果，一个列表，每条：
 #   when   什么时候触发
 #     passive  一直生效
@@ -128,13 +126,12 @@ items:
     stackable: true
     props: {price: 5}
   # ===================== 通用 =====================
-  steel_shortsword:
-    name: 精钢短剑
+  steel_shortsword:            # name: 精钢短剑
     description: 剑身泛着冷冷的青光，护手上刻着一个早就没人认得的铁匠印记，挥起来比看着轻。
     type: weapon
     damage: 70
     props: {price: 49}
-  war_hammer:                  #双手、破甲
+  war_hammer:                  # 双手、破甲
     name: 双手战锤
     description: 锤头有小孩脑袋那么大，柄上缠着磨得发亮的皮条，砸在铁甲上会留下一个坑。
     type: weapon
@@ -144,8 +141,7 @@ items:
       two_handed: true
       effects:
         - {when: hit, do: pierce, value: 20}
-  vigor_ring:
-    name: 活力之戒
+  vigor_ring:                  # name: 活力之戒
     description: 一枚暖烘烘的红铜指环，戴上以后心跳都沉稳了几分。
     type: armor
     slot: ring
@@ -153,7 +149,7 @@ items:
       price: 40
       effects:
         - {when: passive, do: max_hp, value: 30}
-  lucky_coin:                  #会加速通胀，建议只做这一件、两个戒指位不叠加
+  lucky_coin:                  # 会加速通胀，建议只做这一件、两个戒指位不叠加
     name: 幸运古币
     description: 一枚被人钻了孔、穿在指环上的古金币，正面的头像被摸得看不清了。
     type: armor
@@ -354,30 +350,28 @@ items:
     stackable: true
     props: {price: 6, smoke: 2}
 
-  map_scrap:
-    name: 地牢地图残片
+  map_scrap:                   # name: 地牢地图残片
     description: 半张画在兽皮上的地图，墨迹一碰到这一层的空气就自己动了起来。用掉后能知道这一层所有房间和宝箱房在哪。
     type: misc
     props: {price: 10, reveal_floor: true}
-  bandage:                     #解状态
+  bandage:                     # 解状态
     name: 绷带
     description: 一卷洗得发白的亚麻布条，边上还缝着一小包止血粉。
     type: consumable
     heal: 2
     props: {price: 3, cure: bleed, kind: salve}
-  lamp_oil:
-    name: 灯油
+  lamp_oil:                    # name: 灯油
     description: 一只塞着软木塞的小陶瓶，里面的油又稠又黑，闻着有股松脂味。倒在快灭的火把上能让它重新烧旺。
     type: misc
     props: {price: 3, refuel: torch_lit}
-  whetstone:                   #临时增益
+  whetstone:                   # 临时增益
     name: 磨刀石
     description: 一块灰色的细磨石，一面已经被磨出了浅浅的凹槽。
     type: misc
     props: {price: 6, whet: 10}
 
   # ===================== 矿坑 =====================
-  miner_pick:                  #破甲
+  miner_pick:                  # 破甲
     name: 矿工的短镐
     description: 镐头磨得只剩一半，木柄被汗浸成了黑色，敲在石头上火星四溅。
     type: weapon
@@ -387,20 +381,20 @@ items:
       effects:
         - {when: hit, do: pierce, value: 10}
         - {when: passive, do: skill, kind: athletics, value: 1}
-  kobold_cap:                  #光亮
+  kobold_cap:                  # 光亮
     name: 狗头人矿工帽
     description: 一顶对人来说太小的皮帽，帽檐上焊着一只拇指大的油灯，灯芯居然还能点着。
     type: armor
     slot: head
     defense: 10
     props: {price: 17, light: 10}
-  miner_lamp:                  #光亮
+  miner_lamp:                  # 光亮
     name: 矿工灯
     description: 一盏黄铜外壳的矿灯，玻璃罩上有道裂纹，挂在腰带上晃晃悠悠地亮着，不占手。
     type: armor
     slot: belt
     props: {price: 40, light: 10}
-  beetle_shell_shield:         #抗性
+  beetle_shell_shield:         # 抗性
     name: 岩甲虫壳盾
     description: 一片岩甲虫的背壳，内侧钉了两根皮带当把手，敲上去像敲石头。占一只手。
     type: armor
@@ -411,7 +405,7 @@ items:
       block: 0.15
       effects:
         - {when: passive, do: resist, kind: prone, value: 0.5}
-  foreman_mattock:             #头目掉落
+  foreman_mattock:             # 头目掉落
     name: 工头的鹤嘴锄
     description: 沾满血锈的鹤嘴锄，比普通矿镐长出一截，锄尖被磨得像矛头。
     type: weapon
@@ -422,7 +416,7 @@ items:
       effects:
         - {when: hit, do: pierce, value: 20}
         - {when: hit, do: status, kind: prone, chance: 0.2, label: 被鹤嘴锄勾倒在地}
-  foreman_plate:               #头目掉落
+  foreman_plate:               # 头目掉落
     name: 工头的矿车铁皮甲
     description: 用矿车铁皮敲成的护甲，铆钉歪歪扭扭，穿上去叮当乱响，跑起来很吃力。
     type: armor
@@ -434,7 +428,7 @@ items:
         - {when: passive, do: flee, value: 1}
 
   # ===================== 坟场 =====================
-  silver_dagger:               #按标签加伤
+  silver_dagger:               # 按标签加伤
     name: 银匕首
     description: 一把细长的银匕首，刃上刻着一行祷词，在黑暗里泛着淡淡的白光。
     type: weapon
@@ -443,19 +437,17 @@ items:
       price: 31
       effects:
         - {when: hit, do: bonus, value: 30, vs: [undead, light_averse], label: 银刃划过的地方冒起一缕白烟}
-  grave_lantern:               #永久光源，占手
+  grave_lantern:               # 永久光源，占手
     name: 守墓提灯
     description: 一盏铁皮提灯，灯罩上镂着十字形的孔，里面的火苗是幽白色的，从来不晃。
     type: weapon
     damage: 10
     props: {price: 45, light: 15}
-  holy_water:
-    name: 圣水
+  holy_water:                  # name: 圣水
     description: 一只小玻璃瓶，瓶颈系着褪色的红绳，里面的水透亮得不像地底下的东西。泼向亡灵或怕光的怪能重创它。
     type: misc
     props: {price: 12, holy: heavy}
-  mourner_ring:
-    name: 送葬者之戒
+  mourner_ring:                # name: 送葬者之戒
     description: 一枚黑铁戒指，内圈刻满了死者的名字，戴久了手指会有点凉。
     type: armor
     slot: ring
@@ -463,7 +455,7 @@ items:
       price: 30
       effects:
         - {when: passive, do: resist, kind: corrode, value: 0.5}
-  keeper_scythe:               #头目掉落
+  keeper_scythe:               # 头目掉落
     name: 守陵人的长柄镰
     description: 比人还高的长柄镰刀，镰刃薄得透光，挥过去的时候没有声音。
     type: weapon
@@ -473,7 +465,7 @@ items:
       two_handed: true
       effects:
         - {when: hit, do: status, kind: bleed, chance: 0.3, label: 被镰刃拉开一道长长的口子}
-  keeper_heartstone:           #头目掉落
+  keeper_heartstone:           # 头目掉落
     name: 守陵人的心石
     description: 从守陵人胸口撬下来的石头，用皮绳穿着，还在一明一暗地发着幽光，像在呼吸。
     type: armor
@@ -486,7 +478,7 @@ items:
         - {when: passive, do: resist, kind: blind, value: 0}
 
   # ===================== 城堡 =====================
-  iron_baton:                  #玩家武器用 on_hit
+  iron_baton:                  # 玩家武器用 on_hit
     name: 包铁警棍
     description: 一根一臂长的硬木棍，前半截包着铁皮，上面有几道洗不掉的深色印子。
     type: weapon
@@ -495,7 +487,7 @@ items:
       price: 35
       effects:
         - {when: hit, do: status, kind: prone, chance: 0.15, label: 被警棍敲中膝盖跪倒在地}
-  jailer_keyring:              #技能加值，只算开锁类的巧手判定
+  jailer_keyring:              # 技能加值，只算开锁类的巧手判定
     name: 狱卒的钥匙串
     description: 一大串长短不一的铁钥匙，挂在腰上叮当作响，没有一把标了是开哪的。
     type: armor
@@ -504,8 +496,7 @@ items:
       price: 20
       effects:
         - {when: passive, do: skill, kind: sleight, value: 2}
-  hound_collar:
-    name: 恶犬的铁项圈
+  hound_collar:                # name: 恶犬的铁项圈
     description: 一截拴狗的铁链连着铁项圈，被磨得锃亮，戴上去野兽闻着你就像闻着同类。
     type: armor
     slot: neck
@@ -514,7 +505,7 @@ items:
       price: 22
       effects:
         - {when: hurt, do: guard, value: 10, vs: [animal]}
-  warden_helm:                 #头目掉落
+  warden_helm:                 # 头目掉落
     name: 典狱长的黑铁头盔
     description: 整块黑铁锻成的头盔，只在眼睛的位置开了一道缝，戴上以后连自己的呼吸声都变闷了。
     type: armor
@@ -524,21 +515,20 @@ items:
       price: 43
       effects:
         - {when: passive, do: resist, kind: restrained, value: 0}
-  warden_key:                  #头目掉落，城堡层可以开一间“上锁的牢房”特殊宝箱房
+  warden_key:                  # 头目掉落，城堡层可以开一间“上锁的牢房”特殊宝箱房
     name: 典狱长的大钥匙
     description: 一把巴掌长的黑铁钥匙，齿纹复杂得像一幅地图，握在手里沉得发坠。
     type: key
     props: {price: 25, opens: castle_cell}
 
   # ===================== 森林 =====================
-  bone_spear:                  #投掷交给 AI 判定
+  bone_spear:                  # 投掷交给 AI 判定
     name: 骨矛
     description: 一根削尖的长骨头绑在木杆上，矛尖涂着一层干掉的绿泥。可以掷出去，要走过去捡回来。
     type: weapon
     damage: 50
     props: {price: 35, throw: heavy}
-  wolf_hide_boots:
-    name: 狼皮靴
+  wolf_hide_boots:             # name: 狼皮靴
     description: 用苍白狼的皮缝的短靴，毛朝里，踩在落叶上几乎没有声音。
     type: armor
     slot: feet
@@ -547,8 +537,7 @@ items:
       price: 17
       effects:
         - {when: passive, do: flee, value: -1}
-  thorn_whip:
-    name: 荆棘鞭
+  thorn_whip:                  # name: 荆棘鞭
     description: 一截还活着的荆棘藤，握柄那头被缠上了布，鞭梢的刺偶尔会自己动一下。
     type: weapon
     damage: 40
@@ -556,7 +545,7 @@ items:
       price: 28
       effects:
         - {when: hit, do: status, kind: restrained, chance: 0.2, label: 被带刺的鞭梢缠住了}
-  elder_bark_armor:            #头目掉落
+  elder_bark_armor:            # 头目掉落
     name: 古树皮甲
     description: 一整块从古树守卫身上剥下来的树皮，内侧还是湿的，穿上去有股松脂的清香。
     type: armor
@@ -566,7 +555,7 @@ items:
       price: 73
       effects:
         - {when: passive, do: resist, kind: prone, value: 0}
-  heartwood_amulet:            #头目掉落
+  heartwood_amulet:            # 头目掉落
     name: 古树心木护符
     description: 一小块深褐色的心木，纹理像一圈圈年轮，贴着胸口能感觉到很慢很慢的搏动。
     type: armor
@@ -576,16 +565,14 @@ items:
       price: 32
       effects:
         - {when: passive, do: max_hp, value: 20}
-  wild_berries:
-    name: 野莓
+  wild_berries:                # name: 野莓
     description: 一把紫黑色的小野莓，酸得人眯眼，吃完嘴唇都是紫的。
     type: consumable
     heal: 2
     props: {price: 1, kind: food}
 
   # ===================== 沼泽 =====================
-  venom_bone_knife:
-    name: 淬毒骨匕
+  venom_bone_knife:            # name: 淬毒骨匕
     description: 一把用鱼骨磨成的小刀，刃口泛着一层油绿，最好别拿它削水果。
     type: weapon
     damage: 30
@@ -593,14 +580,12 @@ items:
       price: 24
       effects:
         - {when: hit, do: status, kind: poison, chance: 0.3, label: 伤口泛起一圈青紫}
-  glowcap_staff:
-    name: 发光菌杖
+  glowcap_staff:               # name: 发光菌杖
     description: 一根顶上长着一簇发光蘑菇的木杖，蘑菇伞盖一明一暗，像在呼吸。
     type: weapon
     damage: 30
     props: {price: 29, light: 15}
-  marsh_boots:
-    name: 沼泽高筒靴
+  marsh_boots:                 # name: 沼泽高筒靴
     description: 一双涂过蜡的高筒皮靴，一直到膝盖，里面还积着一点泥水。
     type: armor
     slot: feet
@@ -609,19 +594,18 @@ items:
       price: 19
       effects:
         - {when: passive, do: wade}
-  antidote_moss:
-    name: 解毒苔
+  antidote_moss:               # name: 解毒苔
     description: 一团灰绿色的苔藓，嚼起来又苦又涩，舌头会麻一会儿。
     type: consumable
     heal: 2
     props: {price: 3, cure: poison, kind: salve}
-  marsh_mushroom:              #吃的时候过自然判定，不过就按 harm 掉血并中毒
+  marsh_mushroom:              # 吃的时候过自然判定，不过就按 harm 掉血并中毒
     name: 沼泽菇
     description: 一朵肥厚的褐色蘑菇，伞盖底下的褶子是淡粉色的，看着能吃，也可能不能。
     type: consumable
     heal: 5
     props: {price: 2, harm: 30, harm_check: nature, kind: food}
-  witch_bone_ring:             #头目掉落
+  witch_bone_ring:             # 头目掉落
     name: 女巫的骨戒
     description: 一枚用指骨磨成的戒指，上面刻着歪歪扭扭的符文，戴上去指尖会发麻。
     type: armor
@@ -631,7 +615,7 @@ items:
       effects:
         - {when: passive, do: resist, kind: poison, value: 0}
         - {when: hit, do: status, kind: poison, chance: 0.15, label: 指尖的麻意顺着伤口钻了进去}
-  witch_staff:                 #头目掉落
+  witch_staff:                 # 头目掉落
     name: 女巫的骨杖
     description: 一根挂满小骨头的拐杖，杖头的骷髅眼眶里跳着两点绿色的磷火。
     type: weapon
@@ -643,8 +627,7 @@ items:
         - {when: hit, do: status, kind: poison, chance: 0.25, label: 被磷火燎过的地方冒出绿烟}
 
   # ===================== 图书馆 =====================
-  ink_blade:
-    name: 墨刃
+  ink_blade:                   # name: 墨刃
     description: 一把像是用凝固的墨汁铸成的细剑，刃口滴着永远干不了的黑色。
     type: weapon
     damage: 60
@@ -652,8 +635,7 @@ items:
       price: 48
       effects:
         - {when: hit, do: status, kind: blind, chance: 0.2, label: 墨汁溅进了眼睛}
-  paper_ward:
-    name: 纸符护身
+  paper_ward:                  # name: 纸符护身
     description: 一叠折成小方块的符纸，用红线缠着，上面的字迹会慢慢换来换去。
     type: armor
     slot: neck
@@ -662,8 +644,7 @@ items:
       price: 22
       effects:
         - {when: passive, do: resist, kind: blind, value: 0}
-  gargoyle_eye:
-    name: 石像鬼之眼
+  gargoyle_eye:                # name: 石像鬼之眼
     description: 一颗暗红色的宝石镶在粗糙的石戒托上，在黑暗里会慢慢亮起来，像一只睁开的眼睛。
     type: armor
     slot: ring
@@ -671,12 +652,11 @@ items:
       price: 45
       effects:
         - {when: passive, do: darkvision}
-  light_scroll:
-    name: 光明卷轴
+  light_scroll:                # name: 光明卷轴
     description: 一张卷得很紧的羊皮纸，展开的瞬间上面的字一个接一个亮起来，把整个房间照得雪亮，走出房间就散了。
     type: misc
     props: {price: 8, room_light: 40}
-  curator_monocle:             #头目掉落
+  curator_monocle:             # 头目掉落
     name: 馆长的单片眼镜
     description: 一片镶在银框里的圆镜片，透过它看书上的字会自己排整齐。
     type: armor
@@ -686,14 +666,14 @@ items:
       price: 32
       effects:
         - {when: passive, do: skill, kind: investigation, value: 2}
-  curator_ledger:              #头目掉落，古书残卷的强化版
+  curator_ledger:              # 头目掉落，古书残卷的强化版
     name: 馆长的借阅簿
     description: 一本厚厚的皮面簿子，每一页都记着借书人的名字和一个从没划掉的“逾期”。念出来能让周围的敌人僵住，能念三次。爱书的人会非常想要。
     type: misc
     props: {price: 80, gift: book, stun: 被借阅簿上的名字钉在了原地, uses: 3}
 
   # ===================== 特殊效果（通用池，精英和宝箱房出） =====================
-  flail_chain:                 #群伤
+  flail_chain:                 # 群伤
     name: 回旋链锤
     description: 一根短柄上拴着三截铁链，每截末端坠着一颗带刺的铁球，抡起来整个房间都是呼呼的风声。
     type: weapon
@@ -702,7 +682,7 @@ items:
       price: 45
       effects:
         - {when: attack, do: splash, value: 10, label: 甩开的铁链扫过了周围所有敌人}
-  quake_axe:                   #双手，群体撞倒
+  quake_axe:                   # 双手，群体撞倒
     name: 碎岩战斧
     description: 斧刃厚得像一块门板，劈进地面时整个房间都跟着一震。
     type: weapon
@@ -712,7 +692,7 @@ items:
       two_handed: true
       effects:
         - {when: hit, do: status_all, kind: prone, chance: 0.15, label: 地面一震，所有敌人都站不稳了}
-  storm_rod:                   #连锁
+  storm_rod:                   # 连锁
     name: 雷鸣短杖
     description: 一根缠着铜丝的黑木短杖，杖头嵌着一块碎裂的蓝水晶，握久了手臂会发麻。
     type: weapon
@@ -721,7 +701,7 @@ items:
       price: 50
       effects:
         - {when: hit, do: chain, value: 30, chance: 0.25, label: 一道细细的电光从伤口跳到了旁边的敌人身上}
-  bat_fang_dagger:             #吸血
+  bat_fang_dagger:             # 吸血
     name: 蝠牙匕首
     description: 刀刃是一颗弯弯的巨大兽牙，牙根处有一道细槽，刺进去以后会自己往回吸。
     type: weapon
@@ -730,7 +710,7 @@ items:
       price: 45
       effects:
         - {when: hit, do: leech, value: 0.3}
-  executioner_blade:           #斩杀
+  executioner_blade:           # 斩杀
     name: 处刑者大剑
     description: 一把没有剑尖的方头大剑，剑身上刻着一排排小小的记号，数不清有多少道。
     type: weapon
@@ -740,7 +720,7 @@ items:
       two_handed: true
       effects:
         - {when: hit, do: bonus, value: 40, if: {target_hp_below: 0.3}, label: 方头大剑重重落下，像是在行刑}
-  ambush_knife:                #先手
+  ambush_knife:                # 先手
     name: 伏击者短刀
     description: 一把刀身涂黑的短刀，刀柄缠着吸汗的细绳，拔出来的时候没有一点反光。
     type: weapon
@@ -749,7 +729,7 @@ items:
       price: 35
       effects:
         - {when: fight, do: bonus, value: 40, label: 趁对方还没反应过来，刀已经扎了进去}
-  frost_blade:                 #用现有的定身
+  frost_blade:                 # 用现有的定身
     name: 霜咬短剑
     description: 剑身上永远结着一层薄霜，握在手里呵出来的气都是白的。
     type: weapon
@@ -758,7 +738,7 @@ items:
       price: 45
       effects:
         - {when: hit, do: status, kind: stun, chance: 0.15, label: 伤口瞬间结了霜，整个身子僵住了}
-  soul_reaper:                 #杀敌回血
+  soul_reaper:                 # 杀敌回血
     name: 收魂弯刀
     description: 一把弯得像新月的刀，刀背上挂着一串小小的铁铃，每杀一个敌人就会自己响一下。
     type: weapon
@@ -767,7 +747,7 @@ items:
       price: 45
       effects:
         - {when: kill, do: heal, value: 20, label: 铁铃轻轻一响，一股暖意顺着刀柄流进手臂}
-  avenger_blade:               #队友倒下加伤，组队向
+  avenger_blade:               # 队友倒下加伤，组队向
     name: 复仇之刃
     description: 一把朴素的长剑，剑格上缠着一条褪色的发带，平时毫不起眼，同伴倒下时却会烫得握不住。
     type: weapon
@@ -776,7 +756,7 @@ items:
       price: 50
       effects:
         - {when: hit, do: bonus, value: 30, if: {ally_down: true}}
-  ember_sword:                 #光源兼打怕光
+  ember_sword:                 # 光源兼打怕光
     name: 余烬长剑
     description: 剑身里像是封着一块没烧完的炭，裂纹里透出暗红的光，砍在身上会发出滋滋的声响。
     type: weapon
@@ -787,7 +767,7 @@ items:
       fire: true
       effects:
         - {when: hit, do: bonus, value: 20, vs: [light_averse]}
-  cursed_twinblade:            #诅咒：卸不下来，找诺艾尔解咒
+  cursed_twinblade:            # 诅咒：卸不下来，找诺艾尔解咒
     name: 饮血双刃剑
     description: 剑柄两头都有刃，握的地方也是刃，一拿起来就划破了手掌，却怎么也松不开。
     type: weapon
@@ -797,7 +777,7 @@ items:
       cursed: true
       effects:
         - {when: attack, do: self_damage, value: 10, label: 握柄上的刃口又咬进手心一点}
-  greed_ring:                  #诅咒
+  greed_ring:                  # 诅咒
     name: 贪婪之戒
     description: 一枚沉得不像话的金戒指，戴上以后总觉得口袋里的钱不够，脸色也一天比一天差。
     type: armor
@@ -808,7 +788,7 @@ items:
       effects:
         - {when: passive, do: gold, value: 0.3}
         - {when: passive, do: max_hp, value: -30}
-  berserker_ring:              #残血加伤
+  berserker_ring:              # 残血加伤
     name: 狂战士之戒
     description: 一枚粗糙的铁环，内侧沾着洗不掉的血渍，伤得越重，它勒得越紧。
     type: armor
@@ -817,7 +797,7 @@ items:
       price: 40
       effects:
         - {when: attack, do: bonus, value: 30, if: {hp_below: 0.3}}
-  bramble_mail:                #反伤
+  bramble_mail:                # 反伤
     name: 荆棘软甲
     description: 皮甲外面缝满了晒干的荆棘，谁扑上来都得先扎一手。
     type: armor
@@ -827,7 +807,7 @@ items:
       price: 30
       effects:
         - {when: hurt, do: reflect, value: 10, label: 扑上来的敌人被荆棘扎得一缩}
-  shadow_boots:                #闪避
+  shadow_boots:                # 闪避
     name: 影步靴
     description: 一双软底黑靴，走起路来脚下的影子总是慢半拍才跟上。
     type: armor
@@ -836,7 +816,7 @@ items:
       price: 40
       effects:
         - {when: hurt, do: dodge, chance: 0.12, label: 那一下只砍中了一团影子}
-  phoenix_feather:             #每层一次免死
+  phoenix_feather:             # 每层一次免死
     name: 不熄的羽毛
     description: 一根火红的长羽毛，用细金丝穿着，羽尖永远燃着一点不烫手的火星。
     type: armor
@@ -845,7 +825,7 @@ items:
       price: 60
       effects:
         - {when: hurt, do: cheat_death, once: per_floor, label: 胸口的羽毛猛地燃起，硬是把人从倒下的边缘拽了回来}
-  moss_heart:                  #走路回血
+  moss_heart:                  # 走路回血
     name: 苔心护符
     description: 一颗包在青苔里的圆石，摸上去永远是湿润的，贴身带着走一段路就觉得身上的伤轻了些。
     type: armor
@@ -854,7 +834,7 @@ items:
       price: 35
       effects:
         - {when: enter, do: heal, value: 10}
-  legion_sigil:                #光环，组队向
+  legion_sigil:                # 光环，组队向
     name: 军团徽记
     description: 一枚磨损的铜徽章，上面是一面残破的战旗，别在胸前，身边的人都会不自觉地站直了些。
     type: armor

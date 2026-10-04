@@ -2,27 +2,27 @@
 # tier 1（第 16 层起：地底熔炉、水晶洞窟、静默神殿）：单手 95、双手 135、胸甲 40、盾 40
 # tier 2（第 21 层起：沙漠迷城、梦境回廊、迷雾葬海；第 25 层关卡头目）：单手 130、双手 180、胸甲 55、盾 55
 # tier 3（第 26 层起：星界秘境）：单手 175、双手 245、胸甲 75、盾 75
-#props.tier：掉落时孔数按稀有度再高一档；莉娜的"深层锻造"解锁以后升级上限更高
+# props.tier：掉落时孔数按稀有度再高一档；莉娜的"深层锻造"解锁以后升级上限更高
 # 头目掉落比同档高一截。效果写法沿用 effects（when / do）。
 
 items:
 
   # ---------- 现有物品的补丁 ----------
   spring_water:                # world.yaml 里现有的泉水，props 加 quench
-    props: {price: 8, kind: drink, quench: 4}    #在灼热的楼层喝下，接下来 4 个动作不掉血
+    props: {price: 8, kind: drink, quench: 4}    # 在灼热的楼层喝下，接下来 4 个动作不掉血
 
   # ======================= 礼物、材料 =======================
   forge_rubbing:
     name: 矮人锻造纹拓片
     description: 一张从铜匣上拓下来的厚皮纸，上面是一圈圈复杂的锻造纹，纹路的走向跟莉娜铁匠铺墙上那几道一模一样。
     type: misc
-    props: {price: 30, gift: ore, gift_value: 10, unlock: lina_deep_forge}   #第一次送给莉娜时解锁深层锻造
+    props: {price: 30, gift: ore, gift_value: 10, unlock: lina_deep_forge}   # 第一次送给莉娜时解锁深层锻造
   crystal_dust:
     name: 晶粉
     description: 一小袋闪着微光的晶体粉末，捏一撮撒在宝石上，宝石会像喝了水一样亮起来。
     type: misc
     stackable: true
-    props: {price: 20, refine_catalyst: 1.5}      #找诺艾尔刷品质时当垫子：这次升档几率 ×1.5（任何宝石都能用）
+    props: {price: 20, refine_catalyst: 1.5}      # 找诺艾尔刷品质时当垫子：这次升档几率 ×1.5（任何宝石都能用）
   crystal_sealed_page:
     name: 晶封的书页
     description: 一页被封在薄晶片里的古书，字迹清清楚楚，只是晶片太硬，谁也拆不开，只能隔着晶体读。
@@ -37,7 +37,7 @@ items:
     name: 壁画拓片
     description: 一张拓着象形文字和图画的粗纸，画的是胡狼头的神站在山顶上，为死者称量心脏。
     type: misc
-    props: {price: 30, gift: book, gift_value: 10, lore: upon_mountain}   #诺艾尔每收一张，就多讲出一段"在其山岳之上者"的来历
+    props: {price: 30, gift: book, gift_value: 10, lore: upon_mountain}   # 诺艾尔每收一张，就多讲出一段"在其山岳之上者"的来历
   ship_plaque:
     name: 刻名字的船牌
     description: 一块被海水泡得发白的木牌，上面刻着一个船名，字迹已经模糊，只能认出最后一个字是"号"。
@@ -47,7 +47,7 @@ items:
     name: 星尘
     description: 一只小玻璃瓶里装着一撮会自己发光的细沙，晃一晃，瓶子里就像下了一场很小的流星雨。
     type: misc
-    props: {price: 60, gift: any, gift_value: 15}      #gift: any：三个人都喜欢，好感加得比普通礼物多
+    props: {price: 60, gift: any, gift_value: 15}      # gift: any：三个人都喜欢，好感加得比普通礼物多
 
   # ======================= 地底熔炉（tier 1） =======================
   dwarf_hand_axe:
@@ -91,7 +91,7 @@ items:
       price: 120
       tier: 1
       effects:
-        - {when: passive, do: heat_resist, value: 0.5}     #灼热掉的血 ×0.5
+        - {when: passive, do: heat_resist, value: 0.5}     # 灼热掉的血 ×0.5
   forge_king_hammer:           # 头目掉落
     name: 矮人王的锻锤
     description: 铸像手里那柄比人还高的锻锤，锤头上的锻造纹还在隐隐发红。
@@ -151,7 +151,7 @@ items:
       tier: 1
       block: 0.1
       effects:
-        - {when: hurt, do: reflect_ranged, chance: 0.2}    #挨远程攻击时 20% 几率折回射手身上
+        - {when: hurt, do: reflect_ranged, chance: 0.2}    # 挨远程攻击时 20% 几率折回射手身上
   crystal_mail:
     name: 晶鳞甲
     description: 一件用薄晶片一片片缀起来的鳞甲，走动时叮叮作响，在光下闪得人睁不开眼。
@@ -175,7 +175,7 @@ items:
       tier: 1
       effects:
         - {when: passive, do: max_hp, value: 60}
-        - {when: passive, do: glare_immune}                #不受炫光影响
+        - {when: passive, do: glare_immune}                # 不受炫光影响
   prism_scepter:               # 头目掉落
     name: 棱光权杖
     description: 一根顶端嵌着三棱晶体的短杖，晶体里的光一直在转，找准角度能把光聚成一根针。
@@ -220,7 +220,7 @@ items:
       price: 150
       tier: 1
       effects:
-        - {when: passive, do: noise_mult, value: 0.5}      #你的动作加的声响减半
+        - {when: passive, do: noise_mult, value: 0.5}      # 你的动作加的声响减半
         - {when: passive, do: skill, kind: stealth, value: 1}
   guardian_shield:
     name: 守像石盾
@@ -240,7 +240,7 @@ items:
       tier: 1
       effects:
         - {when: passive, do: resist, kind: silence, value: 0}
-        - {when: passive, do: noise_max_add, value: 5}     #静默神殿的声响上限 +5
+        - {when: passive, do: noise_max_add, value: 5}     # 静默神殿的声响上限 +5
   high_priest_staff:           # 头目掉落
     name: 大祭司的权杖
     description: 一根白银包头的长杖，杖头雕着一只捂住嘴的手，被它指着的人会一下子说不出话。
@@ -303,7 +303,7 @@ items:
       price: 240
       tier: 2
       effects:
-        - {when: passive, do: sand_immune}                 #不受流沙影响
+        - {when: passive, do: sand_immune}                 # 不受流沙影响
   pharaoh_mask:                # 头目掉落
     name: 法老的金面具
     description: 一张打得极薄的金面具，面具上没有五官，戴上以后却什么都看得清清楚楚。
@@ -371,7 +371,7 @@ items:
       price: 240
       tier: 2
       effects:
-        - {when: passive, do: dislocate_immune}            #不受错位影响，距离不会被打乱
+        - {when: passive, do: dislocate_immune}            # 不受错位影响，距离不会被打乱
   lucid_mirror:
     name: 清醒之镜
     description: 一面巴掌大的小镜子，用链子挂在胸前，照一下就能分清什么是梦、什么是真的。
@@ -382,7 +382,7 @@ items:
       price: 260
       tier: 2
       effects:
-        - {when: hurt, do: resist_once, kind: stun, once: per_fight}    #每场第一次被打晕、石化时无效
+        - {when: hurt, do: resist_once, kind: stun, once: per_fight}    # 每场第一次被打晕、石化时无效
   crown_of_unwaking:           # 头目掉落
     name: 未醒之冠
     description: 永不醒来的人头上那顶用梦织成的冠冕，轻得像没有重量，戴上以后总觉得自己在做一个很长的梦。
@@ -403,7 +403,7 @@ items:
       price: 540
       tier: 2
       effects:
-        - {when: hit, do: bonus_pct, value: 0.2, if: {same_target: true}}   #连续打同一个目标时伤害 +20%
+        - {when: hit, do: bonus_pct, value: 0.2, if: {same_target: true}}   # 连续打同一个目标时伤害 +20%
 
   # ======================= 迷雾葬海（tier 2） =======================
   cutlass:
@@ -421,7 +421,7 @@ items:
     description: 一根带倒钩的长鱼叉，尾巴上拴着一截粗绳，扔出去还能拽回来。
     type: weapon
     damage: 120
-    props: {price: 280, tier: 2, throw: heavy, tether: true}   #tether：掷出去以后下一个动作自动拽回来，不用走过去捡
+    props: {price: 280, tier: 2, throw: heavy, tether: true}   # tether：掷出去以后下一个动作自动拽回来，不用走过去捡
   ship_anchor:
     name: 船锚
     description: 一只生了锈的铁船锚，拴着一截粗铁链，抡起来能把人砸进地里。
@@ -438,7 +438,7 @@ items:
     description: 从灯塔里拆下来的一盏小油灯，灯罩是厚玻璃做的，光能穿透最浓的雾。
     type: weapon
     damage: 20
-    props: {price: 260, tier: 2, light: 40, fog_ignore: true}  #在浓雾里光亮照常算，不减半
+    props: {price: 260, tier: 2, light: 40, fog_ignore: true}  # 在浓雾里光亮照常算，不减半
   captain_coat:
     name: 船长外套
     description: 一件双排扣的厚呢外套，领子上缝着褪色的金线，口袋里还有一只停了的怀表。
@@ -468,7 +468,7 @@ items:
       tier: 2
       two_handed: true
       effects:
-        - {when: hit, do: knockback, chance: 0.3}          #把对方打退一步
+        - {when: hit, do: knockback, chance: 0.3}          # 把对方打退一步
   ferryman_lamp:               # 头目掉落
     name: 渡魂者的绿灯
     description: 船头那盏幽绿色的灯，提在手里，雾会自己往两边让开。
@@ -480,7 +480,7 @@ items:
       tier: 2
       light: 30
       effects:
-        - {when: passive, do: fog_immune}                  #不受浓雾影响
+        - {when: passive, do: fog_immune}                  # 不受浓雾影响
 
   # ======================= 星界秘境（tier 3） =======================
   starfall_sword:
@@ -529,7 +529,7 @@ items:
       price: 420
       tier: 3
       effects:
-        - {when: passive, do: void_immune}                 #不会坠入虚空
+        - {when: passive, do: void_immune}                 # 不会坠入虚空
   star_astrolabe:              # 头目掉落
     name: 星官的星盘
     description: 一只黄铜星盘，几个圆环还在自己转动，转到某个位置时，四周的星光会停下来不再明灭。
@@ -541,7 +541,7 @@ items:
       price: 800
       tier: 3
       effects:
-        - {when: passive, do: star_cycle_immune}           #星光周期对你不起作用，光亮按基础值算
+        - {when: passive, do: star_cycle_immune}           # 星光周期对你不起作用，光亮按基础值算
         - {when: passive, do: max_hp, value: 60}
   meteor_maul:                 # 头目掉落
     name: 陨星之锤
@@ -567,7 +567,7 @@ items:
       tier: 2
       two_handed: true
       effects:
-        - {when: hit, do: add_sin, value: 1}               #打中时对方罪 +1（决斗里有用）
+        - {when: hit, do: add_sin, value: 1}               # 打中时对方罪 +1（决斗里有用）
         - {when: hit, do: bonus_pct, per_sin: 0.1}         # 对方每层罪，你打它 +10%
   golden_scale:                # 在其山岳之上者
     name: 黄金天平
@@ -590,7 +590,7 @@ items:
       price: 700
       tier: 2
       effects:
-        - {when: hurt, do: miss_next, once: per_fight}     #每场一次，敌人对你的下一次攻击落空
+        - {when: hurt, do: miss_next, once: per_fight}     # 每场一次，敌人对你的下一次攻击落空
   winged_sandals:              # 英仙座
     name: 赫尔墨斯飞鞋
     description: 一双生着白色小翼的凉鞋，穿上以后脚尖总是离地一点点。
@@ -602,4 +602,4 @@ items:
       tier: 2
       effects:
         - {when: hurt, do: dodge, chance: 0.15}            # 跟格挡合计仍封顶 30%
-        - {when: passive, do: flee_always}                 #逃跑必定成功
+        - {when: passive, do: flee_always}                 # 逃跑必定成功
