@@ -1,6 +1,6 @@
 """
 用真人的聊天框记录（player_log）校准模拟：按层统计挨了多少伤害（占血量上限）、倒下几次、打了几轮。
-只读数据库，要 DATABASE_URL。用法：python balance/calibrate.py 玩家A 玩家B
+只读数据库，要 DATABASE_URL。用法：python balance/calibrate.py 角色名 [角色名 ...]
 """
 import os
 import re
@@ -56,4 +56,6 @@ def main(names: list[str]) -> None:
 
 
 if __name__ == "__main__":
-    main(sys.argv[1:] or ["玩家A", "玩家B"])
+    if len(sys.argv) < 2:
+        raise SystemExit("用法：python balance/calibrate.py 角色名 [角色名 ...]")
+    main(sys.argv[1:])
