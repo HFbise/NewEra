@@ -6,9 +6,13 @@ A multiplayer text adventure (a MUD) in the browser, where players type whatever
 
 > The game itself is in Chinese. This README is in English for portfolio readers; code comments and design notes are in Chinese.
 
+![The game: the story log on the left, the player's state, room, exits and the shopkeeper's services on the right](docs/images/overview.png)
+
+The story log on the left; on the right the player's stats, the room, its exits and what the NPC here offers (her likes, services and goods). Everything is typed in plain language in the box at the bottom.
+
 ## A look at the game
 
-Real sessions with friends. The right-hand panel, cropped here, shows stats, the room, NPC services and the minimap.
+Real sessions with friends, cropped to the part that matters.
 
 ![Other players' actions appear in the log](docs/images/shared-world.png)
 
