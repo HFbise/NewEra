@@ -9,8 +9,11 @@ import dungeon
 from rules import SCALE, stat_text
 from schema import Dispenser, Effect, Npc, Player
 
-from .core import ActionError
-from . import afflictions, equipment, everyday, helpers, loading, smith, stealth
+from ..base.core import ActionError
+from . import everyday
+from ..base import helpers, loading
+from ..fight import afflictions, equipment, stealth
+from ..npc import smith
 
 
 WISHES = [("atk_pct", 15, "许愿池的祝福（攻击 +15%）"), ("dodge", 10, "许愿池的祝福（对方命中 -10%）"),

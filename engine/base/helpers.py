@@ -10,7 +10,9 @@ from rules import ENDURANCE_HP, skill_chance, skill_level, skill_progress
 from schema import ItemInstance, Npc, Player, RoomView, SKILL_NAMES, SLOT_CHOICES
 
 from .core import ActionError
-from . import afflictions, environment, equipment, loading
+from . import loading
+from ..fight import afflictions, equipment
+from ..world import environment
 
 
 def item_label(item: ItemInstance) -> str:

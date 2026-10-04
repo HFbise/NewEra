@@ -16,11 +16,13 @@ from rules import (
 )
 from schema import Effect, ItemInstance, Npc, Player, Room, RoomView, Status, Stealth
 
-from .core import (
+from ..base.core import (
     ActionError, DETECT_START, DRINK_WINDOW, DRUNK_CHANCE, DRUNK_PENALTY, DRUNK_RESIST, DRUNK_TIME, START_DISTANCE,
     TIER_RANGE,
 )
-from . import afflictions, bosses, combat, duels, equipment, everyday, helpers, loading, ranged_combat, stealth
+from . import everyday
+from ..base import helpers, loading
+from ..fight import afflictions, bosses, combat, duels, equipment, ranged_combat, stealth
 
 
 def feature_cfg(cur: Cursor, room_id: str, name: str) -> dict:

@@ -12,8 +12,11 @@ from commands import REST_TALK_RE
 from rules import base_price, clamp_price
 from schema import ActionResult, Give, ItemInstance, Npc, Pay, Player, Rest, RoomView, Sell, Talk, Upgrade
 
-from .core import ActionError
-from . import duels, dungeon_events, environment, equipment, everyday, helpers, item_info, loading, npc_social, smith
+from ..base.core import ActionError
+from . import item_info, npc_social, smith
+from ..base import helpers, loading
+from ..fight import duels, equipment
+from ..world import dungeon_events, environment, everyday
 
 
 def affinity_of(cur: Cursor, player: Player, npc: Npc) -> int:

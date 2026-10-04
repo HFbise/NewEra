@@ -6,10 +6,11 @@ import yaml
 
 import dungeon
 import seed
+from paths import data_path
 
 D = dungeon.data()
 LOOT = dungeon.loot_data()
-with open("world.yaml", encoding="utf-8") as f:
+with open(data_path("world.yaml"), encoding="utf-8") as f:
     WORLD = yaml.safe_load(f)
 ITEMS = seed._all_items(WORLD)
 # 事件房"拿"的不是物品模板，而是引擎特殊处理的东西
@@ -115,7 +116,7 @@ def test_shops_sell_real_items():
 
 def test_deep_files_never_override_main_files():
     # 深层文件只补主文件没有的：同名的以主文件为准（改过的在主文件）
-    with open("dungeon.yaml", encoding="utf-8") as f:
+    with open(data_path("dungeon.yaml"), encoding="utf-8") as f:
         main = yaml.safe_load(f)
     for section in ("themes", "monsters", "events"):
         for key, value in (main.get(section) or {}).items():

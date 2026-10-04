@@ -14,6 +14,8 @@ from typing import Optional
 from uuid import UUID, uuid4
 
 import yaml
+
+from paths import data_path
 from psycopg import Cursor
 from psycopg.types.json import Jsonb
 
@@ -70,7 +72,7 @@ def gate_boss(key: str) -> dict:
 
 
 def _yaml(name: str) -> dict:
-    path = os.path.join(os.path.dirname(__file__), name)
+    path = data_path(name)
     if not os.path.exists(path):
         return {}
     with open(path, encoding="utf-8") as f:

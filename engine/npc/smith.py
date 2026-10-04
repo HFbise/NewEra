@@ -17,8 +17,11 @@ from schema import (
     Uncurse, Unsocket, Upgrade,
 )
 
-from .core import ActionError
-from . import environment, equipment, helpers, item_info, npc_social, npc_trade
+from ..base.core import ActionError
+from . import item_info, npc_social, npc_trade
+from ..base import helpers
+from ..fight import equipment
+from ..world import environment
 
 
 # 铁匠升级武器：每级伤害 +1，名字后面标 +N。升到第 N 级有 N × UPGRADE_BREAK_STEP 的几率失败（最多 UPGRADE_BREAK_MAX），

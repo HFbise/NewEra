@@ -24,6 +24,7 @@ os.chdir(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import yaml  # noqa: E402
 
 import dungeon  # noqa: E402
+from paths import data_path  # noqa: E402
 import rules as R  # noqa: E402
 
 MONSTERS = dungeon.data()["monsters"]
@@ -31,7 +32,7 @@ THEMES = dungeon.data()["themes"]
 GATES = dungeon.data().get("gate_bosses", {})
 ITEMS = {}
 for _f in ("world.yaml", "items_dungeon.yaml"):
-    ITEMS.update(yaml.safe_load(open(_f, encoding="utf-8"))["items"])
+    ITEMS.update(yaml.safe_load(open(data_path(_f), encoding="utf-8"))["items"])
 
 TRIP = 5                                # 一趟：两块传送石之间（1–5、6–10……），出发前回城买药、升级
 TRIPS = 6                               # 一共几趟：走到第 30 层（深层装备、主题还没做，21 层以后先用第 16 层那套装备，只当预警）

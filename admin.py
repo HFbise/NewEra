@@ -21,10 +21,11 @@ from pydantic import BaseModel
 
 import engine
 import seed as seeding
+from paths import data_path
 from db import pool
 
 TOKEN_DAYS = 7
-WORLD_FILE = os.path.join(os.path.dirname(__file__), "world.yaml")
+WORLD_FILE = data_path("world.yaml")
 
 
 def _password() -> str:

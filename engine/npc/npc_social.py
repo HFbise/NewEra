@@ -9,8 +9,9 @@ from psycopg import Connection, Cursor
 import dungeon
 from schema import ActionResult, Npc, Player
 
-from .core import AFFINITY_RANGE, AFFINITY_STEP, ActionError
-from . import helpers, loading, npc_trade, smith
+from ..base.core import AFFINITY_RANGE, AFFINITY_STEP, ActionError
+from . import npc_trade, smith
+from ..base import helpers, loading
 
 
 UPGRADE_NUDGE = "_upgrade_nudge"         # players.flags：莉娜提醒过升级了（下划线开头的是内部记号，侧栏不显示）

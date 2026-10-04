@@ -8,11 +8,13 @@ import dungeon
 from rules import LIGHT_DARK, SMOKE_ROUNDS, skill_level
 from schema import Dodge, Hide, ItemInstance, Npc, Player, RoomView, Search, Stealth
 
-from .core import (
+from ..base.core import (
     ActionError, DETECT_START, DISTANCE_WORDS, DODGE_BONUS, DODGE_PER_LEVEL, FORAGE_CHANCE, FORAGE_COOLDOWN,
     MAX_DISTANCE,
 )
-from . import afflictions, combat, environment, everyday, helpers, loading
+from . import afflictions, combat
+from ..base import helpers, loading
+from ..world import environment, everyday
 
 
 def keen_spotted(cur: Cursor, room_id: str) -> list[str]:

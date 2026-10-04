@@ -9,7 +9,9 @@ from psycopg.rows import dict_row
 from schema import Dispenser, Duel, Feature, ItemInstance, Npc, OtherPlayer, Player, Room, RoomExit, RoomView
 
 from .core import ActionError, FORAGE_CHANCE, ONLINE_WINDOW, STATUS_MAX
-from . import afflictions, duels, environment, helpers, parties
+from . import helpers
+from ..fight import afflictions, duels
+from ..world import environment, parties
 
 
 ITEM_SELECT = """

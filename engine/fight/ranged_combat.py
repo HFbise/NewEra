@@ -7,8 +7,10 @@ from psycopg.types.json import Jsonb
 from rules import BLIND_HIT, LIGHT_BRIGHT, MELEE_HIT, RANGED_COVER, RANGED_HIT, SMOKE_HIT, STEADY_HIT
 from schema import ItemInstance, Npc, Player, Reload, RoomView
 
-from .core import ActionError
-from . import afflictions, combat, environment, equipment, helpers, loading, stealth
+from ..base.core import ActionError
+from . import afflictions, combat, equipment, stealth
+from ..base import helpers, loading
+from ..world import environment
 
 
 # props.ranged 的武器：贴身难射，离得越远越准（RANGED_HIT）；steady 的（麦琪的弩）远近都是 STEADY_HIT。

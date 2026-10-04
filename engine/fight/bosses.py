@@ -11,8 +11,11 @@ import dungeon
 from rules import INTERRUPT_SHARE, SCALE, SUMMON_MAX, WEAK_MULT, due_skill, expected_hit, hurt_player_by, summon_count
 from schema import ItemInstance, Npc, Player, RoomView
 
-from .core import TIER_RANGE
-from . import afflictions, combat, environment, equipment, helpers, item_info, loading, stealth
+from ..base.core import TIER_RANGE
+from . import afflictions, combat, equipment, stealth
+from ..base import helpers, loading
+from ..world import environment
+from ..npc import item_info
 
 
 def douse_npc(cur: Cursor, player: Player, view: RoomView, item: ItemInstance, target: str) -> list[str]:

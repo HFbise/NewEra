@@ -6,8 +6,13 @@ from psycopg import Cursor
 
 from schema import AcceptDuel, Challenge, DeclineDuel, Flee, Npc, Player, RoomView
 
-from .core import ActionError, DETECT_START, DUEL_DISTANCE, DUEL_RULES, DUEL_WINDOW, FLEE_DIFFICULTY, ONLINE_WINDOW
-from . import combat, environment, equipment, helpers, loading, npc_trade, stealth
+from ..base.core import (
+    ActionError, DETECT_START, DUEL_DISTANCE, DUEL_RULES, DUEL_WINDOW, FLEE_DIFFICULTY, ONLINE_WINDOW,
+)
+from . import combat, equipment, stealth
+from ..base import helpers, loading
+from ..world import environment
+from ..npc import npc_trade
 
 
 def end_stale_duels(cur: Cursor) -> list[str]:

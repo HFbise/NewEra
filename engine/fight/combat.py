@@ -19,12 +19,15 @@ from schema import (
     Stunt, Tame, dir_name,
 )
 
-from .core import (
+from ..base.core import (
     ActionError, DETECT_PER_FOE, DETECT_START, DETECT_STEP, DETECT_STEP_MIN, ENEMY_STEP, IMPROVISED_MAX_TIER,
     KEEN_EXTRA, MAX_DISTANCE, MAX_STEP, PRONE_DECISIVE_DIFFICULTY, PRONE_HIT_BONUS, TIERS, TIER_MIN_DIFFICULTY,
     TIER_RANGE, WEAPON_MAX_TIER, WEAPON_STUNT_SHARE, assassinate_difficulty,
 )
-from . import afflictions, bosses, duels, environment, equipment, helpers, item_info, loading, ranged_combat, stealth
+from . import afflictions, bosses, duels, equipment, ranged_combat, stealth
+from ..base import helpers, loading
+from ..world import environment
+from ..npc import item_info
 
 
 def subdued(target: Any) -> bool:

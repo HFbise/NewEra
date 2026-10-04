@@ -7,8 +7,9 @@ from psycopg import Cursor
 import dungeon
 from schema import Follow, Kick, LeaveParty, Player, RoomView, Unfollow
 
-from .core import ActionError, PARTY_MAX
-from . import duels, loading
+from ..base.core import ActionError, PARTY_MAX
+from ..base import loading
+from ..fight import duels
 
 
 # 组队就是跟随：跟着谁就加入谁的队伍（他没队伍就一起新建一个），不跟了就退队。

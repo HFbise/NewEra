@@ -17,11 +17,11 @@ from schema import (
     Revive, RoomView, SLOT_NAMES, Say, Status, Stealth, Take, TakeDonated, Teleport, Use, Write, dir_name,
 )
 
-from .core import ActionError, DETECT_START, ONLINE_WINDOW, RESPAWN_ROOM, REVIVE_DIFFICULTY
-from . import (
-    afflictions, bosses, combat, duels, dungeon_events, environment, equipment, helpers, loading, npc_social,
-    npc_trade, ranged_combat, smith, stealth,
-)
+from ..base.core import ActionError, DETECT_START, ONLINE_WINDOW, RESPAWN_ROOM, REVIVE_DIFFICULTY
+from . import dungeon_events, environment
+from ..base import helpers, loading
+from ..fight import afflictions, bosses, combat, duels, equipment, ranged_combat, stealth
+from ..npc import npc_social, npc_trade, smith
 
 
 # 签名统一: (cur, player, view, action) -> facts

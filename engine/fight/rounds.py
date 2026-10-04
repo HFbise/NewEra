@@ -8,8 +8,10 @@ from psycopg.types.json import Jsonb
 from rules import ENEMY_EVERY, skill_level
 from schema import ActionResult, Player, PlayerAction
 
-from .core import DETECT_PER_FOE, DETECT_STEP, DETECT_STEP_MIN, ONLINE_WINDOW
-from . import afflictions, bosses, combat, environment, equipment, helpers, loading, stealth
+from ..base.core import DETECT_PER_FOE, DETECT_STEP, DETECT_STEP_MIN, ONLINE_WINDOW
+from . import afflictions, bosses, combat, equipment, stealth
+from ..base import helpers, loading
+from ..world import environment
 
 
 # 房间里有怪、有人被怪发现了就是在战斗：队员的命令先排队，全队都出完手才一起结算（没有倒计时，纯等：文字游戏不该催人；

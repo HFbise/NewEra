@@ -82,7 +82,7 @@ The failure rate is the interesting line. Because the model never holds game sta
   - **Anubis**: drinking potions or dodging adds "sin" to the scales he weighs you with;
   - **Perseus**: he vanishes, flies and has to be pulled down with a rope, and petrifies anyone who doesn't close their eyes.
 
-All game content lives in YAML (`world.yaml`, `dungeon.yaml`, `items_dungeon.yaml`, `loot.yaml`, `deep_*.yaml`) and is loaded by the engine; adding a monster or an event is data, not code.
+All game content lives in YAML under `data/` (`world.yaml`, `dungeon.yaml`, `items_dungeon.yaml`, `loot.yaml`, `deep_*.yaml`) and is loaded by the engine; adding a monster or an event is data, not code.
 
 ## Balancing with a simulator
 
@@ -101,13 +101,15 @@ All game content lives in YAML (`world.yaml`, `dungeon.yaml`, `items_dungeon.yam
 | File | What it does |
 |---|---|
 | `server.py` | HTTP API, turn pipeline, combat round scheduling |
-| `engine/` | the rules engine, one module per topic: `combat`, `stealth`, `environment`, `bosses`, `rounds`, `afflictions`, `equipment`, `everyday`, `npc_trade`, `npc_social`, `smith`, … and `dispatch` (the entry points). Modules import each other explicitly and call across with the module name; underscore names are private to their module |
+| `engine/` | the rules engine, in four groups: `base/` (constants, helpers, loading, `dispatch` with the entry points), `fight/` (combat, ranged weapons, bosses, party rounds, duels, stealth, status effects, equipment), `world/` (room environment, dungeon event rooms, everyday actions, parties) and `npc/` (trade, relationships, the smith, item descriptions). Modules import each other explicitly and call across with the module name; underscore names are private to their module |
 | `rules.py` | pure formulas (damage, hit chance, scaling by depth, upgrade odds), shared with the simulator |
 | `dungeon.py` | floor generation, themes, spawning, loot |
 | `commands.py` | rule-based parser for common commands |
 | `ai.py` | all LLM calls: parsing, giving decisions, role-play, narration |
 | `schema.py` / `schema.sql` | action and state models / database schema |
-| `seed.py` | loads the world from YAML into the database |
+| `seed.py` | loads the world from `data/` into the database |
+| `data/` | all game content as YAML: the village, dungeon themes, monsters, events, items, loot tables |
+| `scripts/` | manual tools, e.g. a full engine walk-through against a test database (resets the world) |
 | `balance/` | simulator and balance reports |
 | `tests/` | tests that run without a database: formulas, dungeon generation, content cross-checks (every monster, event and item a YAML file refers to exists), the command parser and a simulator smoke test |
 

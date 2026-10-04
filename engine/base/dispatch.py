@@ -9,10 +9,10 @@ from rules import ENEMY_EVERY
 from schema import ActionResult, PlayerAction, RoomView
 
 from .core import ActionError, DOWNED_ALLOWED, PRONE_BLOCKED, RESTRAINED_BLOCKED
-from . import (
-    afflictions, bosses, combat, duels, environment, equipment, everyday, loading, npc_trade, parties,
-    ranged_combat, smith, stealth,
-)
+from . import loading
+from ..fight import afflictions, bosses, combat, duels, equipment, ranged_combat, stealth
+from ..world import environment, everyday, parties
+from ..npc import npc_trade, smith
 
 
 HANDLERS: dict[str, Callable[..., list[str]]] = {

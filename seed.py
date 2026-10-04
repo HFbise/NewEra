@@ -1,12 +1,12 @@
 """
-把 world.yaml 导入数据库。
+把 data/world.yaml 导入数据库。
 - 静态内容（房间、模板）用 upsert，可以反复跑
 - seed：同步设定，再重置世界里的 NPC 和物品实例（玩家身上的东西不动）
 - sync：只同步设定（房间描述、物品说明、NPC 人设、出口、地形、任务），世界状态不动，改人设后用这个；
   新加的 NPC、房间里新加的物品要 seed 才会出现
 
 用法（DATABASE_URL 写在 .env 里）:
-  python seed.py world.yaml
+  python seed.py               （默认 data/world.yaml）
 """
 import os
 import sys
@@ -15,6 +15,8 @@ import psycopg
 import yaml
 from dotenv import load_dotenv
 from psycopg.types.json import Jsonb
+
+from paths import data_path
 
 
 DEFAULT_RESPAWN = 300                   # 物品被拿走后默认多少秒重新出现
@@ -28,9 +30,8 @@ DEEP_ITEMS = "deep_items.yaml"          # 深层物品：主文件没有的才�
 
 def _all_items(world) -> dict:
     items = dict(world["items"])
-    here = os.path.dirname(os.path.abspath(__file__))
     for name, override in ((EXTRA_ITEMS, True), (DEEP_ITEMS, False)):
-        path = os.path.join(here, name)
+        path = data_path(name)
         if os.path.exists(path):
             with open(path, encoding="utf-8") as f:
                 for key, value in ((yaml.safe_load(f) or {}).get("items") or {}).items():
@@ -199,7 +200,7 @@ def seed(conn, world) -> None:
 
 if __name__ == "__main__":
     load_dotenv()
-    path = sys.argv[1] if len(sys.argv) > 1 else "world.yaml"
+    path = sys.argv[1] if len(sys.argv) > 1 else data_path("world.yaml")
     with open(path, encoding="utf-8") as f:
         world = yaml.safe_load(f)
     with psycopg.connect(os.environ["DATABASE_URL"]) as conn:

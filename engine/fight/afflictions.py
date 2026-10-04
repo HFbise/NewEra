@@ -10,8 +10,10 @@ import dungeon
 from rules import BLEED_DAMAGE, CORRODE_HP, EFFECT_TURNS, POISON_HIT, SCALE, dot_value
 from schema import Effect, Npc, Player, RoomView, Stand, Status, Struggle
 
-from .core import ActionError
-from . import combat, environment, equipment, everyday, helpers, stealth
+from ..base.core import ActionError
+from . import combat, equipment, stealth
+from ..base import helpers
+from ..world import environment, everyday
 
 
 def set_status(cur: Cursor, table: str, obj_id: UUID, status: Optional[Status]) -> None:

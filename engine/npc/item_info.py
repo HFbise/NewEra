@@ -6,7 +6,10 @@ from rules import (
 )
 from schema import ItemInstance, Npc, SKILL_NAMES
 
-from . import afflictions, environment, helpers, npc_trade, ranged_combat
+from . import npc_trade
+from ..base import helpers
+from ..fight import afflictions, ranged_combat
+from ..world import environment
 
 
 TYPE_NAMES = {"weapon": "武器", "armor": "防具", "consumable": "吃喝", "key": "钥匙", "misc": "杂物", "gem": "宝石"}

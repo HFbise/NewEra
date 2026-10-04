@@ -2,9 +2,10 @@
 规则引擎集成测试：不接 AI，手动构造动作，把麦琪任务线跑一遍。
 会重置世界（seed）和测试玩家，别对正式库跑。
 
-用法: python test_engine.py
+用法: python scripts/live_engine_check.py
 """
 import os
+import sys
 from uuid import UUID
 
 import psycopg
@@ -12,16 +13,19 @@ import yaml
 from dotenv import load_dotenv
 from pydantic import TypeAdapter
 
-import engine
-from schema import PlayerAction, RoomView
-from seed import seed
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))     # 从 scripts/ 跑也找得到项目里的模块
+
+import engine  # noqa: E402
+from paths import data_path  # noqa: E402
+from schema import PlayerAction, RoomView  # noqa: E402
+from seed import seed  # noqa: E402
 
 TEST_ID = UUID("00000000-0000-0000-0000-000000000001")
 action = TypeAdapter(PlayerAction).validate_python
 
 
 def reset(conn):
-    with open("world.yaml", encoding="utf-8") as f:
+    with open(data_path("world.yaml"), encoding="utf-8") as f:
         seed(conn, yaml.safe_load(f))
     with conn.transaction():
         conn.execute(

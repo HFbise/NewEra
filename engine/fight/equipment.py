@@ -12,8 +12,11 @@ import dungeon
 from rules import NPC_CORRODE_DEF, NPC_EFFECT_TURNS, OFFHAND_SHARE, SCALE, WEAK_MULT, steps
 from schema import Effect, Equip, ItemInstance, Npc, Player, RoomView, SLOT_CHOICES, SLOT_NAMES, Status, Unequip
 
-from .core import ActionError
-from . import afflictions, bosses, combat, environment, everyday, helpers, item_info, loading, smith, stealth
+from ..base.core import ActionError
+from . import afflictions, bosses, combat, stealth
+from ..base import helpers, loading
+from ..world import environment, everyday
+from ..npc import item_info, smith
 
 
 # 叠加规则：固定数值加起来（血量上限、技能、逃跑难度、伤害加成、减伤、破甲）；
