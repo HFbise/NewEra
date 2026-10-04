@@ -2,11 +2,29 @@
 
 [![tests](https://github.com/HFbise/NewEra/actions/workflows/tests.yml/badge.svg)](https://github.com/HFbise/NewEra/actions/workflows/tests.yml)
 
-A multiplayer text adventure (a MUD) in the browser, where players type whatever they want in plain Chinese and an LLM narrates what happens. The difference from "ChatGPT as a dungeon master": **the model never owns the game state.** Every number, item, hit and death is decided by a deterministic rules engine; the model only interprets what the player meant and describes what the engine says happened.
+A multiplayer text adventure (a MUD) in the browser, where players type whatever they want in plain Chinese and an LLM narrates what happens. The difference from "ChatGPT as a dungeon master": **the model never owns the game state.** Every number, item, hit and death is decided by a rules engine written in plain code (dice included); the model only interprets what the player meant and describes what the engine says happened.
 
 > The game itself is in Chinese. This README is in English for portfolio readers; code comments and design notes are in Chinese.
 
-<!-- Screenshot / short gameplay video goes here -->
+## A look at the game
+
+Real sessions with friends. The right-hand panel, cropped here, shows stats, the room, NPC services and the minimap.
+
+![Other players' actions appear in the log](docs/images/shared-world.png)
+
+**A shared world.** Other players' actions arrive in your log as they happen. Here another player trades with Maggie, the innkeeper, who teases him in character and likes him a little more after each purchase.
+
+![Talking to the shopkeeper: the parsed action, then the narration](docs/images/talking-to-npcs.png)
+
+**Free text in, typed actions out.** Above each narration is how the turn was parsed: by the LLM here (with its token count and the JSON action it produced), or by the hand-written rules when they're sure. Asked "do you remember me?", the shopkeeper brings up the player's earlier question about the tavern. NPC memory combines a rolling summary with past exchanges retrieved by relevance.
+
+![A combat round resolved by the engine and then narrated](docs/images/combat-round.png)
+
+**The engine decides, the model describes.** A combat round: the engine settles distance, hits, damage, the kill and the loot (+2 gold) first, and the paragraph underneath only retells those facts. Turns marked 规则解析 were parsed by the rules in under a second, with no LLM call.
+
+![A boss telegraphs a blinding flash; the player closes their eyes](docs/images/boss-mechanic.png)
+
+**Bosses you beat with choices, not just numbers.** On floor 20 the Crystal Mother telegraphs a blinding flash (round 6). The player closes their eyes (round 7), and the engine records the flash as dodged.
 
 ## Why this design
 
