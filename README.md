@@ -12,8 +12,8 @@ Letting an LLM run a game directly breaks quickly. It forgets an item a player p
 
 So the model gets two narrow jobs and no authority:
 
-1. **Understanding** — turn free text into structured actions (`attack n2`, `stunt` with a requested damage tier and difficulty, `give i3 to n1`).
-2. **Describing** — write a short narration from a list of facts the engine produced, and nothing else.
+1. **Understanding:** turn free text into structured actions (`attack n2`, `stunt` with a requested damage tier and difficulty, `give i3 to n1`).
+2. **Describing:** write a short narration from a list of facts the engine produced, and nothing else.
 
 Everything in between is plain Python with row-level locks in Postgres.
 
@@ -23,20 +23,20 @@ Everything in between is plain Python with row-level locks in Postgres.
 player text
    │
    ▼
-1. Parse      commands.py — hand-written rules cover common phrasings (fast, free)
-              ai.parse_intent — LLM fallback with structured output for everything else
+1. Parse      commands.py: hand-written rules cover common phrasings (fast, free)
+              ai.parse_intent: LLM fallback with structured output for everything else
    │          → list of typed actions (pydantic models in schema.py)
    ▼
-2. Execute    engine.execute_all — validates every action against the database,
+2. Execute    engine.execute_all: validates every action against the database,
               rolls dice, applies damage, moves items; anything the AI asked for
               is clamped (an "instant kill" request becomes whatever the rules allow)
    │          → list of facts ("Goblin takes 31 damage, HP 189/220")
    ▼
-3. Decide     ai.decide_give — separate small call: does the NPC hand something over?
+3. Decide     ai.decide_give: separate small call: does the NPC hand something over?
               (asked before narration so the story can never promise an item
               the engine didn't move)
    ▼
-4. Narrate    ai.narrate — writes 2–4 sentences from the facts only; NPC dialogue is a
+4. Narrate    ai.narrate: writes 2–4 sentences from the facts only; NPC dialogue is a
               separate role-play call wrapped into the narration verbatim
 ```
 
@@ -45,6 +45,23 @@ A few things that took real iteration:
 - **Facts-only narration.** Player names are swapped for placeholders before the model sees them (a player called "寒风", *cold wind*, kept getting written into the weather), and swapped back afterwards.
 - **Combat rounds for groups.** In a fight, each party member's command is queued; when everyone has acted, enemies act once. Rounds that get stuck (a deploy mid-fight, a dropped connection) are closed automatically on startup and after a timeout.
 - **Stealth.** Detection chance grows each action, depends on light, cover, monster perception and how many enemies are watching; sneak attacks, hiding mid-fight and "keen" monsters that can't be sneaked past.
+
+## By the numbers
+
+From one week of play with a small group of friends (22–30 September 2026, six players):
+
+| | |
+|---|---|
+| Turns logged | ~830 |
+| Turns parsed by the hand-written rules, no LLM parsing call | **56%** |
+| LLM calls | 7,858 across 5 models, 21.4M input tokens |
+| Median latency (p90) | parsing 2.7 s (8.1 s) · narration 4.3 s (9.1 s) · NPC line 1.8 s (7.5 s) |
+| Failed LLM calls | **30%**, mostly free-tier rate limits and timeouts |
+| Turns that still got a narration | **93.5%** (most of the rest are chat-only actions that skip narration by design) |
+| Deepest floor reached | 41 |
+| Model cost | $0, runs on free-tier GLM "flash" models |
+
+The failure rate is the interesting line. Because the model never holds game state, a failed call can only cost a turn its prose, never its outcome: the engine has already resolved the action. A second API key, a model fallback chain and a rules-only mode cover the rest.
 
 ## What's in the game
 
