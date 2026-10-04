@@ -1,5 +1,7 @@
 # NewEra
 
+[![tests](https://github.com/HFbise/NewEra/actions/workflows/tests.yml/badge.svg)](https://github.com/HFbise/NewEra/actions/workflows/tests.yml)
+
 A multiplayer text adventure (a MUD) in the browser, where players type whatever they want in plain Chinese and an LLM narrates what happens. The difference from "ChatGPT as a dungeon master": **the model never owns the game state.** Every number, item, hit and death is decided by a deterministic rules engine; the model only interprets what the player meant and describes what the engine says happened.
 
 > The game itself is in Chinese. This README is in English for portfolio readers; code comments and design notes are in Chinese.
@@ -107,6 +109,7 @@ All game content lives in YAML (`world.yaml`, `dungeon.yaml`, `items_dungeon.yam
 | `schema.py` / `schema.sql` | action and state models / database schema |
 | `seed.py` | loads the world from YAML into the database |
 | `balance/` | simulator and balance reports |
+| `tests/` | tests that run without a database: formulas, dungeon generation, content cross-checks (every monster, event and item a YAML file refers to exists), the command parser and a simulator smoke test |
 
 ## Running it locally
 
@@ -121,7 +124,7 @@ python seed.py                                        # load the world (resets i
 uvicorn server:app --reload
 ```
 
-Then open http://localhost:8000. Without an AI key the game still runs on the rule-based parser, with plain fact lines instead of narration.
+Run the tests with `pytest` (no database or API key needed). Then open http://localhost:8000. Without an AI key the game still runs on the rule-based parser, with plain fact lines instead of narration.
 
 ## Status
 
